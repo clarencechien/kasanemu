@@ -164,6 +164,8 @@ function scheduleFlush(alsoScan = false): void {
 function relayout(): void {
   unlockScales(units);
   clearMeasureCache();
+  // 幾何變了,還沒送出去的長度預算要跟著重算(已送出的不動,反正回不去了)
+  for (const u of units) if (!u.l1Queued) u.maxChars = 0;
   scheduleFlush();
 }
 
