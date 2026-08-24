@@ -334,7 +334,6 @@ export function findLabels(
   seen: (el: Element) => boolean = () => false,
 ): Candidate[] {
   const out: Candidate[] = [];
-  const seenText = new Set<string>();
   const all = root.querySelectorAll(INTERACTIVE_SELECTOR);
   for (const el of all) {
     if (out.length >= cap) break;
@@ -364,12 +363,13 @@ export function findLabels(
     if (looksLikeTargetLang(text)) continue;
     if (el.getClientRects().length === 0) continue;
     /*
-     * 同一段文字在頁面上出現多次時只留第一個。
-     * 導覽列幾乎一定有一份隱藏的行動版複本,兩份都收進來會讓
-     * 同一個字被翻兩次,而且第二份的貼片會畫在螢幕外。
+     * **不**在這裡對重複文字去重。
+     *
+     * 上一版會只留第一個 —— 那是錯的:卡片牆上十二張卡都寫「詳細を見る」,
+     * 十二個都要能 hover;「お問い合わせ」在導覽列與段落標題各一次,
+     * 使用者指的往往是後者。去重要做在翻譯層(index.ts 的 labelMemo):
+     * 每個元素都有自己的單元,但同一段文字只送一次 API。
      */
-    if (seenText.has(text)) continue;
-    seenText.add(text);
     out.push({ el, role: 'label', src: text, geometryRisk: false });
   }
   return out;

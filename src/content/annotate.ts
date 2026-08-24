@@ -152,3 +152,28 @@ export function overlaps(a: ViewRect, b: ViewRect): boolean {
 export function labelBudget(src: string): number {
   return Math.max(6, Math.round(src.length * 0.6));
 }
+
+/**
+ * 同一段文字只送一次 API。
+ *
+ * 這一條是踩過才長出來的:上一版把去重做在**偵測**層(同樣的文字只留第一個
+ * 元素),於是卡片牆上十二張卡只有第一張 hover 得到,「お問い合わせ」在
+ * 導覽列與段落標題各一次、使用者指的那一個沒有單元。
+ *
+ * 正確的位置是**送出**層:每個元素都有自己的單元(所以都能 hover、
+ * 都能顯示貼片),但送去翻的只有每種文字的第一個,回來之後散給其他人。
+ */
+export function dedupeByText<T extends { src: string; l1Text?: string }>(
+  units: readonly T[],
+  alreadySent: ReadonlySet<string>,
+): T[] {
+  const out: T[] = [];
+  const seen = new Set<string>();
+  for (const u of units) {
+    if (u.l1Text !== undefined) continue;
+    if (alreadySent.has(u.src) || seen.has(u.src)) continue;
+    seen.add(u.src);
+    out.push(u);
+  }
+  return out;
+}

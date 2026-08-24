@@ -356,7 +356,7 @@ footer {
       <li><a href="#install">安裝</a></li>
       <li><a href="#first">第一次使用</a></li>
       <li><a href="#read">怎麼讀畫面</a></li>
-      <li><a href="#chips">導覽列與按鈕</a></li>
+      <li><a href="#chips">滑過與選取</a></li>
       <li><a href="#keys">快捷鍵</a></li>
       <li><a href="#tiers">檔位與帳單</a></li>
       <li><a href="#key">API key 與隱私</a></li>
@@ -624,7 +624,7 @@ footer {
 
     <section id="chips" class="mark-l0">
       <div class="eyebrow">加翻</div>
-      <h2>導覽列與按鈕:滑上去才翻</h2>
+      <h2>導覽列、按鈕、選起來的字</h2>
       <div class="stack-block">
         <p>
           24 字以內的按鈕、分頁、選單、連結<strong>不會被疊層蓋住</strong>。
@@ -635,8 +635,16 @@ footer {
           所以它們走另一條路 —— <strong>滑上去停 0.2 秒,譯文出現在旁邊</strong>,
           原文一個像素都不動。移開就消失。
         </p>
+        <p>
+          <strong>指到什麼就翻什麼。</strong>不只按鈕和連結 —— 任何一段沒有被疊層接手的
+          文字,滑上去停一下都會出貼片。翻不到的時候還有更直接的一招:
+          <strong>把那段字選起來</strong>,譯文立刻出現,不必等停留。
+          選取可以跨越好幾個元素,所以連「半句話」都問得到。
+        </p>
         <ul class="plain">
           <li><strong>橫掃不會閃。</strong>要停留才出現,所以滑鼠掃過一整排導覽列不會沿路冒出貼片。</li>
+          <li><strong>選起來就翻。</strong>選取是最明確的「我要這一段」,所以不等 0.2 秒,選完就出;點一下別的地方取消選取,貼片才消失。</li>
+          <li><strong>重複的字只翻一次。</strong>卡片牆上十二張卡都寫「詳細を見る」,十二張都 hover 得到,但只送一次 API。</li>
           <li><strong>第二個開始不用等。</strong>一旦有貼片開著,移到隔壁項目會立刻換。</li>
           <li><strong>點得到。</strong>貼片和疊層一樣不吃滑鼠事件,就算蓋到隔壁按鈕,那顆按鈕照樣點得到。</li>
           <li><strong>按住 <kbd>Alt</kbd> 全部顯示。</strong>和掃視疊層同一顆鍵,一眼看完整條導覽列。</li>
@@ -784,6 +792,7 @@ footer {
           <li><strong>速度體感</strong>:你捲到的時候,那一段翻好了嗎?還是還在等?</li>
           <li><strong>L0 到 L1 的替換</strong>:字換掉的那一瞬間會不會打斷你閱讀?</li>
           <li><strong>加翻貼片</strong>:0.2 秒的等待感覺對嗎?貼片出現的位置擋到你要看的東西了嗎?</li>
+          <li><strong>還有哪裡滑上去不會翻</strong>:網址 + 那段文字,這是現在最想知道的。</li>
           <li><strong>日文 / 韓文站</strong>:有翻嗎?來源語言判對了嗎?(log 裡的 <code>sourceLang</code> 會寫)</li>
           <li><strong>哪些站完全不能用</strong>:網址就好。</li>
         </ul>

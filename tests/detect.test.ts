@@ -308,12 +308,19 @@ test('加翻候選:UI 標籤被收進來,而不是被丟掉', () => {
   for (const c of findLabels(body, 200)) assert.equal(c.role, 'label');
 });
 
-test('加翻候選:行動版的重複導覽列不會被收第二次', () => {
+test('加翻候選:重複的文字每個都要收(卡片牆上十二張卡都要能 hover)', () => {
+  // 去重做在翻譯層(labelMemo),不在偵測層 —— 偵測層去重會讓
+  // 除了第一張以外的卡片 hover 沒反應,那正是回報的「只會翻一個」
   const body = mount(`
-    <nav class="desktop"><a href="/pricing">Pricing</a></nav>
-    <nav class="mobile"><a href="/pricing">Pricing</a></nav>
+    <a href="/a">詳細を見る</a>
+    <a href="/b">詳細を見る</a>
+    <a href="/c">詳細を見る</a>
   `);
-  assert.deepEqual(findLabels(body, 200).map((c) => c.src), ['Pricing']);
+  assert.deepEqual(findLabels(body, 200).map((c) => c.src), [
+    '詳細を見る',
+    '詳細を見る',
+    '詳細を見る',
+  ]);
 });
 
 test('加翻候選:巢狀互動元素只取最內層', () => {

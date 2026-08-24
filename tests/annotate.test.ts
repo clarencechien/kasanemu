@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { labelBudget, overlaps, place, resolveAnchor } from '../src/content/annotate.ts';
+import {
+  dedupeByText,
+  labelBudget,
+  overlaps,
+  place,
+  resolveAnchor,
+} from '../src/content/annotate.ts';
 
 const VIEW = { width: 1280, height: 800 };
 const CHIP = { width: 90, height: 26 };
@@ -78,4 +84,25 @@ test('標籤的譯文預算:限的是簡潔,不是塞不塞得下', () => {
   assert.equal(labelBudget('Contact sales'), 8);
   // 再短也給得下最少的字數
   assert.equal(labelBudget('OK'), 6);
+});
+
+test('同一段文字只送一次,但每個元素都保有自己的單元', () => {
+  const cards = [
+    { id: 'a', src: '詳細を見る' },
+    { id: 'b', src: '詳細を見る' },
+    { id: 'c', src: 'もっと詳しく' },
+    { id: 'd', src: '詳細を見る' },
+  ];
+  const sent = dedupeByText(cards, new Set());
+  assert.deepEqual(sent.map((u) => u.id), ['a', 'c']);
+});
+
+test('已經送過或已經有譯文的不再送', () => {
+  const units = [
+    { id: 'a', src: 'Pricing' },
+    { id: 'b', src: 'Docs', l1Text: '文件' },
+    { id: 'c', src: 'Support' },
+  ];
+  const sent = dedupeByText(units, new Set(['Pricing']));
+  assert.deepEqual(sent.map((u) => u.id), ['c']);
 });
