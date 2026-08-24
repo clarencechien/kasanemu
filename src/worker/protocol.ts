@@ -119,7 +119,16 @@ export interface ParseOutcome {
   results: UnitResult[];
   failures: UnitFailure[];
   /** 用於 debug 面板與 log 的統計 */
-  stats: { got: number; kept: number; echoMismatch: number; unknown: number; dupe: number; missing: number };
+  stats: {
+    got: number;
+    kept: number;
+    echoMismatch: number;
+    unknown: number;
+    dupe: number;
+    missing: number;
+    /** 抓到 batch 內 id 對滑 —— 整批已丟棄 */
+    swapped?: boolean;
+  };
 }
 
 /**
@@ -148,6 +157,20 @@ function asRecords(parsed: unknown): unknown[] | null {
 
 export function parseBatch(raw: string, sent: UnitRequest[], truncated: boolean): ParseOutcome {
   const bySent = new Map(sent.map((u) => [u.id, u]));
+  /*
+   * 反查表:正規化過的 echo → 是誰的原文。
+   * 用來分辨兩種對不上:
+   *  - 模型沒照抄(echo 是譯文、或亂寫)→ 丟那一筆就好
+   *  - echo 對到同批另一筆的原文 → 這是 id 對滑的直接證據,整批不可信
+   * 兩者的嚴重性差很多,混在一起報等於沒報。
+   */
+  const echoOwner = new Map<string, string>();
+  for (const u of sent) {
+    const k = normalizeEcho(echoOf(u.src));
+    // 兩筆原文開頭相同時無法判別歸屬,那個 key 就不用來做對滑判定
+    echoOwner.set(k, echoOwner.has(k) ? '' : u.id);
+  }
+  let swapped: { id: string; owner: string } | null = null;
   const results: UnitResult[] = [];
   const failures: UnitFailure[] = [];
   const seen = new Set<string>();
@@ -185,7 +208,15 @@ export function parseBatch(raw: string, sent: UnitRequest[], truncated: boolean)
     const want = echoOf(src.src);
     if (!echoMatches(echo, want)) {
       stats.echoMismatch++;
-      failures.push({ id, reason: 'echo-mismatch', detail: `want ${JSON.stringify(want)} got ${JSON.stringify(echo)}` });
+      const owner = echoOwner.get(normalizeEcho(echo));
+      const detail = `want ${JSON.stringify(want)} got ${JSON.stringify(echo)}`;
+      if (owner && owner !== id) {
+        // 這一筆的 echo 是同批另一筆的原文 —— id 對滑被抓到了
+        swapped = { id, owner };
+        failures.push({ id, reason: 'echo-swap', detail: `${detail} — 對到 ${owner} 的原文` });
+      } else {
+        failures.push({ id, reason: 'echo-mismatch', detail });
+      }
       continue;
     }
     results.push({ id, t: t.trim() });
@@ -196,6 +227,24 @@ export function parseBatch(raw: string, sent: UnitRequest[], truncated: boolean)
     if (seen.has(u.id)) continue;
     stats.missing++;
     failures.push({ id: u.id, reason: truncated ? 'truncated' : 'missing-id' });
+  }
+
+  /*
+   * §6.4「模型輸出視為敵意輸入」。抓到一筆對滑,就沒有理由相信同一批
+   * 其他筆的對位 —— 它們的 echo 可能剛好也被移到對得上的位置。
+   * 所以整批丟棄,而不是只丟被抓到的那一筆。
+   * 這與 §5.5 排除 3.6 系列是同一個判斷:batch 內 id 對滑不可修復。
+   */
+  if (swapped) {
+    for (const r of results) {
+      if (failures.some((f) => f.id === r.id)) continue;
+      failures.push({
+        id: r.id,
+        reason: 'echo-swap',
+        detail: `同批的 ${swapped.id} 對到 ${swapped.owner} 的原文,整批不可信`,
+      });
+    }
+    return { results: [], failures, stats: { ...stats, kept: 0, swapped: true } };
   }
   return { results, failures, stats };
 }

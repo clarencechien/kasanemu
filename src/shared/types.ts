@@ -31,7 +31,15 @@ export interface UnitResult {
 }
 
 export type UnitFailReason =
+  /** echo 對不上,但沒有證據說是對滑 —— 多半是模型沒照抄 */
   | 'echo-mismatch'
+  /**
+   * echo 對到了**同一批裡另一筆**的原文 —— 這是 batch 內 id 對滑的直接證據。
+   * 譯文被錯置到別的區塊上,而 JSON 合法、筆數正確、每筆都是通順的中文,
+   * 自動指標抓不到(PRD §5.5 排除 3.6 系列就是因為這個)。
+   * 一旦抓到,同一批的其他筆也不可信 —— 整批丟棄。
+   */
+  | 'echo-swap'
   | 'missing-id'
   | 'duplicate-id'
   | 'unknown-id'
