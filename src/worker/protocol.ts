@@ -60,14 +60,29 @@ export function repairJsonArray(raw: string): unknown[] | null {
   let text = raw.trim();
   // 模型有時仍會包 markdown 圍籬
   text = text.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-  const start = text.indexOf('[');
-  if (start < 0) return null;
-  text = text.slice(start);
+  // 先照原樣試一次:完整的 array、單一物件、{results: [...]} 都在這裡收掉
   try {
-    const parsed: unknown = JSON.parse(text);
-    return Array.isArray(parsed) ? parsed : null;
+    const whole = asRecords(JSON.parse(text));
+    if (whole) return whole;
   } catch {
     /* 往下走尾部修復 */
+  }
+
+  const start = text.indexOf('[');
+  if (start < 0) {
+    // 沒有 array:可能是被截斷的單一物件。補上 [ 讓下面的修復邏輯共用同一條路。
+    const objStart = text.indexOf('{');
+    if (objStart < 0) return null;
+    text = `[${text.slice(objStart)}`;
+  } else {
+    text = text.slice(start);
+    try {
+      const parsed: unknown = JSON.parse(text);
+      const recs = asRecords(parsed);
+      if (recs) return recs;
+    } catch {
+      /* 往下走尾部修復 */
+    }
   }
 
   let depth = 0;
@@ -94,7 +109,7 @@ export function repairJsonArray(raw: string): unknown[] | null {
   const patched = `${text.slice(0, lastComplete + 1)}]`;
   try {
     const parsed: unknown = JSON.parse(patched);
-    return Array.isArray(parsed) ? parsed : null;
+    return asRecords(parsed);
   } catch {
     return null;
   }
@@ -113,6 +128,24 @@ export interface ParseOutcome {
  * 第二層:原文回聲對位(對不上就丟棄該筆,不要嘗試修復)
  * 第三層在 content script 的 debug 面板(抽樣人工比對)
  */
+/**
+ * 只送一筆的時候,小模型常常回單一物件而不是只有一個元素的 array
+ * (實測 gemma-4-31b-it 會)。包成 array 是格式上的容忍,
+ * id 紀律完全不受影響 —— 那筆的 id 與 echo 照樣要對得上。
+ * 也接受 {results: [...]} / {translations: [...]} 這種常見的包裝。
+ */
+function asRecords(parsed: unknown): unknown[] | null {
+  if (Array.isArray(parsed)) return parsed;
+  if (!parsed || typeof parsed !== 'object') return null;
+  const o = parsed as Record<string, unknown>;
+  if (typeof o['id'] === 'string') return [o];
+  for (const key of ['results', 'translations', 'items', 'data', 'output']) {
+    const v = o[key];
+    if (Array.isArray(v)) return v;
+  }
+  return null;
+}
+
 export function parseBatch(raw: string, sent: UnitRequest[], truncated: boolean): ParseOutcome {
   const bySent = new Map(sent.map((u) => [u.id, u]));
   const results: UnitResult[] = [];

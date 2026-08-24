@@ -76,6 +76,7 @@ let enqueueTimer = 0;
 let dwellTimer = 0;
 let reprioTimer = 0;
 let motionTimer = 0;
+let scrollRaf = 0;
 /** 掃到 0 個候選時的重試次數(頁面可能還在載入、入場動畫還沒跑完) */
 let emptyScans = 0;
 let running = false;
@@ -137,6 +138,7 @@ function scan(): void {
       maxChars: 0,
       rect: { left: 0, top: 0, width: 0, height: 0 },
       bleed: { x: 0, y: 0 },
+      overflowsBox: false,
       firstRectTop: 0,
       // §3.5 元素環繞浮動圖片 → bounding box 會蓋住圖片,跳過該單元
       tier: c.geometryRisk ? 'skipped' : 'pending',
@@ -265,6 +267,8 @@ function flush(): void {
     if (hasText(u)) layer.paint(u, settings);
     else layer.paintHint(u, settings);
   }
+  const overflowing = [...units].filter((u) => u.overflowsBox).length;
+  if (overflowing > 0) diag('info', 'content-overflows-box', { count: overflowing });
   if (firstPaintMs < 0 && paintable.length > 0) {
     firstPaintMs = Math.round(performance.now() - startedAt);
     dbg('first paint', firstPaintMs, 'ms', effective);
@@ -826,8 +830,31 @@ function onDocLeave(): void {
   if (left?.pendingSwap !== undefined) trySwap(left);
 }
 
+/**
+ * 捲動中的自我修正。用 rAF 節流,每次只讀兩個 rect:
+ *  1. host 的原點(頁面若用 transform 平滑捲動,原點會跑掉)
+ *  2. 一個可見單元當哨兵(內容自己在動的話,整批座標都要重算)
+ * 兩個都對得上就什麼都不做。
+ */
+function scrollSync(): void {
+  scrollRaf = 0;
+  if (!layer || !running) return;
+  const shifted = layer.syncOrigin();
+  const probe = [...units].find((u) => u.inView && u.tier !== 'skipped');
+  if (probe) {
+    const r = probe.el.getBoundingClientRect();
+    const dy = Math.abs(r.top + window.scrollY - probe.rect.top);
+    const dx = Math.abs(r.left + window.scrollX - probe.rect.left);
+    if (dx > 2 || dy > 2) {
+      diag('info', 'scroll-drift', { id: probe.id, dx, dy, hostShifted: shifted });
+      scheduleFlush();
+    }
+  }
+}
+
 function onScroll(): void {
   lastScrollAt = performance.now();
+  if (!scrollRaf) scrollRaf = requestAnimationFrame(scrollSync);
   if (reprioTimer) return;
   reprioTimer = window.setTimeout(() => {
     reprioTimer = 0;
@@ -863,6 +890,8 @@ function stop(): void {
   document.removeEventListener('animationend', onMotionEnd, true);
   clearTimeout(motionTimer);
   motionTimer = 0;
+  if (scrollRaf) cancelAnimationFrame(scrollRaf);
+  scrollRaf = 0;
   emptyScans = 0;
   for (const u of units) layer?.drop(u);
   layer?.hideHud();
@@ -1073,6 +1102,8 @@ Object.assign(globalThis as Record<string, unknown>, {
     /** 為什麼這個元素沒被翻:__ksnm.explain(document.querySelector('h1')) */
     explain: (el: Element | string) =>
       explainCandidate(typeof el === 'string' ? document.querySelector(el)! : el),
+    /** 把疊層盒子的邊界畫出來:__ksnm.outline() */
+    outline: (on = true) => layer?.setOutline(on),
     rescan: () => {
       emptyScans = 0;
       scheduleFlush(true);

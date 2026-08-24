@@ -13,7 +13,27 @@ export function measureUnit(unit: Unit, extraBleedPx = 0): void {
   const rects = unit.el.getClientRects();
   const sx = window.scrollX;
   const sy = window.scrollY;
-  unit.rect = { left: r.left + sx, top: r.top + sy, width: r.width, height: r.height };
+  /*
+   * 原文的內容可能比自己的 border-box 還大:元素設了固定 height 或
+   * max-height 而 overflow 是 visible、或子元素有負 margin。
+   * getBoundingClientRect() 只給 border-box,照它蓋就會漏 ——
+   * 症狀是標題底下露出半個 g。scrollHeight / scrollWidth 是內容尺寸,
+   * 取兩者的大者才蓋得住。
+   *
+   * §10.1:這幾個都是 layout 讀取,但和上面的 getBoundingClientRect()
+   * 在同一個讀取批次裡,layout 已經是 clean 的,不會多觸發一次 reflow。
+   */
+  const el = unit.el as HTMLElement;
+  const [bt, br2, bb, bl] = unit.style.border;
+  const contentH = (el.scrollHeight || 0) + bt + bb;
+  const contentW = (el.scrollWidth || 0) + bl + br2;
+  unit.rect = {
+    left: r.left + sx,
+    top: r.top + sy,
+    width: Math.max(r.width, contentW),
+    height: Math.max(r.height, contentH),
+  };
+  unit.overflowsBox = contentH > r.height + 1 || contentW > r.width + 1;
   // §4.7 提示線對齊第一個 client rect 的頂端,不是 border-box 頂端
   const first = rects.length > 0 ? rects[0]! : r;
   unit.firstRectTop = first.top + sy;

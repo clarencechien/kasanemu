@@ -27,6 +27,8 @@ export interface Unit {
   rect: DocRect;
   /** 疊層往外撐多少才蓋得住原文的墨水(見 bleed.ts) */
   bleed: { x: number; y: number };
+  /** 原文的內容比自己的 border-box 大(固定高度 + overflow: visible) */
+  overflowsBox: boolean;
   /** §4.7 提示線對齊第一個 client rect 的頂端 */
   firstRectTop: number;
   /** feature.md §4.1 區塊狀態機 */

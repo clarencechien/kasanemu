@@ -164,6 +164,18 @@ const LAYER_CSS = `
   border-radius: 8px;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
 }
+/* 除錯:把疊層盒子的邊界畫出來,一眼看出蓋到哪裡 */
+.layer.outline .box { outline: 1px solid rgba(255, 80, 80, 0.9); outline-offset: 0; }
+.layer.outline .box::after {
+  content: attr(data-geom);
+  position: absolute;
+  right: 0;
+  bottom: -14px;
+  font: 10px/1 ui-monospace, monospace;
+  color: #ff5050;
+  background: #000;
+  padding: 1px 3px;
+}
 .panel h4 { margin: 0 0 6px; font-size: 12px; }
 .panel table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .panel td, .panel th { vertical-align: top; padding: 3px 4px; border-top: 1px solid #263039; }
@@ -215,11 +227,37 @@ export class OverlayLayer {
     const r = this.host.getBoundingClientRect();
     this.originX = r.left + window.scrollX;
     this.originY = r.top + window.scrollY;
+    this.layer.style.transform = '';
+  }
+
+  /**
+   * 捲動時原點可能移動:頁面若在 body 底下用 transform 做平滑捲動
+   * (Webflow / Lenis 那一類),host 會跟著那個容器走,而盒子的
+   * left/top 是用重排當下的原點算的 —— 於是整片疊層平移到 header 上。
+   *
+   * 這裡不重算任何盒子,只把整個 layer 平移回去:一次 rect 讀取 + 一次
+   * transform 寫入。§10.2 的「捲動零開銷」因此不再嚴格成立,
+   * 但錯位比那點開銷嚴重得多。
+   */
+  syncOrigin(): boolean {
+    const r = this.host.getBoundingClientRect();
+    const dx = this.originX - (r.left + window.scrollX);
+    const dy = this.originY - (r.top + window.scrollY);
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) {
+      if (this.layer.style.transform !== '') this.layer.style.transform = '';
+      return false;
+    }
+    this.layer.style.transform = `translate(${dx}px, ${dy}px)`;
+    return true;
   }
 
   setMode(mode: DisplayMode): void {
     this.layer.classList.toggle('mode-full', mode === 'full');
     this.layer.classList.toggle('mode-peek', mode === 'peek');
+  }
+
+  setOutline(on: boolean): void {
+    this.layer.classList.toggle('outline', on);
   }
 
   setAltScan(on: boolean): void {
@@ -244,6 +282,9 @@ export class OverlayLayer {
     const annot = unit.annotation || settings.forceAnnotation;
     box.className = `box${unit.singleLine ? ' single' : ''}${annot ? ' annotate' : ''}`;
     box.textContent = text;
+    box.dataset['geom'] =
+      `${Math.round(unit.rect.width)}×${Math.round(unit.rect.height)}` +
+      ` +${unit.bleed.y}${unit.overflowsBox ? ' overflow' : ''}`;
     this.applyVars(box, unit, effectiveFontSize(unit));
     this.paintHint(unit, settings);
   }
