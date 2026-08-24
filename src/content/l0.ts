@@ -74,7 +74,19 @@ export class L0Engine {
   /** feature.md §4.6 L0 譯文也快取,避免重複呼叫(導覽列、重複標題命中率高) */
   private readonly cache = new Map<string, string>();
   private inFlight = 0;
-  private queue: Array<() => void> = [];
+  /** 依優先度排序的等待佇列(數字小的先跑) */
+  private queue: Array<{ priority: number; go: () => void }> = [];
+  /**
+   * 實際 translate() 呼叫的耗時統計(不含排隊)。
+   *
+   * 之前只量「整批從開始到結束」,而預翻範圍拉大之後多輪請求擠在同一個
+   * 併發池裡 —— log 出現 perUnit 20 秒,看起來像 API 慢到不能用,
+   * 其實那是排隊。**儀表把排隊算成延遲,就會得出錯誤的結論。**
+   */
+  calls = 0;
+  callMsTotal = 0;
+  callMsMax = 0;
+  waitMsTotal = 0;
 
   constructor(sourceLang: string, targetLang: string) {
     this.sourceLang = sourceLang;
@@ -156,15 +168,22 @@ export class L0Engine {
   }
 
   /** 一區塊一次呼叫,無 batch、無 id 對位問題(§3.3) */
-  async translate(text: string): Promise<string | null> {
+  async translate(text: string, priority = 0): Promise<string | null> {
     const hit = this.cache.get(text);
     if (hit !== undefined) return hit;
     if (!(await this.ensure())) return null;
     const instance = this.instance;
     if (!instance) return null;
-    await this.slot();
+    const queuedAt = performance.now();
+    await this.slot(priority);
+    const startedAt = performance.now();
+    this.waitMsTotal += startedAt - queuedAt;
     try {
       const out = (await instance.translate(text)).trim();
+      const took = performance.now() - startedAt;
+      this.calls++;
+      this.callMsTotal += took;
+      if (took > this.callMsMax) this.callMsMax = took;
       if (out.length === 0) return null;
       if (this.cache.size < 3000) this.cache.set(text, out);
       return out;
@@ -176,24 +195,47 @@ export class L0Engine {
     }
   }
 
-  /** 不要一次把整頁丟進去,Translator 是本機資源 */
-  private slot(): Promise<void> {
+  /**
+   * 不要一次把整頁丟進去,Translator 是本機資源。
+   *
+   * 佇列依優先度排序:使用者捲到新的一屏時,那些區塊會**插隊**到
+   * 預翻進去的遠處區塊前面。預翻範圍拉大之後這件事變得必要 ——
+   * 否則新看到的段落要排在幾十個離螢幕很遠的區塊後面。
+   */
+  private slot(priority: number): Promise<void> {
     if (this.inFlight < CONCURRENCY) {
       this.inFlight++;
       return Promise.resolve();
     }
     return new Promise<void>((resolve) => {
-      this.queue.push(() => {
-        this.inFlight++;
-        resolve();
-      });
+      const entry = {
+        priority,
+        go: () => {
+          this.inFlight++;
+          resolve();
+        },
+      };
+      const at = this.queue.findIndex((q) => q.priority > priority);
+      if (at < 0) this.queue.push(entry);
+      else this.queue.splice(at, 0, entry);
     });
   }
 
   private release(): void {
     this.inFlight--;
     const next = this.queue.shift();
-    if (next) next();
+    if (next) next.go();
+  }
+
+  /** 給診斷用:真正的呼叫延遲,以及被排隊吃掉多少 */
+  timing(): { calls: number; avgMs: number; maxMs: number; avgWaitMs: number; queued: number } {
+    return {
+      calls: this.calls,
+      avgMs: this.calls > 0 ? Math.round(this.callMsTotal / this.calls) : 0,
+      maxMs: Math.round(this.callMsMax),
+      avgWaitMs: this.calls > 0 ? Math.round(this.waitMsTotal / this.calls) : 0,
+      queued: this.queue.length,
+    };
   }
 
   destroy(): void {

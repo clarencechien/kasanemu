@@ -25,6 +25,17 @@ function mount(html: string): Element {
   return dom.window.document.body;
 }
 
+/**
+ * jsdom 沒有 layout,client rect 是 mount() 補的假值。
+ * 把指定元素改成 1×1,模擬 `.sr-only`(width:1px;height:1px;clip:rect(0,0,0,0))。
+ */
+function srOnly(body: Element, selector: string): void {
+  for (const el of body.querySelectorAll(selector)) {
+    el.getClientRects = () =>
+      [{ top: 0, left: 0, width: 1, height: 1 }] as unknown as DOMRectList;
+  }
+}
+
 function ids(body: Element): string[] {
   return findCandidates(body, () => false).map((c) => c.src);
 }
@@ -242,4 +253,33 @@ test('段落裡夾一個短連結不影響整段', () => {
   const out = ids(body);
   assert.equal(out.length, 1);
   assert.match(out[0]!, /migration/);
+});
+
+/* -------- 螢幕閱讀器標籤:自己不翻,也不能讓祖先變成單元 -------- */
+
+test('sr-only 標籤本身不翻', () => {
+  const body = mount('<p><span class="sr-only">Skip to main content of this article</span></p>');
+  srOnly(body, '.sr-only');
+  assert.deepEqual(ids(body), []);
+});
+
+test('包著 sr-only 的 stretched link 也不翻(否則疊層蓋掉整張卡)', () => {
+  const body = mount(
+    '<a href="/post" class="clickable_link">' +
+      '<span class="sr-only">Bringing the cybersecurity capabilities of Claude to more defenders</span>' +
+      '</a>',
+  );
+  srOnly(body, '.sr-only');
+  assert.deepEqual(ids(body), []);
+});
+
+test('同一個容器裡還有看得見的文字時,那段照翻', () => {
+  const body = mount(
+    '<div><span class="sr-only">Opens in a new window</span>' +
+      '<p>The visible paragraph that should still be translated.</p></div>',
+  );
+  srOnly(body, '.sr-only');
+  const out = ids(body);
+  assert.equal(out.length, 1);
+  assert.match(out[0]!, /visible paragraph/);
 });
