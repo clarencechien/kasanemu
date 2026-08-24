@@ -849,7 +849,9 @@ async function start(): Promise<void> {
   window.addEventListener('keyup', onKeyUp, true);
   window.addEventListener('blur', onBlur);
   window.addEventListener('resize', relayout);
-  window.addEventListener('scroll', onScroll, { passive: true });
+  // capture:內層容器的捲動(水平卡片輪播、overflow 區塊)不冒泡到 window,
+  // 但 capture 階段會經過 document —— 沒有這個,輪播一捲整排疊層就錯位
+  document.addEventListener('scroll', onScroll, { passive: true, capture: true });
   window.addEventListener('pagehide', onPageHide);
   // 入場動畫結束 → 位置定了,重新量一次
   document.addEventListener('transitionend', onMotionEnd, true);
@@ -859,15 +861,15 @@ async function start(): Promise<void> {
   document.addEventListener('error', onResourceLoad, true);
 
   /*
-   * 載入初期是位置最不穩的一段:圖片、字型、非同步插入的區塊都在這時候落定。
-   * 前 12 秒每 600ms 驗一次座標,之後停 —— 事件式的偵測會漏掉沒有事件的位移
-   * (例如 JS 直接改 style、或 web component 內部重排)。
+   * 座標稽核**不停止**。原本只跑載入後 12 秒,但漏掉兩類晚到的位移:
+   * CSS background-image 的 lazy load(沒有任何 DOM 事件可聽),
+   * 以及捲到可見才觸發的入場動畫。成本很低:每輪只對疊層附近的單元
+   * 各讀一次 rect(layout 是 clean 的,< 1ms),抓到第一個漂移就收手重排。
+   * 分頁在背景時跳過。
    */
-  settleTimer = window.setInterval(auditPositions, 600);
-  window.setTimeout(() => {
-    clearInterval(settleTimer);
-    settleTimer = 0;
-  }, 12_000);
+  settleTimer = window.setInterval(() => {
+    if (!document.hidden) auditPositions();
+  }, 900);
   // §3.4 字型載入會改變所有 rect,完成後強制重算一次
   document.fonts.ready.then(relayout);
 
@@ -970,7 +972,7 @@ function stop(): void {
   window.removeEventListener('keyup', onKeyUp, true);
   window.removeEventListener('blur', onBlur);
   window.removeEventListener('resize', relayout);
-  window.removeEventListener('scroll', onScroll);
+  document.removeEventListener('scroll', onScroll, { capture: true } as EventListenerOptions);
   window.removeEventListener('pagehide', onPageHide);
   document.removeEventListener('transitionend', onMotionEnd, true);
   document.removeEventListener('animationend', onMotionEnd, true);
