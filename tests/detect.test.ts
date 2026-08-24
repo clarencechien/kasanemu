@@ -4,6 +4,7 @@ import { JSDOM } from 'jsdom';
 import {
   MAX_UNIT_CHARS,
   findCandidates,
+  findLabels,
   isMeaningfulText,
   looksLikeTargetLang,
 } from '../src/content/detect.ts';
@@ -289,4 +290,50 @@ test('同一個容器裡還有看得見的文字時,那段照翻', () => {
   const out = ids(body);
   assert.equal(out.length, 1);
   assert.match(out[0]!, /visible paragraph/);
+});
+
+test('加翻候選:UI 標籤被收進來,而不是被丟掉', () => {
+  const body = mount(`
+    <nav>
+      <a href="/pricing">Pricing</a>
+      <a href="/docs">Documentation</a>
+      <button>Start free trial</button>
+    </nav>
+    <p>Roughly ninety nine percent of intercontinental traffic runs on undersea cables.</p>
+  `);
+  const labels = findLabels(body, 200).map((c) => c.src);
+  assert.deepEqual(labels, ['Pricing', 'Documentation', 'Start free trial']);
+  // 內文段落仍然走疊翻,不會同時變成標籤
+  assert.equal(labels.some((t) => t.startsWith('Roughly')), false);
+  for (const c of findLabels(body, 200)) assert.equal(c.role, 'label');
+});
+
+test('加翻候選:行動版的重複導覽列不會被收第二次', () => {
+  const body = mount(`
+    <nav class="desktop"><a href="/pricing">Pricing</a></nav>
+    <nav class="mobile"><a href="/pricing">Pricing</a></nav>
+  `);
+  assert.deepEqual(findLabels(body, 200).map((c) => c.src), ['Pricing']);
+});
+
+test('加翻候選:巢狀互動元素只取最內層', () => {
+  const body = mount('<div role="menuitem"><a href="/x">Export</a></div>');
+  assert.deepEqual(findLabels(body, 200).map((c) => c.src), ['Export']);
+});
+
+test('加翻候選:太長的連結是內容,不是標籤', () => {
+  const body = mount('<a href="/x">Why undersea cables still carry the internet</a>');
+  assert.deepEqual(findLabels(body, 200), []);
+});
+
+test('加翻候選:sr-only 的文字不算標籤', () => {
+  const body = mount('<a href="/x"><span class="u-sr-only">Open menu</span></a>');
+  srOnly(body, '.u-sr-only');
+  assert.deepEqual(findLabels(body, 200), []);
+});
+
+test('加翻候選:上限會擋住病態頁面', () => {
+  const many = Array.from({ length: 30 }, (_, i) => `<a href="/x${i}">Item ${i}</a>`).join('');
+  const body = mount(many);
+  assert.equal(findLabels(body, 8).length, 8);
 });

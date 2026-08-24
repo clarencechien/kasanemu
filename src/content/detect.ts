@@ -48,7 +48,7 @@ export const MAX_UNIT_CHARS = 1000;
  * 卡片標題、文章裡的行內連結都是長文字,照翻;
  * 24 字以內的連結/按鈕當成 UI 元件,跳過。
  */
-const INTERACTIVE_SELECTOR =
+export const INTERACTIVE_SELECTOR =
   'a[href],button,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[role="switch"],[role="option"]';
 const UI_LABEL_MAX_CHARS = 24;
 
@@ -318,6 +318,61 @@ function walk(el: Element, ctx: WalkCtx): boolean {
 
   ctx.out.push({ el, role: roleOf(el, cs), src: text, geometryRisk: hasFloatDescendant(el) });
   return true;
+}
+
+/**
+ * 加翻層的候選:UI 標籤、選單項目、連結(docs/plan-annotation.md §6.2)。
+ *
+ * `isUiLabel()` 從「排除條件」升級成「分類器」—— 命中的不再丟掉,
+ * 而是收進這裡,交給另一種畫法(旁邊的貼片,不覆蓋)。
+ * **判定規則一字不改**:那個 24 字門檻是在真頁面上調出來的,
+ * 不要在同一次改動裡動兩件事。
+ */
+export function findLabels(
+  root: Element,
+  cap: number,
+  seen: (el: Element) => boolean = () => false,
+): Candidate[] {
+  const out: Candidate[] = [];
+  const seenText = new Set<string>();
+  const all = root.querySelectorAll(INTERACTIVE_SELECTOR);
+  for (const el of all) {
+    if (out.length >= cap) break;
+    /*
+     * 已經建過單元的先跳掉,再做任何 getComputedStyle。
+     * scan() 在動態頁面上跑得很勤,而這個函式對每個互動元素都要問樣式 ——
+     * 不先擋掉已知的,無限捲動的頁面會把時間全花在重算同一批導覽列上。
+     */
+    if (seen(el)) continue;
+    // 巢狀互動元素只取最內層(連結包按鈕、按鈕包連結)
+    if (el.querySelector(INTERACTIVE_SELECTOR) !== null) continue;
+    const cs = getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+    if (isScreenReaderOnly(el, cs)) continue;
+    const srOnly = new Set<Element>();
+    if (el.children.length > 0) {
+      const kids = el.querySelectorAll('*');
+      // 標籤裡不會有幾十層結構;掃到第 8 個就夠了,再多是成本不是正確性
+      for (let i = 0; i < kids.length && i < 8; i++) {
+        const kid = kids[i]!;
+        if (isScreenReaderOnly(kid, getComputedStyle(kid))) srOnly.add(kid);
+      }
+    }
+    const text = normalizeText(ownText(el, srOnly));
+    if (text.length === 0 || text.length > UI_LABEL_MAX_CHARS) continue;
+    if (!isMeaningfulText(text)) continue;
+    if (looksLikeTargetLang(text)) continue;
+    if (el.getClientRects().length === 0) continue;
+    /*
+     * 同一段文字在頁面上出現多次時只留第一個。
+     * 導覽列幾乎一定有一份隱藏的行動版複本,兩份都收進來會讓
+     * 同一個字被翻兩次,而且第二份的貼片會畫在螢幕外。
+     */
+    if (seenText.has(text)) continue;
+    seenText.add(text);
+    out.push({ el, role: 'label', src: text, geometryRisk: false });
+  }
+  return out;
 }
 
 export function findCandidates(root: Element, seen: (el: Element) => boolean): Candidate[] {

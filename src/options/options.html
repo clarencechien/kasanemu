@@ -123,6 +123,14 @@
         頁面若有透明的點擊攔截層可能誤判,那時關掉。
       </p>
       <label class="check"><input type="checkbox" data-k="hintLine" /> 顯示譯文左緣提示線</label>
+      <label class="check"><input type="checkbox" data-k="annotate" /> 加翻層:UI 標籤、選單、連結滑過時顯示譯文貼片</label>
+      <p class="hint">
+        24 字以內的按鈕與連結不會被疊層覆蓋 —— 譯文比原文短,盒子要嘛蓋掉項目之間的
+        間隔,要嘛讓原文從右邊露出來,兩種都難看。改成滑過去時在**旁邊**出一塊不透明
+        貼片,原文一個像素都不動。停留 0.2 秒才出現,所以橫掃導覽列不會沿路閃。
+        貼片不吃滑鼠事件,就算蓋到隔壁按鈕,那顆按鈕照樣點得到。
+      </p>
+      <label class="check"><input type="checkbox" data-k="annotateAltOnly" /> 加翻層只在按住 Alt 時出現</label>
       <label class="check"><input type="checkbox" data-k="forceAnnotation" /> 一律使用標註樣式</label>
       <p class="hint">
         疊層背景永遠不透明:底下是活文字不是死像素,半透明會讓兩層字互相干擾,

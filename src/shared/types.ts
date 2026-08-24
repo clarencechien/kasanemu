@@ -22,7 +22,15 @@ export interface UnitRequest {
   role: UnitRole;
 }
 
-export type UnitRole = 'heading' | 'body' | 'meta' | 'list' | 'cell';
+export type UnitRole = 'heading' | 'body' | 'meta' | 'list' | 'cell' | 'label';
+
+/**
+ * 疊層有兩種畫法(docs/plan-annotation.md):
+ *  - block:不透明覆蓋,取代原文,常駐 —— 內文段落
+ *  - label:不透明貼片,放在旁邊,暫態 —— UI 標籤、選單、連結
+ * 之後圖片裡的文字會是第三種 region,共用同一條 L0 → L1 管線。
+ */
+export type UnitKind = 'block' | 'label';
 
 /** API 回來、通過三層防線後的結果 (§6.3 / §6.4) */
 export interface UnitResult {
@@ -113,6 +121,13 @@ export interface Settings {
   weightOffset: 0 | 100 | 200;
   /** §4.7 提示線 */
   hintLine: boolean;
+  /**
+   * 加翻層:UI 標籤、選單、連結不覆蓋原文,改成 hover 時在旁邊顯示貼片。
+   * 見 docs/plan-annotation.md。
+   */
+  annotate: boolean;
+  /** 加翻層只在按住 Alt 時出現(不想被 hover 打擾的人) */
+  annotateAltOnly: boolean;
   /** 強制全站使用標註樣式 (§4.6) */
   forceAnnotation: boolean;
   cacheMode: CacheMode;
@@ -145,6 +160,8 @@ export const DEFAULT_SETTINGS: Settings = {
   occlusionCheck: true,
   weightOffset: 100,
   hintLine: true,
+  annotate: true,
+  annotateAltOnly: false,
   forceAnnotation: false,
   cacheMode: 'session',
   persistentCacheMB: 50,

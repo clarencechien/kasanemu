@@ -356,6 +356,7 @@ footer {
       <li><a href="#install">安裝</a></li>
       <li><a href="#first">第一次使用</a></li>
       <li><a href="#read">怎麼讀畫面</a></li>
+      <li><a href="#chips">導覽列與按鈕</a></li>
       <li><a href="#keys">快捷鍵</a></li>
       <li><a href="#tiers">檔位與帳單</a></li>
       <li><a href="#key">API key 與隱私</a></li>
@@ -621,6 +622,36 @@ footer {
       </div>
     </section>
 
+    <section id="chips" class="mark-l0">
+      <div class="eyebrow">加翻</div>
+      <h2>導覽列與按鈕:滑上去才翻</h2>
+      <div class="stack-block">
+        <p>
+          24 字以內的按鈕、分頁、選單、連結<strong>不會被疊層蓋住</strong>。
+          理由很實際:譯文比原文短,盒子要嘛蓋掉項目之間的間隔、把整條導覽列擠歪,
+          要嘛讓原文從右邊露出來變成「聯絡業務ales」。兩種都難看。
+        </p>
+        <p>
+          所以它們走另一條路 —— <strong>滑上去停 0.2 秒,譯文出現在旁邊</strong>,
+          原文一個像素都不動。移開就消失。
+        </p>
+        <ul class="plain">
+          <li><strong>橫掃不會閃。</strong>要停留才出現,所以滑鼠掃過一整排導覽列不會沿路冒出貼片。</li>
+          <li><strong>第二個開始不用等。</strong>一旦有貼片開著,移到隔壁項目會立刻換。</li>
+          <li><strong>點得到。</strong>貼片和疊層一樣不吃滑鼠事件,就算蓋到隔壁按鈕,那顆按鈕照樣點得到。</li>
+          <li><strong>按住 <kbd>Alt</kbd> 全部顯示。</strong>和掃視疊層同一顆鍵,一眼看完整條導覽列。</li>
+          <li><strong>鍵盤也有。</strong>用 Tab 移到連結上,貼片一樣會出現。</li>
+        </ul>
+        <div class="note">
+          <span class="k">花費怎麼算</span>
+          貼片是<strong>注意力驅動</strong>的:沒停留過的標籤一毛不花。
+          停留超過 0.6 秒才會送 L1,而且是把<strong>同一組</strong>(整條導覽列)
+          一起送 —— 一次批次比十次單筆便宜,滑到第二個時譯文已經在了。
+          不想被打擾的話,設定裡可以改成「只在按住 Alt 時出現」,或整個關掉。
+        </div>
+      </div>
+    </section>
+
     <section id="keys" class="mark-l1">
       <div class="eyebrow">操作</div>
       <h2>快捷鍵</h2>
@@ -633,7 +664,7 @@ footer {
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>T</kbd></td><td>在這個網域啟用 / 關閉疊層翻譯</td></tr>
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd></td><td>切換「全開」/「點閱」</td></tr>
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd></td><td>翻譯這一頁;也用來把整頁失敗的區塊全部重試</td></tr>
-            <tr><td class="keycell">按住 <kbd>Alt</kbd></td><td>暫時切成標註樣式,掃視哪些被翻了</td></tr>
+            <tr><td class="keycell">按住 <kbd>Alt</kbd></td><td>掃視:疊層切成標註樣式,同時顯示所有 UI 標籤的譯文貼片</td></tr>
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></td><td>抽樣面板:原文 / L0 / L1 三欄並列(需先在設定開 debug mode)</td></tr>
           </tbody>
         </table>
@@ -740,7 +771,7 @@ footer {
       <div class="stack-block">
         <h3>目前確定不完美的地方</h3>
         <ul class="plain">
-          <li>很短的 UI 標籤(按鈕、分頁名稱)刻意不翻 —— 蓋壞了比沒翻更糟。</li>
+          <li>很短的 UI 標籤不用疊層蓋,改成滑過去顯示貼片(見上面「導覽列與按鈕」)。</li>
           <li>行距壓得很緊的大標,偶爾第一行頂端或 g、p 的尾巴會露出來一點。</li>
           <li>非常動態的頁面(輪播、展開動畫)在動的當下,疊層可能慢半拍才跟上。</li>
           <li>free 檔位在長頁面上會明顯排隊,那是免費層的速率限制,不是當掉。</li>
@@ -752,6 +783,7 @@ footer {
           <li><strong>位置類的錯</strong>:疊層蓋錯地方、蓋掉圖片、跟著捲動抖動。截圖 + log。</li>
           <li><strong>速度體感</strong>:你捲到的時候,那一段翻好了嗎?還是還在等?</li>
           <li><strong>L0 到 L1 的替換</strong>:字換掉的那一瞬間會不會打斷你閱讀?</li>
+          <li><strong>加翻貼片</strong>:0.2 秒的等待感覺對嗎?貼片出現的位置擋到你要看的東西了嗎?</li>
           <li><strong>日文 / 韓文站</strong>:有翻嗎?來源語言判對了嗎?(log 裡的 <code>sourceLang</code> 會寫)</li>
           <li><strong>哪些站完全不能用</strong>:網址就好。</li>
         </ul>
