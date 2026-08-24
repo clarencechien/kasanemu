@@ -218,6 +218,7 @@ function scheduleFlush(alsoScan = false): void {
  */
 function auditPositions(): void {
   if (!layer || !running) return;
+  layer.syncScroll();
   // 用**疊層畫在哪**來決定要驗誰,而不是來源元素現在在哪:
   // 錯位的症狀正是「來源元素跑掉了,疊層還留在視口裡」,
   // 只驗 inView 的來源元素會漏掉那些。
@@ -290,7 +291,7 @@ function flush(): void {
   if (doScan) scan();
 
   // ---- 讀取階段:只讀,不寫
-  layer.refreshOrigin();
+  layer.syncScroll();
   for (const u of units) {
     if (u.tier === 'skipped') continue;
     measureUnit(u, settings.overlayBleedPx);
@@ -868,7 +869,9 @@ async function start(): Promise<void> {
    * 分頁在背景時跳過。
    */
   settleTimer = window.setInterval(() => {
-    if (!document.hidden) auditPositions();
+    if (document.hidden) return;
+    auditPositions();
+    void catchUpL0();
   }, 900);
   // §3.4 字型載入會改變所有 rect,完成後強制重算一次
   document.fonts.ready.then(relayout);
@@ -911,33 +914,24 @@ function driftOf(u: Unit): { dx: number; dy: number } {
 function scrollSync(): void {
   scrollRaf = 0;
   if (!layer || !running) return;
-  const vis = [...units].filter((u) => u.box && u.inView && u.tier !== 'skipped');
-  if (vis.length === 0) {
-    layer.setShift(0, 0);
-    return;
-  }
-  const a = driftOf(vis[0]!);
-  const b = vis.length > 1 ? driftOf(vis[vis.length - 1]!) : a;
-  const consistent = Math.abs(a.dx - b.dx) < 1 && Math.abs(a.dy - b.dy) < 1;
-  const moved = Math.abs(a.dx) > 0.5 || Math.abs(a.dy) > 0.5;
-  if (consistent) {
-    layer.setShift(a.dx, a.dy);
-    if (moved) noteShift(a.dx, a.dy);
-    return;
-  }
-  layer.setShift(0, 0);
-  if (Math.abs(a.dx) > 2 || Math.abs(a.dy) > 2 || Math.abs(b.dx) > 2 || Math.abs(b.dy) > 2) {
-    diag('info', 'scroll-drift', { a, b, ids: [vis[0]!.id, vis[vis.length - 1]!.id] });
+  // 疊層跟上捲動:一次 transform 寫入,沒有盒子要重算
+  layer.syncScroll();
+  // 再看內容自己有沒有移動(sticky、lazy load、內容插入)
+  const probe = [...units].find((u) => u.box && u.inView && u.tier !== 'skipped');
+  if (!probe) return;
+  const d = driftOf(probe);
+  if (Math.abs(d.dx) > 2 || Math.abs(d.dy) > 2) {
+    noteDrift(probe.id, d);
     scheduleFlush();
   }
 }
 
-/** 平移補償只在量級變化時記一筆,不然每 frame 一筆會把 log 洗掉 */
-function noteShift(dx: number, dy: number): void {
-  const bucket = `${Math.round(dx / 20)},${Math.round(dy / 20)}`;
+/** 只在量級變化時記一筆,不然捲動時每 frame 一筆會把 log 洗掉 */
+function noteDrift(id: string, d: { dx: number; dy: number }): void {
+  const bucket = `${id}:${Math.round(d.dx / 20)},${Math.round(d.dy / 20)}`;
   if (bucket === lastShiftBucket) return;
   lastShiftBucket = bucket;
-  diag('info', 'layer-shift', { dx: Math.round(dx), dy: Math.round(dy) });
+  diag('info', 'scroll-drift', { id, dx: Math.round(d.dx), dy: Math.round(d.dy) });
 }
 
 function onScroll(): void {
@@ -1118,6 +1112,20 @@ async function translatePage(): Promise<void> {
   updateHud();
   scheduleFlush(true);
   void intake();
+}
+
+/**
+ * 語言包在頁面載入後才就緒的情況:一開始的區塊全部 l0-failed(needs-gesture),
+ * 只能空等 L1 —— 診斷 log 裡首屏 6129ms 就是這樣來的。
+ * L0 一旦變成 ready,把卡住的補翻。
+ */
+async function catchUpL0(): Promise<void> {
+  if (!running || !usesL0(effective) || l0?.state !== 'ready') return;
+  const stuck = [...units].filter(
+    (u) => u.tier === 'l0-failed' && u.l1Text === undefined && u.maxChars > 0,
+  );
+  if (stuck.length === 0) return;
+  await runL0(stuck);
 }
 
 /** popup 下載完語言包後,把停在 pending / l0-failed 的區塊補翻 */

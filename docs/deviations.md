@@ -583,3 +583,53 @@ R 段做的補償量的是 **host 自己**有沒有移動。但回報的「滾�
 §3.4 列得出來的事件(resize、mutation、字型)之外,永遠有下一個來源
 (transform 動畫、`<img>`、背景圖、輪播、JS 改 style)。
 週期性稽核是兜底,事件監聽只是讓修正更快。
+
+## AA. 拿掉原點:host 改 `position: fixed`,盒子用 document 座標
+
+build 13 的診斷 log 是決定性的一份:3.5 分鐘只有 4 筆 `position-drift`,
+其中兩筆是真的元素位移(dy 452 / 502),其餘乾乾淨淨 ——
+**而畫面明顯是歪的。**
+
+也就是說座標稽核對真正的病因是瞎的。原因很直接:
+
+- 稽核比的是「疊層記錄的 document 座標」對「元素現在的 document 座標」
+- 但畫到螢幕上還要再減一個**原點**(`host.getBoundingClientRect() + scroll`)
+- **原點從來沒有被任何機制驗證過**,而且只在重排時算一次
+
+原點一錯,整片一起歪,而稽核照樣回報一切正常。R / X 段兩次補償都在猜
+「是誰把 host 弄歪的」(body 的 transform?smooth-scroll wrapper?),
+猜錯了兩次。
+
+這次不猜了,**把原點整個拿掉**:
+
+| 之前 | 現在 |
+|---|---|
+| host `position: absolute` 掛在 body / html | host **`position: fixed`**,錨在視窗 |
+| 盒子 left = docX − originX | 盒子 left = **docX**(直接用 document 座標) |
+| 捲動時猜原點有沒有跑掉 | layer 每個捲動 frame `translate(−scrollX, −scrollY)` |
+
+document 座標 (X, Y) 於是永遠落在視窗的 (X − scrollX, Y − scrollY)。
+**沒有原點可以過期,因為沒有原點了。** body 的 margin、position、transform、
+smooth-scroll wrapper 一律影響不到 fixed 的 host。
+
+代價:每個捲動 frame 一次 transform 寫入(§10.2 的「捲動零開銷」在 R 段
+就已經放棄了,這裡沒有變得更貴 —— 反而少了兩次 rect 讀取)。
+留下來的哨兵檢查只負責一件事:**內容自己在動**(sticky、lazy load、插入),
+那個要重排,不是平移。
+
+## AB. L0 晚到造成的 6 秒首屏
+
+同一份 log:
+
+```
+08:27:32 l0-done {"asked":12,"failed":12,"state":"needs-gesture"}
+08:28:00 l0-done {"asked":2, "failed":0, "state":"ready"}
+首屏:6129ms
+```
+
+一開始的 12 個區塊全部 L0 失敗(語言包還沒下載),只能空等 L1 ——
+L0 打底的意義完全沒發揮到。而 L0 後來就緒了,那 12 個卻沒人回頭補。
+
+原本只有 popup 按下下載鈕才會觸發補翻(`l0-ready` 訊息)。
+現在週期性 tick 也會檢查:L0 是 ready 而且還有 `l0-failed` 的區塊沒等到 L1,
+就補翻一次。

@@ -193,8 +193,8 @@ export class OverlayLayer {
   private root: ShadowRoot;
   private layer: HTMLDivElement;
   private panel: HTMLDivElement | null = null;
-  private originX = 0;
-  private originY = 0;
+  private scrollX = 0;
+  private scrollY = 0;
   private reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   constructor() {
@@ -205,7 +205,7 @@ export class OverlayLayer {
     // host 自身的樣式用 inline + !important,頁面 CSS 打不進來
     this.host.setAttribute(
       'style',
-      'all: initial !important; position: absolute !important; left: 0 !important; top: 0 !important;' +
+      'all: initial !important; position: fixed !important; left: 0 !important; top: 0 !important;' +
         'width: 0 !important; height: 0 !important; margin: 0 !important; padding: 0 !important;' +
         'pointer-events: none !important; z-index: 2147483000 !important;',
     );
@@ -221,35 +221,33 @@ export class OverlayLayer {
      * 那些都會讓 host 自己跟著跑掉。html 幾乎不會被這樣對待。
      */
     (document.documentElement ?? document.body).appendChild(this.host);
-    this.refreshOrigin();
+    this.syncScroll();
   }
 
   /**
-   * body 可能有 margin / position / transform,host 的實際原點不一定是
-   * document (0,0)。每次重排讀一次,之後所有盒子用 document 座標減掉它。
+   * 盒子直接用 **document 座標**,由 layer 的 transform 減掉捲動量。
+   *
+   * 之前的做法是量 host 自己的原點再相減,但那個原點只在重排時算一次,
+   * 而且**沒有任何機制驗證它** —— 座標稽核比的是「疊層記錄的 document 座標」
+   * 對「元素現在的 document 座標」,兩邊都對得上,原點錯了照樣說一切正常。
+   * 整片歪掉而 log 乾乾淨淨,就是這麼來的。
+   *
+   * 現在 host 是 position: fixed(錨在視窗,不管 body / html 被做了什麼:
+   * margin、transform、smooth-scroll wrapper 都影響不到它),
+   * layer 每個捲動 frame 平移 -scrollX / -scrollY。
+   * document 座標 (X, Y) 於是永遠落在視窗的 (X - scrollX, Y - scrollY)。
+   * 沒有原點可以過期,因為沒有原點了。
    */
-  refreshOrigin(): void {
-    const r = this.host.getBoundingClientRect();
-    this.originX = r.left + window.scrollX;
-    this.originY = r.top + window.scrollY;
-    this.layer.style.transform = '';
+  syncScroll(): void {
+    const x = window.scrollX;
+    const y = window.scrollY;
+    if (x === this.scrollX && y === this.scrollY) return;
+    this.scrollX = x;
+    this.scrollY = y;
+    this.layer.style.transform = `translate(${-x}px, ${-y}px)`;
   }
 
-  /**
-   * 整片平移補償。
-   *
-   * 頁面若用 transform 做平滑捲動(Webflow / Lenis 那一類),內容會相對
-   * 疊層整片移動,而盒子的 left/top 是重排當下算的 —— 於是整片疊層跑到
-   * header 上。之前這裡量的是 **host 自己**有沒有移動,但真正在動的是
-   * 「內容相對 host」,量錯了對象。
-   *
-   * 現在由呼叫端量兩個哨兵單元(頭與尾)實際位移多少:兩者一致就是整片
-   * 在動,直接平移 layer 補回去,**不重算任何盒子**。一次 transform 寫入。
-   */
-  setShift(dx: number, dy: number): void {
-    const v = Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5 ? '' : `translate(${dx}px, ${dy}px)`;
-    if (this.layer.style.transform !== v) this.layer.style.transform = v;
-  }
+
 
   setMode(mode: DisplayMode): void {
     this.layer.classList.toggle('mode-full', mode === 'full');
@@ -330,8 +328,8 @@ export class OverlayLayer {
     const by = unit.bleed?.y ?? 0;
     const [pt, pr, pb, pl] = s.padding;
     const vars: Record<string, string> = {
-      '--ksnm-x': `${unit.rect.left - this.originX - bx}px`,
-      '--ksnm-y': `${unit.rect.top - this.originY - by}px`,
+      '--ksnm-x': `${unit.rect.left - bx}px`,
+      '--ksnm-y': `${unit.rect.top - by}px`,
       '--ksnm-w': `${unit.rect.width + bx * 2}px`,
       '--ksnm-h': `${unit.rect.height + by * 2}px`,
       '--ksnm-bg': s.background ?? 'rgba(230, 241, 251, 0.94)',
@@ -369,8 +367,8 @@ export class OverlayLayer {
     h.className = `hint ${cls}`;
     const top = unit.firstRectTop;
     const height = Math.max(4, unit.rect.top + unit.rect.height - top);
-    h.style.setProperty('--ksnm-hx', `${unit.rect.left - this.originX - 8}px`);
-    h.style.setProperty('--ksnm-hy', `${top - this.originY}px`);
+    h.style.setProperty('--ksnm-hx', `${unit.rect.left - 8}px`);
+    h.style.setProperty('--ksnm-hy', `${top}px`);
     h.style.setProperty('--ksnm-hh', `${height}px`);
     h.style.setProperty('--ksnm-hint', hintColor(unit.style.color));
     h.style.setProperty('--ksnm-warn', '#c0392b');
