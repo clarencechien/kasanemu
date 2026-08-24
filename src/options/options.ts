@@ -118,9 +118,24 @@ function renderCheck(check: ModelCheck | undefined): void {
   }
 }
 
+/** feature.md §3.4 不翻清單:一行一個,存成陣列 */
+function bindNoTranslate(): void {
+  const box = document.querySelector<HTMLTextAreaElement>('#no-translate');
+  if (!box) return;
+  box.value = settings.noTranslateTerms.join('\n');
+  box.addEventListener('change', () => {
+    const terms = box.value
+      .split('\n')
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+    void save({ noTranslateTerms: terms });
+  });
+}
+
 async function main(): Promise<void> {
   settings = await ask<Settings>({ type: 'get-settings' });
   renderSimpleFields();
+  bindNoTranslate();
   renderTiers();
   const stored = await chrome.storage.local.get('modelCheck');
   renderCheck(stored['modelCheck'] as ModelCheck | undefined);

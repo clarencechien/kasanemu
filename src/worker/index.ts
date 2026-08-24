@@ -3,7 +3,7 @@ import { getDomainState, getSettings, resolveTier, setDomainState, setSettings }
 import { TIER_ORDER, isBlockedModel } from '../shared/models';
 import { setDebug, warn } from '../shared/log';
 import { listModels } from './gemini';
-import { drain, dropPage, dropTab, enqueue } from './scheduler';
+import { cacheProbe, drain, dropPage, dropTab, enqueue, reprioritize } from './scheduler';
 import { totals } from './budget';
 import * as cache from './cache';
 
@@ -58,7 +58,19 @@ chrome.runtime.onMessage.addListener((raw: ToWorker, sender, reply) => {
           break;
         }
         case 'enqueue': {
-          if (tabId >= 0) await enqueue(tabId, raw.pageKey, raw.tier, raw.units);
+          if (tabId >= 0) {
+            await enqueue(tabId, raw.pageKey, raw.tier, raw.pipeline, raw.units, raw.priorities ?? {});
+          }
+          reply({ ok: true });
+          break;
+        }
+        case 'cache-probe': {
+          // feature.md §4.6 / D23:純讀,不碰保險絲也不排佇列
+          reply(await cacheProbe(raw.tier, raw.units));
+          break;
+        }
+        case 'reprioritize': {
+          if (tabId >= 0) await reprioritize(tabId, raw.pageKey, raw.priorities);
           reply({ ok: true });
           break;
         }

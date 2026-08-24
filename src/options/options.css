@@ -40,6 +40,7 @@ section {
 }
 label { display: block; margin-bottom: 10px; font-size: 13px; }
 label.check { display: flex; align-items: center; gap: 6px; }
+textarea,
 input[type="text"], input[type="password"], input[type="number"], select {
   display: block;
   width: 100%;
@@ -91,3 +92,5 @@ input.bad { border-color: var(--bad); }
 .saved.show { opacity: 1; }
 a { color: inherit; }
 code { font-size: 12px; }
+
+textarea { resize: vertical; font: 13px/1.5 ui-monospace, monospace; }

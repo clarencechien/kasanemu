@@ -1,7 +1,5 @@
-import type { UnitRole } from '../shared/types';
+import type { UnitRole, UnitTier } from '../shared/types';
 import type { ProbedStyle } from './styleprobe';
-
-export type UnitStatus = 'new' | 'queued' | 'done' | 'failed' | 'skipped';
 
 export interface DocRect {
   left: number;
@@ -29,9 +27,26 @@ export interface Unit {
   rect: DocRect;
   /** §4.7 提示線對齊第一個 client rect 的頂端 */
   firstRectTop: number;
-  status: UnitStatus;
+  /** feature.md §4.1 區塊狀態機 */
+  tier: UnitTier;
   failReason?: string;
-  translation?: string;
+  /** L0(Translator API)的譯文 */
+  l0Text?: string;
+  /** L1(Gemini / Gemma)的譯文 */
+  l1Text?: string;
+  /** 已排入 L1 佇列 */
+  l1Queued: boolean;
+  /** feature.md §4.2 排入佇列的時間,用來判斷是否卡住 */
+  upgradeQueuedAt?: number;
+  /**
+   * feature.md §4.4 / D19 字級在 L0 完成時鎖定,L1 替換不重算分組。
+   * 0 = 尚未鎖定(single 模式一直是 0,沿用 Phase 1 的每次重算)。
+   */
+  lockedFontSize: number;
+  /** feature.md §4.2 第 2 條:進入可見區的時間戳,用來算停留時間 (D21) */
+  inViewSince?: number;
+  /** feature.md §4.3 等待替換的 L1 譯文(hover 中或剛捲動時延後) */
+  pendingSwap?: string;
   /** §7.1 IntersectionObserver 決定翻譯順序 */
   inView: boolean;
   /** §4.4 到 0.80 仍容不下 → 允許垂直溢出,debug mode 標記 */
@@ -42,3 +57,18 @@ export interface Unit {
 
 export const STEPS = [1.0, 0.95, 0.9, 0.85, 0.8] as const;
 export const LETTER_SPACING_EM = 0.015;
+
+/** 目前該顯示哪一份譯文。L1 在就用 L1,否則退回 L0。 */
+export function activeText(u: Unit): string | undefined {
+  return u.l1Text ?? u.l0Text;
+}
+
+/** 有沒有東西可以畫 */
+export function hasText(u: Unit): boolean {
+  return activeText(u) !== undefined;
+}
+
+/** 疊層實際採用的字級:鎖定後不再跟著分組變動 (§4.4) */
+export function effectiveFontSize(u: Unit): number {
+  return u.lockedFontSize > 0 ? u.lockedFontSize : u.style.fontSizePx * u.scale;
+}

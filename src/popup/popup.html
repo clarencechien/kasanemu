@@ -17,6 +17,23 @@
     </section>
 
     <section>
+      <div class="label">管線(本網域)</div>
+      <div class="row tiers">
+        <label><input type="radio" name="pipeline" value="single" /> single</label>
+        <label><input type="radio" name="pipeline" value="progressive" /> progressive</label>
+        <label><input type="radio" name="pipeline" value="l0-only" /> l0-only</label>
+      </div>
+      <div id="l0-status" class="note"></div>
+      <button id="l0-download" class="hidden">下載 L0 語言包</button>
+    </section>
+
+    <section>
+      <div class="label">本頁階層</div>
+      <div id="page-tiers" class="mono">—</div>
+      <div id="page-warn" class="warn"></div>
+    </section>
+
+    <section>
       <div class="label">檔位(本網域)</div>
       <div class="row tiers">
         <label><input type="radio" name="tier" value="quality" /> quality</label>
@@ -42,6 +59,8 @@
           <tr class="thoughts"><td>thoughts</td><td id="tk-thoughts-d">0</td><td id="tk-thoughts-m">0</td></tr>
         </tbody>
       </table>
+      <div class="label">本月按管線(A/B 用)</div>
+      <table id="by-pipeline"><tbody></tbody></table>
       <div id="fuse" class="note"></div>
       <div id="notice" class="note"></div>
     </section>

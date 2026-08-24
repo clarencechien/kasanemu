@@ -1,12 +1,15 @@
-import type { ToWorker } from '../shared/messages';
+import type { PageStats, ToWorker } from '../shared/messages';
 import { TIERS, type Tier } from '../shared/models';
-import type { DomainState, Settings } from '../shared/types';
+import type { DomainState, Pipeline, PipelineSpend, Settings, SpendDay } from '../shared/types';
+import { L0Engine, translatorSupported } from '../content/l0';
+import { toTranslatorTarget } from '../content/lang';
 
 interface Totals {
   todayUsd: number;
   monthUsd: number;
-  today: { promptTokens: number; outputTokens: number; thoughtsTokens: number; calls: number };
+  today: SpendDay;
   monthTokens: { prompt: number; output: number; thoughts: number };
+  monthByPipeline: Partial<Record<Pipeline, PipelineSpend>>;
   degraded?: string;
 }
 
@@ -17,16 +20,23 @@ function ask<T>(msg: ToWorker): Promise<T> {
 }
 
 let host = '';
+let tabId = -1;
 let state: DomainState;
 let settings: Settings;
+let stats: PageStats | null = null;
 
-async function activeHost(): Promise<string> {
+async function activeTab(): Promise<chrome.tabs.Tab | null> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.url) return '';
+  return tab ?? null;
+}
+
+/** feature.md §5.2 popup 直接向 content script 問本頁的階層統計 */
+async function fetchStats(): Promise<PageStats | null> {
+  if (tabId < 0) return null;
   try {
-    return new URL(tab.url).hostname;
+    return (await chrome.tabs.sendMessage(tabId, { type: 'get-page-stats' })) as PageStats;
   } catch {
-    return '';
+    return null; // 這一頁沒有 content script(擴充頁、chrome:// 之類)
   }
 }
 
@@ -40,7 +50,69 @@ function renderState(): void {
   for (const el of document.querySelectorAll<HTMLInputElement>('input[name=tier]')) {
     el.checked = el.value === state.tier;
   }
+  for (const el of document.querySelectorAll<HTMLInputElement>('input[name=pipeline]')) {
+    el.checked = el.value === state.pipeline;
+  }
   $('tier-note').textContent = `${TIERS[state.tier].modelId} — ${TIERS[state.tier].note}`;
+}
+
+/** feature.md §6:不支援時要明確告知,不是靜靜地什麼都沒發生 */
+function renderL0(): void {
+  const el = $('l0-status');
+  const btn = $<HTMLButtonElement>('l0-download');
+  const supported = stats?.l0.supported ?? translatorSupported();
+  if (!supported) {
+    el.textContent = 'L0 不可用:這個環境沒有 Translator API(需桌機版 Chrome 138+)';
+    btn.classList.add('hidden');
+    return;
+  }
+  if (!stats) {
+    el.textContent = 'L0:這一頁沒有 content script';
+    btn.classList.add('hidden');
+    return;
+  }
+  const { state: s, sourceLang, detail } = stats.l0;
+  const pair = `${sourceLang} → ${toTranslatorTarget(settings.targetLang)}`;
+  const label: Record<string, string> = {
+    idle: `L0 ${pair}:尚未建立`,
+    ready: `L0 ${pair}:就緒`,
+    'needs-gesture': `L0 ${pair}:需要下載語言包`,
+    downloading: `L0 ${pair}:${detail}`,
+    unsupported: `L0 ${pair}:${detail || '這台機器沒有這個語言對'}`,
+    failed: `L0 ${pair}:${detail}`,
+  };
+  el.textContent = label[s] ?? `L0 ${pair}:${s}`;
+  // §3.2 規則 2:downloadable 的 create() 需要 user gesture,所以按鈕在這裡
+  btn.classList.toggle('hidden', !(s === 'needs-gesture' || s === 'idle' || s === 'failed'));
+  if (stats.effective !== stats.pipeline) {
+    el.textContent += `(已退回 ${stats.effective})`;
+  }
+}
+
+function renderPageTiers(): void {
+  const el = $('page-tiers');
+  const warn = $('page-warn');
+  if (!stats) {
+    el.textContent = '—';
+    warn.textContent = '';
+    return;
+  }
+  const c = stats.counts;
+  const first = stats.firstPaintMs >= 0 ? `${stats.firstPaintMs}ms` : '—';
+  el.textContent =
+    `L0 ${c.l0} · L1 ${c.l1} · 失敗 ${c.failed + c['l1-failed']} · ` +
+    `待譯 ${c.pending + c['l0-failed']} · 跳過 ${c.skipped}\n首屏 ${first}` +
+    (stats.swapsTotal > 0 ? ` · 替換 ${stats.swapsTotal}(離屏 ${stats.swapsOffscreen})` : '');
+  // feature.md §5.2:L1 = 0 且佇列非空超過 10 秒就要明確警示,不要靜靜地不動
+  if (stats.stalled) {
+    warn.textContent = `L1 一個都沒回來,已等 ${Math.round(
+      stats.stalledMs / 1000,
+    )} 秒 —— 升級管線可能死了(key、預算、模型 ID、429)`;
+  } else if (c.l1 === 0 && c.l0 > 0 && stats.effective === 'progressive') {
+    warn.textContent = '整頁還停在 L0(提示線全是虛線)';
+  } else {
+    warn.textContent = '';
+  }
 }
 
 function fmtTwd(usd: number): string {
@@ -58,6 +130,23 @@ function renderSpend(t: Totals): void {
   $('tk-prompt-m').textContent = t.monthTokens.prompt.toLocaleString();
   $('tk-output-m').textContent = t.monthTokens.output.toLocaleString();
   $('tk-thoughts-m').textContent = t.monthTokens.thoughts.toLocaleString();
+
+  // feature.md §2.2:按模式分開累計,兩週 A/B 才有數字可比
+  const body = $('by-pipeline').querySelector('tbody')!;
+  body.textContent = '';
+  const rows: Array<[Pipeline, PipelineSpend | undefined]> = [
+    ['single', t.monthByPipeline.single],
+    ['progressive', t.monthByPipeline.progressive],
+    ['l0-only', t.monthByPipeline['l0-only']],
+  ];
+  for (const [name, v] of rows) {
+    const tr = document.createElement('tr');
+    const tokens = v ? v.promptTokens + v.outputTokens + v.thoughtsTokens : 0;
+    tr.innerHTML =
+      `<td>${name}</td><td>${tokens.toLocaleString()}</td>` +
+      `<td>${v ? fmtTwd(v.usd) : 'NT$0.00'}</td>`;
+    body.appendChild(tr);
+  }
 
   const twdToday = t.todayUsd * (settings.usdToTwd || 32);
   const left = settings.globalDailyTWD - twdToday;
@@ -85,13 +174,49 @@ async function renderNotice(): Promise<void> {
 async function refresh(): Promise<void> {
   settings = await ask<Settings>({ type: 'get-settings' });
   state = await ask<DomainState>({ type: 'get-domain-state', host });
+  stats = await fetchStats();
   renderState();
+  renderL0();
+  renderPageTiers();
   renderSpend(await ask<Totals>({ type: 'get-spend' }));
   await renderNotice();
 }
 
+/**
+ * feature.md §3.2 規則 2 + 規則 3:語言包下載必須發生在 user gesture 裡,
+ * 而且要有進度回報,否則使用者以為卡住。
+ * 這是整個 feature 唯一必須待在 popup 的一段邏輯。
+ */
+async function downloadL0(): Promise<void> {
+  const btn = $<HTMLButtonElement>('l0-download');
+  const el = $('l0-status');
+  const src = stats?.l0.sourceLang ?? settings.l0SourceLang;
+  const engine = new L0Engine(src, toTranslatorTarget(settings.targetLang));
+  btn.disabled = true;
+  const tick = window.setInterval(() => {
+    el.textContent = engine.detail || '下載中…';
+  }, 200);
+  const ok = await engine.ensure(true);
+  clearInterval(tick);
+  btn.disabled = false;
+  el.textContent = ok ? `L0 ${src} → ${toTranslatorTarget(settings.targetLang)}:就緒` : engine.detail;
+  if (ok) {
+    btn.classList.add('hidden');
+    // 語言包是瀏覽器層級的資源,下載完就叫頁面重試卡住的區塊
+    if (tabId >= 0) await chrome.tabs.sendMessage(tabId, { type: 'l0-ready' }).catch(() => undefined);
+    window.setTimeout(() => void refresh(), 400);
+  }
+  engine.destroy();
+}
+
 async function main(): Promise<void> {
-  host = await activeHost();
+  const tab = await activeTab();
+  tabId = tab?.id ?? -1;
+  try {
+    host = tab?.url ? new URL(tab.url).hostname : '';
+  } catch {
+    host = '';
+  }
   $('host').textContent = host || '(無法作用的頁面)';
   await refresh();
 
@@ -123,6 +248,20 @@ async function main(): Promise<void> {
       renderState();
     });
   }
+
+  for (const el of document.querySelectorAll<HTMLInputElement>('input[name=pipeline]')) {
+    el.addEventListener('change', async () => {
+      state = await ask<DomainState>({
+        type: 'set-domain-state',
+        host,
+        patch: { pipeline: el.value as Pipeline },
+      });
+      renderState();
+      window.setTimeout(() => void refresh(), 300);
+    });
+  }
+
+  $('l0-download').addEventListener('click', () => void downloadL0());
 
   $('clear-cache').addEventListener('click', async () => {
     await ask({ type: 'clear-cache' });

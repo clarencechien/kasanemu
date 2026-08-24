@@ -7,3 +7,4 @@ dist/
 # 字型是產生物,不進版控(npm run fonts 重建)
 assets/fonts/*.woff2
 assets/fonts/.src/
+release/

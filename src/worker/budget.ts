@@ -1,6 +1,6 @@
 import type { TierSpec } from '../shared/models';
 import { monthKey, todayKey } from '../shared/settings';
-import type { Settings, SpendDay, SpendLedger } from '../shared/types';
+import type { Pipeline, PipelineSpend, Settings, SpendDay, SpendLedger } from '../shared/types';
 import { warn } from '../shared/log';
 import type { Usage } from './gemini';
 
@@ -25,17 +25,33 @@ async function putLedger(l: SpendLedger): Promise<void> {
   await chrome.storage.local.set({ [LEDGER_KEY]: l });
 }
 
-export async function recordSpend(spec: TierSpec, u: Usage): Promise<void> {
+export async function recordSpend(
+  spec: TierSpec,
+  u: Usage,
+  pipeline: Pipeline = 'single',
+): Promise<void> {
   try {
     const l = await getLedger();
     const day = todayKey();
     const cur: SpendDay =
       l.days[day] ?? { day, promptTokens: 0, outputTokens: 0, thoughtsTokens: 0, usd: 0, calls: 0 };
+    const usd = usdOf(spec, u);
     cur.promptTokens += u.prompt;
     cur.outputTokens += u.output;
     cur.thoughtsTokens += u.thoughts;
-    cur.usd += usdOf(spec, u);
+    cur.usd += usd;
     cur.calls += 1;
+    // feature.md §2.2:兩週的 A/B 要有數字可比,所以按模式分開累計
+    const byPipeline = cur.byPipeline ?? {};
+    const slot: PipelineSpend =
+      byPipeline[pipeline] ?? { promptTokens: 0, outputTokens: 0, thoughtsTokens: 0, usd: 0, calls: 0 };
+    slot.promptTokens += u.prompt;
+    slot.outputTokens += u.output;
+    slot.thoughtsTokens += u.thoughts;
+    slot.usd += usd;
+    slot.calls += 1;
+    byPipeline[pipeline] = slot;
+    cur.byPipeline = byPipeline;
     l.days[day] = cur;
     // 只留 70 天,ledger 不該無限長大
     const keys = Object.keys(l.days).sort();
@@ -59,6 +75,8 @@ export interface Totals {
   monthUsd: number;
   today: SpendDay;
   monthTokens: { prompt: number; output: number; thoughts: number };
+  /** feature.md §2.2 A/B 用:本月按模式分列 */
+  monthByPipeline: Partial<Record<Pipeline, PipelineSpend>>;
   degraded?: string;
 }
 
@@ -70,14 +88,33 @@ export async function totals(): Promise<Totals> {
     l.days[day] ?? { day, promptTokens: 0, outputTokens: 0, thoughtsTokens: 0, usd: 0, calls: 0 };
   let monthUsd = 0;
   const monthTokens = { prompt: 0, output: 0, thoughts: 0 };
+  const monthByPipeline: Partial<Record<Pipeline, PipelineSpend>> = {};
   for (const [k, d] of Object.entries(l.days)) {
     if (!k.startsWith(mk)) continue;
     monthUsd += d.usd;
     monthTokens.prompt += d.promptTokens;
     monthTokens.output += d.outputTokens;
     monthTokens.thoughts += d.thoughtsTokens;
+    for (const [pipe, v] of Object.entries(d.byPipeline ?? {})) {
+      const key = pipe as Pipeline;
+      const slot =
+        monthByPipeline[key] ?? { promptTokens: 0, outputTokens: 0, thoughtsTokens: 0, usd: 0, calls: 0 };
+      slot.promptTokens += v.promptTokens;
+      slot.outputTokens += v.outputTokens;
+      slot.thoughtsTokens += v.thoughtsTokens;
+      slot.usd += v.usd;
+      slot.calls += v.calls;
+      monthByPipeline[key] = slot;
+    }
   }
-  return { todayUsd: today.usd, monthUsd, today, monthTokens, ...(l.degraded ? { degraded: l.degraded } : {}) };
+  return {
+    todayUsd: today.usd,
+    monthUsd,
+    today,
+    monthTokens,
+    monthByPipeline,
+    ...(l.degraded ? { degraded: l.degraded } : {}),
+  };
 }
 
 /* ------------------------------------------------ 第 3 層:每頁 token 上限 */
