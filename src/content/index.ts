@@ -9,7 +9,8 @@ import type {
   UnitTier,
 } from '../shared/types';
 import { setDebug, dbg } from '../shared/log';
-import { findCandidates } from './detect';
+import { diag, setDiagScope } from '../shared/diag';
+import { explainCandidate, findCandidates } from './detect';
 import {
   assignScales,
   checkOverflow,
@@ -29,6 +30,11 @@ import { probeStyle, resetHintColor } from './styleprobe';
 import { clearMeasureCache } from './measure';
 import { activeText, hasText, type Unit } from './unit';
 
+setDiagScope('content');
+
+/** 掃到 0 個候選時的重掃間隔(ms) */
+const EMPTY_SCAN_RETRIES = [300, 900, 2000, 4000];
+
 const host = location.hostname;
 
 let settings: Settings;
@@ -42,14 +48,20 @@ let layer: OverlayLayer | null = null;
 let effective: Pipeline = 'single';
 let l0: L0Engine | null = null;
 
-/** §3.4 節點 id 用 WeakMap 綁定,不得寫入 DOM 屬性 (D14) */
-const unitByEl = new WeakMap<Element, Unit>();
+/**
+ * §3.4 節點 id 用 WeakMap 綁定,不得寫入 DOM 屬性 (D14)。
+ *
+ * 必須是 let:WeakMap 沒有 clear(),而 stop() 之後如果舊的對應還在,
+ * 下一次 scan() 的 seen() 會對每個舊元素回 true,findCandidates 於是
+ * 一個候選都不產生 —— 症狀是切換管線後狀態列說「沒找到可翻譯的區塊」。
+ */
+let unitByEl = new WeakMap<Element, Unit>();
 const units = new Set<Unit>();
 const unitById = new Map<string, Unit>();
 let nextId = 1;
 
-/** 已送去問過快取的單元,不重複問 (feature.md §4.6) */
-const probed = new WeakSet<Unit>();
+/** 已送去問過快取的單元,不重複問 (feature.md §4.6)。同樣不能 clear */
+let probed = new WeakSet<Unit>();
 
 let pageKey = makePageKey();
 let hovered: Unit | null = null;
@@ -63,6 +75,9 @@ let flushTimer = 0;
 let enqueueTimer = 0;
 let dwellTimer = 0;
 let reprioTimer = 0;
+let motionTimer = 0;
+/** 掃到 0 個候選時的重試次數(頁面可能還在載入、入場動畫還沒跑完) */
+let emptyScans = 0;
 let running = false;
 let pendingScan = false;
 
@@ -139,6 +154,25 @@ function scan(): void {
     }
   }
   dbg('scan', { found: found.length, total: units.size });
+  diag(units.size === 0 ? 'warn' : 'info', 'scan', {
+    found: found.length,
+    total: units.size,
+    pipeline: effective,
+    attempt: emptyScans,
+    // 一個都沒找到時,最想知道的是「頁面上到底有沒有東西」
+    bodyChars: units.size === 0 ? (document.body.textContent ?? '').trim().length : undefined,
+  });
+  if (units.size === 0) {
+    // 啟用的當下頁面可能還在載入,或入場動畫讓內容暫時是 opacity: 0。
+    // 退避重掃幾次,不要一啟用就說「沒有可翻譯的區塊」然後不動了。
+    if (emptyScans < EMPTY_SCAN_RETRIES.length) {
+      const wait = EMPTY_SCAN_RETRIES[emptyScans]!;
+      emptyScans++;
+      window.setTimeout(() => scheduleFlush(true), wait);
+    }
+  } else {
+    emptyScans = 0;
+  }
 }
 
 function prune(): void {
@@ -165,6 +199,38 @@ function scheduleFlush(alsoScan = false): void {
   flushTimer = window.setTimeout(() => {
     flushTimer = 0;
     requestAnimationFrame(flush);
+  }, 120);
+}
+
+/**
+ * CSS transform 的入場動畫既不觸發 ResizeObserver 也不觸發 MutationObserver,
+ * 所以疊層會停在動畫中途量到的位置 —— 症狀是卡片列表的譯文整排錯位到頁面頂端。
+ *
+ * 這裡在捲動停止、轉場結束之後對可見單元驗一次座標,對不上就重排。
+ * 不在捲動**過程中**做,§10.2 的「捲動時額外開銷 0」還是成立。
+ */
+function auditPositions(): void {
+  if (!layer || !running) return;
+  for (const u of units) {
+    if (!u.inView || u.tier === 'skipped') continue;
+    const r = u.el.getBoundingClientRect();
+    const dx = Math.abs(r.left + window.scrollX - u.rect.left);
+    const dy = Math.abs(r.top + window.scrollY - u.rect.top);
+    const dw = Math.abs(r.width - u.rect.width);
+    const dh = Math.abs(r.height - u.rect.height);
+    if (dx > 1 || dy > 1 || dw > 1 || dh > 1) {
+      diag('info', 'position-drift', { id: u.id, dx, dy, dw, dh });
+      scheduleFlush();
+      return;
+    }
+  }
+}
+
+function onMotionEnd(): void {
+  if (motionTimer) return;
+  motionTimer = window.setTimeout(() => {
+    motionTimer = 0;
+    auditPositions();
   }, 120);
 }
 
@@ -241,6 +307,7 @@ async function intake(): Promise<void> {
     u.tier = 'l1';
   }
   if (hits.size > 0) scheduleFlush();
+  diag('info', 'intake', { fresh: fresh.length, cacheHits: hits.size, toL0: misses.length });
   await runL0(misses);
 }
 
@@ -289,6 +356,13 @@ async function runL0(list: Unit[]): Promise<void> {
     }),
   );
   scheduleFlush();
+  const failedL0 = list.filter((u) => u.tier === 'l0-failed' || u.tier === 'failed').length;
+  diag(failedL0 > 0 ? 'warn' : 'info', 'l0-done', {
+    asked: list.length,
+    failed: failedL0,
+    state: engine.state,
+    detail: engine.detail,
+  });
   // §4.4 規則 1:這一輪 L0 收斂之後就把字級分組定案
   lockAfterL0();
 }
@@ -338,6 +412,7 @@ function queueUpgrade(list: Unit[]): void {
     priorities,
   });
   dbg('queue L1', payload.length, effective);
+  diag('info', 'queue-l1', { units: payload.length, tier: state.tier, pipeline: effective });
   updateHud();
 }
 
@@ -558,7 +633,8 @@ function updateHud(): void {
     return;
   }
   if (units.size === 0) {
-    layer.setHud('疊 · 沒找到可翻譯的區塊', 'idle');
+    const retrying = emptyScans > 0 && emptyScans <= EMPTY_SCAN_RETRIES.length;
+    layer.setHud(retrying ? '疊 · 掃描中…' : '疊 · 沒找到可翻譯的區塊', retrying ? 'busy' : 'idle');
     return;
   }
   if (!settings.autoTranslate && !manualArmed) {
@@ -569,6 +645,8 @@ function updateHud(): void {
   if (c.l0 > 0) parts.push(`L0 ${c.l0}`);
   if (c.l1 > 0) parts.push(`L1 ${c.l1}`);
   if (failed > 0) parts.push(`失敗 ${failed}`);
+  const heldBack = [...units].filter((u) => u.pendingSwap !== undefined).length;
+  if (heldBack > 0) parts.push(`待換 ${heldBack}`);
   const busy = waiting > 0 || pending > 0;
   if (busy) {
     const tail = waiting > 0 ? `等 ${effective === 'single' ? 'L1' : '升級'} ${waiting}` : `待翻 ${pending}`;
@@ -654,6 +732,13 @@ async function start(): Promise<void> {
 
   // feature.md §6:不支援就退回 single 並告知,不報錯
   effective = state.pipeline;
+  diag('info', 'start', {
+    pipeline: state.pipeline,
+    tier: state.tier,
+    mode: state.mode,
+    translatorSupported: translatorSupported(),
+    autoTranslate: settings.autoTranslate,
+  });
   if (usesL0(effective)) {
     if (translatorSupported()) {
       l0 = new L0Engine(
@@ -664,6 +749,7 @@ async function start(): Promise<void> {
       void l0.ensure();
     } else if (effective === 'progressive') {
       effective = 'single';
+      diag('warn', 'l0-unsupported', '沒有 Translator API,progressive 退回 single');
       console.warn('[kasanemu] 這個環境沒有 Translator API,漸進式翻譯已退回 single 模式');
     } else {
       console.warn('[kasanemu] 這個環境沒有 Translator API,l0-only 模式無法翻譯');
@@ -721,6 +807,9 @@ async function start(): Promise<void> {
   window.addEventListener('resize', relayout);
   window.addEventListener('scroll', onScroll, { passive: true });
   window.addEventListener('pagehide', onPageHide);
+  // 入場動畫結束 → 位置定了,重新量一次
+  document.addEventListener('transitionend', onMotionEnd, true);
+  document.addEventListener('animationend', onMotionEnd, true);
   // §3.4 字型載入會改變所有 rect,完成後強制重算一次
   document.fonts.ready.then(relayout);
 
@@ -743,6 +832,9 @@ function onScroll(): void {
   reprioTimer = window.setTimeout(() => {
     reprioTimer = 0;
     reprioritize();
+    auditPositions();
+    // 視線帶讓出來了,把延後的替換補做掉 (§4.3)
+    for (const u of units) if (u.pendingSwap !== undefined) trySwap(u);
   }, 300);
 }
 
@@ -767,12 +859,24 @@ function stop(): void {
   window.removeEventListener('resize', relayout);
   window.removeEventListener('scroll', onScroll);
   window.removeEventListener('pagehide', onPageHide);
+  document.removeEventListener('transitionend', onMotionEnd, true);
+  document.removeEventListener('animationend', onMotionEnd, true);
+  clearTimeout(motionTimer);
+  motionTimer = 0;
+  emptyScans = 0;
   for (const u of units) layer?.drop(u);
   layer?.hideHud();
   manualArmed = false;
   lastProblem = '';
   units.clear();
   unitById.clear();
+  // 重建而不是清空:WeakMap / WeakSet 沒有 clear(),
+  // 留著會讓下一次 scan() 認為整頁都已經建過單元
+  unitByEl = new WeakMap<Element, Unit>();
+  probed = new WeakSet<Unit>();
+  // nextId 刻意不重置:worker 佇列裡可能還有已送出的舊 id,
+  // 重新從 u1 開始會讓那些結果套到完全不同的區塊上 —— 自己製造 id 對滑。
+  // §6.1 說 id 是「本頁單調遞增的穩定 id」,跨 stop/start 也維持單調。
   l0?.destroy();
   l0 = null;
   layer?.destroy();
@@ -833,6 +937,7 @@ chrome.runtime.onMessage.addListener((raw: ToContent, _sender, reply) => {
     }
     case 'notice': {
       console.warn(`[kasanemu] ${raw.level}: ${raw.text}`);
+      diag(raw.level, 'notice', raw.text);
       if (raw.level !== 'info') {
         lastProblem = raw.text;
         updateHud();
@@ -965,5 +1070,12 @@ Object.assign(globalThis as Record<string, unknown>, {
     stats: pageStats,
     units: () => [...units].map((u) => ({ id: u.id, tier: u.tier, src: u.src, l0: u.l0Text, l1: u.l1Text })),
     text: (id: string) => activeText(unitById.get(id) ?? ({} as Unit)),
+    /** 為什麼這個元素沒被翻:__ksnm.explain(document.querySelector('h1')) */
+    explain: (el: Element | string) =>
+      explainCandidate(typeof el === 'string' ? document.querySelector(el)! : el),
+    rescan: () => {
+      emptyScans = 0;
+      scheduleFlush(true);
+    },
   },
 });

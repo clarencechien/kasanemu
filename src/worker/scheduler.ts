@@ -2,6 +2,7 @@ import type { Tier } from '../shared/models';
 import { getSettings, resolveTier } from '../shared/settings';
 import type { ToContent } from '../shared/messages';
 import type { Pipeline, Settings, UnitFailure, UnitRequest, UnitResult } from '../shared/types';
+import { diag } from '../shared/diag';
 import { dbg, warn } from '../shared/log';
 import { callBatch } from './gemini';
 import { estimateTokens, parseBatch } from './protocol';
@@ -215,6 +216,7 @@ export async function drain(): Promise<void> {
         continue;
       }
       if (verdict.text) {
+        diag('warn', 'fuse-blocked', { reason: verdict.reason, text: verdict.text });
         post(head.tabId, { type: 'notice', pageKey: head.pageKey, level: 'warn', text: verdict.text });
       }
 
@@ -303,6 +305,12 @@ async function runBatch(
       return;
     }
     // 不可重試(例如 400 走完降級階梯、401 key 錯)
+    diag('error', 'api-failed', {
+      status: res.status,
+      message: res.message,
+      model: spec.modelId,
+      units: batch.length,
+    });
     post(tabId, {
       type: 'notice',
       pageKey,
@@ -320,6 +328,13 @@ async function runBatch(
 
   const parsed = parseBatch(res.text, units, res.truncated);
   dbg('parse', parsed.stats);
+  diag(parsed.failures.length > 0 ? 'warn' : 'info', 'batch-parsed', {
+    model: spec.modelId,
+    truncated: res.truncated,
+    ...parsed.stats,
+    // 誤殺與真對滑的差別全在這裡,所以失敗的細節要留下來
+    failures: parsed.failures.slice(0, 6).map((f) => `${f.id} ${f.reason} ${f.detail ?? ''}`),
+  });
   if (parsed.results.length > 0) {
     post(tabId, { type: 'results', pageKey, results: parsed.results });
     for (const r of parsed.results) {

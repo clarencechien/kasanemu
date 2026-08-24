@@ -217,3 +217,50 @@ export function findCandidates(root: Element, seen: (el: Element) => boolean): C
   walk(root, { seen, out, root });
   return out;
 }
+
+/**
+ * 除錯用:問「這個元素為什麼沒有被當成翻譯單元」。
+ *
+ * 規則有十幾條,分散在 walk() 的各個 return false,線上出問題時
+ * 從 console 一條條試很痛苦。這裡把同一組規則重跑一遍並回報**第一條**
+ * 擋住它的規則,包含被排除的祖先(祖先被擋掉時整個子樹都不會走到)。
+ *
+ * 用法:content script 的 isolated world 裡
+ *   __ksnm.explain(document.querySelector('h1'))
+ */
+export function explainCandidate(el: Element): string[] {
+  const reasons: string[] = [];
+
+  // 祖先鏈:被擋掉的祖先會讓整個子樹跳過
+  for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+    if (EXCLUDE_TAGS.has(p.tagName)) reasons.push(`祖先 <${p.tagName.toLowerCase()}> 在排除清單上`);
+    else if (p.matches(EXCLUDE_SELECTOR)) reasons.push(`祖先 <${p.tagName.toLowerCase()}> 命中排除選擇器`);
+    else {
+      const pcs = getComputedStyle(p);
+      if (isInvisible(pcs)) reasons.push(`祖先 <${p.tagName.toLowerCase()}> 不可見 (${pcs.display}/${pcs.visibility}/${pcs.opacity})`);
+      else if (pcs.position === 'sticky' || pcs.position === 'fixed') {
+        reasons.push(`祖先 <${p.tagName.toLowerCase()}> 是 ${pcs.position},捲動會脫位所以跳過`);
+      }
+    }
+    if (reasons.length > 0) return reasons;
+  }
+
+  if (EXCLUDE_TAGS.has(el.tagName)) return [`<${el.tagName.toLowerCase()}> 在排除清單上`];
+  if (el.matches(EXCLUDE_SELECTOR)) return ['命中排除選擇器 (aria-hidden / contenteditable / translate=no / .notranslate)'];
+  if (!(el.textContent ?? '').trim()) return ['沒有文字'];
+
+  const cs = getComputedStyle(el);
+  if (isInvisible(cs)) return [`不可見 (display:${cs.display} visibility:${cs.visibility} opacity:${cs.opacity})`];
+  if (cs.position === 'sticky' || cs.position === 'fixed') return [`position: ${cs.position},跳過`];
+
+  const blockish = BLOCK_TAGS.has(el.tagName) || BLOCKISH_DISPLAY.has(cs.display);
+  if (!blockish) return [`不是 block 級 (display: ${cs.display}),文字會併進最近的 block 祖先`];
+  if (hasContainerChild(el)) return ['底下還有帶文字的 block —— 這是容器不是段落,單元會建在更裡面'];
+
+  const text = normalizeText(ownText(el));
+  if (!isMeaningfulText(text)) return [`文字沒有意義:${JSON.stringify(text.slice(0, 40))}`];
+  if (text.length > MAX_UNIT_CHARS) return [`文字 ${text.length} 字,超過單元上限 ${MAX_UNIT_CHARS}`];
+  if (looksLikeTargetLang(text)) return ['判定為已是目標語言 (CJK 比例 > 30%)'];
+  if (el.getClientRects().length === 0) return ['沒有繪製面積 (getClientRects 為空)'];
+  return ['符合所有規則 —— 應該會成為翻譯單元'];
+}

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { echoOf, estimateTokens, parseBatch, repairJsonArray } from '../src/worker/protocol.ts';
+import { echoMatches, echoOf, estimateTokens, parseBatch, repairJsonArray } from '../src/worker/protocol.ts';
 
 const sent = [
   { id: 'u1', src: 'Roughly 99 percent of traffic goes undersea.', maxChars: 40, role: 'body' as const },
@@ -89,4 +89,45 @@ test('token 估算:中文比拉丁貴', () => {
   const en = estimateTokens('Roughly 99 percent of data traffic goes undersea');
   assert.ok(zh > 10);
   assert.ok(en < zh * 2);
+});
+
+/* ---------------------------------------- §6.4 第二層:echo 比對的鬆緊 */
+
+test('同一句話的等價寫法算過:全形、大小寫、彎引號、空白', () => {
+  assert.ok(echoMatches("Anthropic's", "Anthropic’s"));
+  assert.ok(echoMatches('Roughly ', 'roughly'));
+  assert.ok(echoMatches('ＡＩ ｉｓ', 'AI is'));
+  assert.ok(echoMatches('Well - known', 'Well — known'));
+});
+
+test('模型回短一截的 echo 算過(前綴且夠長)', () => {
+  assert.ok(echoMatches('Roughly', 'Roughly '));
+  assert.ok(echoMatches('Claude', 'Claude A'));
+});
+
+test('前綴太短不算 —— 那不足以證明是同一句', () => {
+  assert.equal(echoMatches('Ro', 'Roughly '), false);
+  assert.equal(echoMatches('', 'Roughly '), false);
+});
+
+test('batch 內 id 對滑仍然抓得到:不同句子的 echo 對不上', () => {
+  assert.equal(echoMatches('Roughly ', 'Claude A'), false);
+  assert.equal(echoMatches('The quick', 'A slow do'), false);
+});
+
+test('對滑的整批仍然全數丟棄,不是修復', () => {
+  const sent = [
+    { id: 'u1', src: 'Roughly 99 percent of traffic', maxChars: 40, role: 'body' as const },
+    { id: 'u2', src: 'Claude Academy gives users', maxChars: 40, role: 'body' as const },
+  ];
+  // 兩筆的譯文互換(echo 跟著對滑)
+  const raw = JSON.stringify([
+    { id: 'u1', echo: 'Claude A', t: '克勞德學院…' },
+    { id: 'u2', echo: 'Roughly ', t: '全球資料流量…' },
+  ]);
+  const out = parseBatch(raw, sent, false);
+  assert.equal(out.results.length, 0);
+  assert.equal(out.stats.echoMismatch, 2);
+  // detail 要能看出期待與收到,不然使用者貼 log 過來也判斷不了
+  assert.match(out.failures[0]!.detail ?? '', /want .*got /);
 });
