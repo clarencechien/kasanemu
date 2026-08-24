@@ -375,6 +375,8 @@ async function intake(): Promise<void> {
       u.rect.top <= bottom,
   );
   if (fresh.length === 0) return;
+  // 先翻使用者現在看得到的:預翻範圍拉大之後,順序比以前更重要
+  fresh.sort((a, b) => priorityOf(a) - priorityOf(b));
   for (const u of fresh) probed.add(u);
 
   /*
@@ -448,6 +450,10 @@ async function runL0(list: Unit[]): Promise<void> {
       }
       u.l0Text = restored;
       u.tier = 'l0';
+      // **逐塊上畫**。之前整批做完才 flush 一次 —— 一批 16 塊、每塊 850ms,
+      // 於是 13.6 秒內畫面上什麼都沒有(log 的首屏 13970ms 就是這樣來的)。
+      // scheduleFlush 自帶 120ms debounce,不會變成每塊一次重排。
+      scheduleFlush();
     }),
   );
   scheduleFlush();

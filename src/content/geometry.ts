@@ -20,10 +20,19 @@ export function coverRect(unit: Unit): { rect: DocRect; overflows: boolean } {
   const r = unit.el.getBoundingClientRect();
   const el = unit.el as HTMLElement;
   const [bt, br, bb, bl] = unit.style.border;
-  // 原文的內容可能比自己的 border-box 大:固定 height + overflow: visible,
-  // 或子元素有負 margin。照 border-box 蓋就會漏(標題底下露出半個 g)。
-  const contentH = (el.scrollHeight || 0) + bt + bb;
-  const contentW = (el.scrollWidth || 0) + bl + br;
+  /*
+   * 原文的內容可能比自己的 border-box 大:固定 height + overflow: visible,
+   * 或子元素有負 margin。照 border-box 蓋就會漏(標題底下露出半個 g)。
+   *
+   * **但只有 overflow: visible 才算。** 元素自己有裁切時,溢出的內容
+   * 根本沒被畫出來,拿 scrollWidth 去撐大盒子只會蓋到旁邊的東西 ——
+   * sr-only 的 1×1 元素配上 nowrap 長句,scrollWidth 是整句話的寬度,
+   * 就是這樣長出一條橫跨整張卡的疊層。
+   */
+  const cs = getComputedStyle(el);
+  const spills = cs.overflowX === 'visible' && cs.overflowY === 'visible';
+  const contentH = spills ? (el.scrollHeight || 0) + bt + bb : 0;
+  const contentW = spills ? (el.scrollWidth || 0) + bl + br : 0;
   return {
     rect: {
       left: r.left + window.scrollX,

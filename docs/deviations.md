@@ -804,3 +804,81 @@ L1 仍嚴守「可見 + 停留 1.5 秒」(D21 是拿來省錢的,不能鬆)。
 
 **線畫在固定頁首上。** AC 段的頁首裁切只套用在 `.box`,忘了 `.hint` ——
 盒子被裁掉了,線照樣畫在 header 上。兩者現在共用同一個 clip。
+
+## AL. 卡片上方那排:螢幕閱讀器專用標籤
+
+回報直接給了 HTML:
+
+```html
+<a class="clickable_link w-inline-block" href="...">
+  <span class="clickable_text u-sr-only">Build production agents with computer use…</span>
+</a>
+```
+
+`u-sr-only` 是螢幕閱讀器專用標籤。經典寫法
+`position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0)` ——
+對視覺使用者完全不存在,而 §3.1 的檢查**全部漏掉它**:
+不是 `display:none`、不是 `visibility:hidden`、`opacity` 是 1、
+`getClientRects()` 還會回一個 1×1 的矩形,「有繪製面積」也過關;
+文字長度 66 字,UI 標籤那條規則也擋不住。
+
+**而那排寬得離譜的疊層是我自己算出來的。** S 段的 `coverRect` 為了蓋住溢出的墨水
+取 `max(border-box, scrollWidth)`,而 sr-only 的 `white-space: nowrap` 讓
+`scrollWidth` 等於整句話的寬度 —— 1×1 的元素於是長出一條橫跨整張卡的盒子,
+貼在卡片左上角。四張卡就是那一排。
+
+兩個修正:
+
+1. **偵測 sr-only 並跳過**:看 computed style 的特徵而不是 class 名稱
+   (`clip: rect(0,0,0,0)`、`clip-path: inset(50%/100%)`、
+   或所有 client rect 都 ≤ 4px)。各家命名不同,行為一樣。
+2. **`coverRect` 只在 `overflow: visible` 時吃 `scrollWidth/Height`。**
+   元素自己有裁切時,溢出的內容根本沒被畫出來,
+   拿它撐大盒子只會蓋到旁邊 —— 這是比 sr-only 更廣的一類錯誤。
+
+前三輪我猜過「輪播複製」「隱藏的行動版選單」「被 overflow 裁掉的重複 DOM」,
+全錯。一份真實的 HTML 片段勝過三輪推理。
+
+## AM. 首屏從 4 秒變 13.9 秒 —— 預翻沒有配上逐塊上畫
+
+AJ 段把 L0 的取材範圍從「可見區」改成「視窗外 1500px」,首屏反而更糟:
+
+```
+l0-done {asked:16, ms:13622, perUnit:851}
+首屏:13970ms
+```
+
+`runL0` 是整批做完才 `scheduleFlush()` 一次。一批 16 塊、每塊 851ms、
+併發 8 —— 13.6 秒內畫面上什麼都沒有。**取材範圍變大,批次就變大,
+而「整批做完才畫」的成本跟著等比放大。**
+
+兩個修正:
+
+1. **逐塊上畫**:每塊 L0 譯文一好就 `scheduleFlush()`(自帶 120ms debounce,
+   不會變成每塊一次重排)。
+2. **先翻看得到的**:`fresh` 依距視窗中心排序再送。
+   預翻範圍拉大之後,順序比以前重要得多。
+
+## AN.「L0 是毫秒級」這個前提已經死了
+
+feature.md §1 說 L0「毫秒級」,整個 feature 的定位建立在這句話上。
+實測(Chromebook,CrOS x86_64):
+
+| 批次 | 每塊 |
+|---|---|
+| 16 塊 | 851ms |
+| 1 塊 | 2709ms / 2747ms / 3742ms |
+| 12 塊 | 131ms |
+| 8 塊 | 601ms |
+
+**單塊 0.1–3.7 秒,不是毫秒級。** 而且批次越小每塊越慢,
+看起來每次 `translate()` 都有固定的啟動成本。
+
+這直接打到 feature.md 開放問題 1(「L0 的中文能不能忍」)旁邊那個沒寫出來的假設:
+L0 值不值得當首屏層,取決於它到底多快。在這台機器上,
+L0 的優勢從「毫秒 vs 秒」縮到「秒 vs 好幾秒」——
+逐塊上畫與預翻能救回體感,但「使用者從不面對空窗」這個承諾在這裡不成立。
+
+這一項現在有數字了(`l0-done` 的 `ms` / `perUnit`),
+兩週 A/B 時應該把它列進判準 —— §2.2 原本只列了「首屏疊層出現時間」,
+沒有分開量 L0 本身。
