@@ -123,6 +123,31 @@ const LAYER_CSS = `
     transparent 3px 6px
   );
 }
+/*
+ * 頁內狀態列。使用者的原話:「翻譯中還是沒翻譯沒有明確的 status」。
+ * 疊層本身看起來一樣,分不出「還在等」與「已經死了」,所以狀態要自己講。
+ * pointer-events: none —— 與疊層同一條規則,不可攔截 hover。
+ */
+.hud {
+  position: fixed;
+  left: 12px;
+  bottom: 12px;
+  pointer-events: none;
+  background: rgba(16, 21, 27, 0.92);
+  color: #e6edf3;
+  font: 12px/1.4 ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: 0.01em;
+  padding: 6px 10px;
+  border-radius: 6px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  transition: opacity 200ms ease;
+  max-width: 60vw;
+}
+.hud.show { opacity: 0.92; }
+.hud.busy::before { content: '⋯ '; }
+.hud.warn { background: #7a2318; color: #ffe8e3; }
+.hud.warn::before { content: '✗ '; }
 .panel {
   position: fixed;
   right: 12px;
@@ -302,6 +327,36 @@ export class OverlayLayer {
     h.style.setProperty('--ksnm-hh', `${height}px`);
     h.style.setProperty('--ksnm-hint', hintColor(unit.style.color));
     h.style.setProperty('--ksnm-warn', '#c0392b');
+  }
+
+  private hud: HTMLDivElement | null = null;
+  private hudTimer = 0;
+
+  /**
+   * 狀態列。`busy` 會持續顯示到下一次更新;`idle` 與 `warn` 顯示幾秒後淡出
+   * (warn 停久一點,那是要被看到的)。
+   */
+  setHud(text: string, level: 'idle' | 'busy' | 'warn'): void {
+    if (!this.hud) {
+      this.hud = document.createElement('div');
+      this.hud.className = 'hud';
+      this.layer.appendChild(this.hud);
+    }
+    const el = this.hud;
+    el.className = `hud show ${level}`;
+    el.textContent = text;
+    clearTimeout(this.hudTimer);
+    if (level === 'busy') return;
+    this.hudTimer = window.setTimeout(
+      () => el.classList.remove('show'),
+      level === 'warn' ? 8000 : 3000,
+    );
+  }
+
+  hideHud(): void {
+    clearTimeout(this.hudTimer);
+    this.hud?.remove();
+    this.hud = null;
   }
 
   drop(unit: Unit): void {

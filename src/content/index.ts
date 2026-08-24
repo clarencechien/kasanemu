@@ -74,6 +74,13 @@ let lastScrollAt = 0;
 /** feature.md §2.2「L0 讀完就沒再看 L1」的比例 */
 let swapsTotal = 0;
 let swapsOffscreen = 0;
+/**
+ * 手動翻譯已被觸發過(popup 按鈕或 Alt+Shift+R)。
+ * autoTranslate 關掉時,這個旗標是唯一的放行條件。
+ */
+let manualArmed = false;
+/** worker 回報的最後一則問題,顯示在狀態列上 —— 失敗不可以只留在 console */
+let lastProblem = '';
 
 function makePageKey(): string {
   return `${location.origin}${location.pathname}`;
@@ -195,6 +202,7 @@ function flush(): void {
     firstPaintMs = Math.round(performance.now() - startedAt);
     dbg('first paint', firstPaintMs, 'ms', effective);
   }
+  updateHud();
   scheduleIntake();
 }
 
@@ -206,6 +214,11 @@ function flush(): void {
  */
 async function intake(): Promise<void> {
   if (!running) return;
+  // 沒開自動翻譯就等使用者明確按下去
+  if (!settings.autoTranslate && !manualArmed) {
+    updateHud();
+    return;
+  }
   const fresh = [...units].filter(
     (u) => u.tier === 'pending' && u.inView && u.maxChars > 0 && !probed.has(u),
   );
@@ -324,6 +337,7 @@ function queueUpgrade(list: Unit[]): void {
     priorities,
   });
   dbg('queue L1', payload.length, effective);
+  updateHud();
 }
 
 /**
@@ -409,6 +423,9 @@ function applyResults(results: UnitResult[]): void {
     trySwap(u);
   }
   if (needFlush) scheduleFlush();
+  // 有東西回來就代表管線是活的
+  if (results.length > 0) lastProblem = '';
+  updateHud();
 }
 
 /* ------------------------------------------------------------------ hover */
@@ -492,6 +509,76 @@ function toggleDebugPanel(): void {
       all.filter((u) => u.overflowing).length
     } · 首屏 ${firstPaintMs}ms`,
   );
+}
+
+/* ---------------------------------------------------------------- 狀態列 */
+
+/**
+ * §5.2「模型 ID 必須驗證,不要等到執行時才 400」。
+ * worker 啟動時已經比對過 /v1beta/models,這裡只是把結果講給使用者聽 ——
+ * 不然 free 檔的 ID 打錯時,畫面上只會是「一直沒有東西回來」。
+ */
+async function checkModelId(): Promise<void> {
+  if (!usesL1(effective)) return;
+  try {
+    const got = await chrome.storage.local.get('modelCheck');
+    const check = got['modelCheck'] as
+      | { problems: Array<{ tier: string; modelId: string; issue: string }> }
+      | undefined;
+    const bad = check?.problems.find((p) => p.tier === state.tier);
+    if (!bad) return;
+    lastProblem =
+      bad.issue === 'blocked'
+        ? `${bad.tier} 檔的 ${bad.modelId} 在排除清單上`
+        : `${bad.tier} 檔的模型 ID 不存在:${bad.modelId}`;
+  } catch {
+    /* 沒驗過就算了,送出時的 notice 仍然會講 */
+  }
+}
+
+/**
+ * 使用者的原話:「翻譯中還是沒翻譯沒有明確的 status」。
+ * 疊層在「還沒送出」「送出了在等」「已經死了」三種情況下長得一模一樣,
+ * 所以狀態必須自己講出來。
+ */
+function updateHud(): void {
+  if (!layer) return;
+  if (!settings.hud) {
+    layer.hideHud();
+    return;
+  }
+  const c = tierCounts();
+  const failed = c.failed + c['l1-failed'];
+  const waiting = [...units].filter((u) => u.l1Queued && u.l1Text === undefined).length;
+  const pending = c.pending + c['l0-failed'];
+
+  if (lastProblem) {
+    layer.setHud(`疊 · ${lastProblem}`, 'warn');
+    return;
+  }
+  if (units.size === 0) {
+    layer.setHud('疊 · 沒找到可翻譯的區塊', 'idle');
+    return;
+  }
+  if (!settings.autoTranslate && !manualArmed) {
+    layer.setHud(`疊 · 已啟用,${units.size} 塊待翻 —— 按 Alt+Shift+R 或 popup 開始`, 'idle');
+    return;
+  }
+  const parts: string[] = [];
+  if (c.l0 > 0) parts.push(`L0 ${c.l0}`);
+  if (c.l1 > 0) parts.push(`L1 ${c.l1}`);
+  if (failed > 0) parts.push(`失敗 ${failed}`);
+  const busy = waiting > 0 || pending > 0;
+  if (busy) {
+    const tail = waiting > 0 ? `等 ${effective === 'single' ? 'L1' : '升級'} ${waiting}` : `待翻 ${pending}`;
+    layer.setHud(`疊 · ${[...parts, tail].join(' · ')}`, 'busy');
+    return;
+  }
+  if (parts.length === 0) {
+    layer.setHud('疊 · 沒有需要翻譯的內容', 'idle');
+    return;
+  }
+  layer.setHud(`疊 · ${parts.join(' · ')} · 完成`, failed > 0 ? 'warn' : 'idle');
 }
 
 /* ------------------------------------------------------------------ 統計 */
@@ -584,6 +671,7 @@ async function start(): Promise<void> {
 
   layer = new OverlayLayer();
   layer.setMode(state.mode);
+  await checkModelId();
 
   io = new IntersectionObserver(
     (entries) => {
@@ -679,6 +767,9 @@ function stop(): void {
   window.removeEventListener('scroll', onScroll);
   window.removeEventListener('pagehide', onPageHide);
   for (const u of units) layer?.drop(u);
+  layer?.hideHud();
+  manualArmed = false;
+  lastProblem = '';
   units.clear();
   unitById.clear();
   l0?.destroy();
@@ -736,10 +827,15 @@ chrome.runtime.onMessage.addListener((raw: ToContent, _sender, reply) => {
         if (u.l0Text === undefined) layer?.drop(u);
       }
       scheduleFlush();
+      updateHud();
       break;
     }
     case 'notice': {
       console.warn(`[kasanemu] ${raw.level}: ${raw.text}`);
+      if (raw.level !== 'info') {
+        lastProblem = raw.text;
+        updateHud();
+      }
       break;
     }
     case 'domain-state': {
@@ -748,11 +844,9 @@ chrome.runtime.onMessage.addListener((raw: ToContent, _sender, reply) => {
     }
     case 'command': {
       if (!state) return; // boot 還沒完成
-      if (raw.command === 'toggle-enabled') {
-        void toggleEnabled();
-      } else {
-        void toggleMode();
-      }
+      if (raw.command === 'toggle-enabled') void toggleEnabled();
+      else if (raw.command === 'translate-page') void translatePage();
+      else void toggleMode();
       break;
     }
     case 'get-page-stats': {
@@ -767,6 +861,37 @@ chrome.runtime.onMessage.addListener((raw: ToContent, _sender, reply) => {
   }
   return undefined;
 });
+
+/**
+ * 手動觸發翻譯,同時是失敗區塊的重試入口。
+ * 沒啟用的話先啟用 —— 使用者按下去的意思就是「現在翻」。
+ */
+async function translatePage(): Promise<void> {
+  manualArmed = true;
+  lastProblem = '';
+  if (!state.enabled) {
+    const next = await chrome.runtime.sendMessage({
+      type: 'set-domain-state',
+      host,
+      patch: { enabled: true },
+    } satisfies ToWorker);
+    await applyDomainState(next as DomainState);
+    return; // start() 會自己掃描與翻譯
+  }
+  if (!running) return;
+  // 失敗的重來一次:清掉已問過快取的記號,並把狀態退回 pending
+  for (const u of units) {
+    if (u.tier === 'failed' || u.tier === 'l1-failed' || u.tier === 'l0-failed') {
+      u.tier = u.l0Text !== undefined ? 'l0' : 'pending';
+      u.l1Queued = false;
+      u.failReason = undefined;
+      probed.delete(u);
+    }
+  }
+  updateHud();
+  scheduleFlush(true);
+  void intake();
+}
 
 /** popup 下載完語言包後,把停在 pending / l0-failed 的區塊補翻 */
 async function retryL0(): Promise<void> {

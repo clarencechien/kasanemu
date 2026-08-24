@@ -81,6 +81,14 @@ export interface Settings {
   upgradeDwellMs: number;
   /** feature.md §3.4 不翻清單(公司名、產品名、人名),以佔位符保護 */
   noTranslateTerms: string[];
+  /**
+   * 啟用後是否自動翻譯可見區(PRD §7.1 的行為)。
+   * 關掉就必須按 popup 的「翻譯這一頁」或 Alt+Shift+R 才開始 ——
+   * 想先看清楚狀態、或不想一啟用就花錢的時候用。
+   */
+  autoTranslate: boolean;
+  /** 頁內狀態列:翻了幾塊、還在等幾塊、失敗幾塊 */
+  hud: boolean;
   /** §4.3 中文字重加權 */
   weightOffset: 0 | 100 | 200;
   /** §4.7 提示線 */
@@ -108,6 +116,8 @@ export const DEFAULT_SETTINGS: Settings = {
   l0SourceLang: 'en',
   upgradeDwellMs: 1500,
   noTranslateTerms: [],
+  autoTranslate: true,
+  hud: true,
   weightOffset: 100,
   hintLine: true,
   forceAnnotation: false,

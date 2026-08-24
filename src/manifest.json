@@ -4,30 +4,62 @@
   "version": "0.1.0",
   "description": "以不透明疊層覆蓋原文的網頁翻譯,不改動頁面 DOM 與 CSS。",
   "minimum_chrome_version": "120",
-  "permissions": ["storage", "alarms"],
-  "host_permissions": ["<all_urls>"],
-  "background": { "service_worker": "worker.js", "type": "module" },
-  "action": { "default_popup": "popup.html", "default_title": "Kasanemu" },
+  "permissions": [
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Kasanemu"
+  },
   "options_page": "options.html",
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle",
       "all_frames": false
     }
   ],
   "web_accessible_resources": [
-    { "resources": ["fonts/*.woff2"], "matches": ["<all_urls>"] }
+    {
+      "resources": [
+        "fonts/*.woff2"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
   ],
   "commands": {
     "toggle-enabled": {
-      "suggested_key": { "default": "Alt+T" },
+      "suggested_key": {
+        "default": "Alt+T"
+      },
       "description": "在本網域啟用/關閉疊層翻譯"
     },
     "toggle-mode": {
-      "suggested_key": { "default": "Alt+Shift+T" },
+      "suggested_key": {
+        "default": "Alt+Shift+T"
+      },
       "description": "切換全開 / 點閱"
+    },
+    "translate-page": {
+      "suggested_key": {
+        "default": "Alt+Shift+R"
+      },
+      "description": "翻譯這一頁(重試失敗的區塊)"
     }
   }
 }

@@ -46,6 +46,18 @@
           <option value="l0-only">l0-only(零成本、離線)</option>
         </select>
       </label>
+      <label class="check">
+        <input type="checkbox" data-k="autoTranslate" />
+        啟用後自動翻譯可見區
+      </label>
+      <p class="hint">
+        關掉的話,啟用只會掃描並顯示狀態,要按 popup 的「翻譯這一頁」或
+        <code>Alt+Shift+R</code> 才真的送出。不想一啟用就花錢時用。
+      </p>
+      <label class="check">
+        <input type="checkbox" data-k="hud" />
+        顯示頁內狀態列(翻了幾塊、還在等幾塊、失敗幾塊)
+      </label>
       <label>升級門檻:可見區停留幾毫秒才送 L1
         <input type="number" data-k="upgradeDwellMs" data-num="1" min="0" step="100" />
       </label>

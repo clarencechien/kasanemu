@@ -1,7 +1,12 @@
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
-import { findCandidates, isMeaningfulText, looksLikeTargetLang } from '../src/content/detect.ts';
+import {
+  MAX_UNIT_CHARS,
+  findCandidates,
+  isMeaningfulText,
+  looksLikeTargetLang,
+} from '../src/content/detect.ts';
 
 /**
  * §3.1 的規則密度最高,而 §12.2 的通過條件有一半是「什麼不該被翻」。
@@ -129,4 +134,70 @@ test('已建立過單元的元素不會被重複收', () => {
   assert.equal(first.length, 1);
   const again = findCandidates(body, () => true);
   assert.equal(again.length, 0);
+});
+
+/* -------------------------------------------------- 真實網站踩到的坑 */
+
+test('<style> 的 CSS 不得被當成文章(claude.com/blog 實例)', () => {
+  // Webflow 在 body 內散佈 <style>。父容器成為單元時,
+  // textContent 會把 CSS 一起吃進來,頁面頂端就出現一行被翻譯的選擇器。
+  const body = mount(
+    '<div class="wrap">' +
+      '<style>/* add comma between authors */ .blog_author_wrap > div:not(:last-child) .blog_author_text::after { content: ","; }</style>' +
+      'Written by the Anthropic team.' +
+      '</div>',
+  );
+  assert.deepEqual(ids(body), ['Written by the Anthropic team.']);
+});
+
+test('只含 <style> 的容器不產生任何單元', () => {
+  const body = mount('<div><style>.a{color:red}.b{color:blue}</style></div>');
+  assert.deepEqual(ids(body), []);
+});
+
+test('<script> 的內容同樣不得進入 src', () => {
+  const body = mount(
+    '<div>Read the announcement.<script>window.dataLayer=[{event:"page_view"}]</script></div>',
+  );
+  assert.deepEqual(ids(body), ['Read the announcement.']);
+});
+
+test('子孫因 opacity:0 全被跳過時,父容器不得變成一個巨大單元', () => {
+  // Webflow 的捲動動畫:整篇文章的 <p> 初始 opacity: 0。
+  // 舊行為是每一段都被跳過 → 父容器自己成為單元 → 整篇文章疊成一坨。
+  const body = mount(
+    '<div class="rich-text">' +
+      '<p style="opacity: 0">First paragraph of the article.</p>' +
+      '<p style="opacity: 0">Second paragraph of the article.</p>' +
+      '</div>',
+  );
+  assert.deepEqual(ids(body), []);
+});
+
+test('子孫是隱形的 block 時,父容器一樣不吃下整包', () => {
+  const body = mount(
+    '<section><div style="display: none">Hidden block text</div>' +
+      '<p style="visibility: hidden">Also hidden</p></section>',
+  );
+  assert.deepEqual(ids(body), []);
+});
+
+test('容器裡的段落正常時,單元仍然是段落而不是容器', () => {
+  const body = mount('<div class="rich-text"><p>First para.</p><p>Second para.</p></div>');
+  assert.deepEqual(ids(body), ['First para.', 'Second para.']);
+});
+
+test('超過字數上限的區塊不建立單元(容器誤判的最後防線)', () => {
+  const long = 'This sentence is a filler used to exceed the unit cap. '.repeat(30);
+  assert.ok(long.length > MAX_UNIT_CHARS);
+  const body = mount(`<p>${long}</p>`);
+  assert.deepEqual(ids(body), []);
+  // 正常長度的段落不受影響
+  const ok = mount('<p>A normal paragraph of reasonable length.</p>');
+  assert.deepEqual(ids(ok), ['A normal paragraph of reasonable length.']);
+});
+
+test('行內 code 留在句子裡(§3.4 靠佔位符保護,不是靠剝掉)', () => {
+  const body = mount('<p>Call <code>compute()</code> before <kbd>Ctrl+S</kbd>.</p>');
+  assert.deepEqual(ids(body), ['Call compute() before Ctrl+S.']);
 });

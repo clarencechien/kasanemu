@@ -54,6 +54,9 @@ function renderState(): void {
     el.checked = el.value === state.pipeline;
   }
   $('tier-note').textContent = `${TIERS[state.tier].modelId} — ${TIERS[state.tier].note}`;
+  $('translate-note').textContent = settings.autoTranslate
+    ? 'Alt+Shift+R;也用來重試失敗的區塊'
+    : '自動翻譯已關閉 —— 只有按這裡才會翻';
 }
 
 /** feature.md §6:不支援時要明確告知,不是靜靜地什麼都沒發生 */
@@ -260,6 +263,20 @@ async function main(): Promise<void> {
       window.setTimeout(() => void refresh(), 300);
     });
   }
+
+  // 使用者要的「啟用之後再按翻譯」。設定頁關掉自動翻譯的話,這是唯一的入口。
+  $('translate').addEventListener('click', async () => {
+    if (tabId < 0) return;
+    const btn = $<HTMLButtonElement>('translate');
+    btn.disabled = true;
+    await chrome.tabs
+      .sendMessage(tabId, { type: 'command', command: 'translate-page' })
+      .catch(() => undefined);
+    window.setTimeout(async () => {
+      await refresh();
+      btn.disabled = false;
+    }, 500);
+  });
 
   $('l0-download').addEventListener('click', () => void downloadL0());
 

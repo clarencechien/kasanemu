@@ -44,7 +44,8 @@ export type ToContent =
   | { type: 'failures'; pageKey: string; failures: UnitFailure[] }
   | { type: 'notice'; pageKey: string; level: 'info' | 'warn' | 'error'; text: string }
   | { type: 'domain-state'; host: string; state: DomainState }
-  | { type: 'command'; command: 'toggle-enabled' | 'toggle-mode' }
+  /** translate-page:手動觸發,同時也是失敗區塊的重試入口 */
+  | { type: 'command'; command: 'toggle-enabled' | 'toggle-mode' | 'translate-page' }
   /** feature.md §5.2 popup 讀本頁的階層統計 */
   | { type: 'get-page-stats' }
   /**
