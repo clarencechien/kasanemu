@@ -35,16 +35,20 @@ test('修復不出東西時回 null,而不是猜', () => {
   assert.equal(repairJsonArray('[{"id":"u1"'), null);
 });
 
-test('§6.4 第二層:echo 對不上就丟棄該筆,不修復', () => {
+test('§6.4 第二層:u2 拿了 u1 的原文當 echo → 判定對滑,整批丟棄', () => {
+  // 這個情境原本只丟 u2、留下 u1。但既然證實這一批發生過對滑,
+  // u1 的對位也失去可信度 —— 它的 echo 可能剛好也被移到對得上的位置。
+  // §6.4「模型輸出視為敵意輸入」,所以整批丟。
   const raw = JSON.stringify([
     { id: 'u1', echo: 'Roughly ', t: '約九成九的流量走海底電纜' },
-    { id: 'u2', echo: 'Roughly ', t: '入門' }, // 對滑:拿了 u1 的原文
+    { id: 'u2', echo: 'Roughly ', t: '入門' },
   ]);
   const out = parseBatch(raw, sent, false);
-  assert.equal(out.results.length, 1);
-  assert.equal(out.results[0]?.id, 'u1');
+  assert.equal(out.results.length, 0);
   assert.equal(out.stats.echoMismatch, 1);
-  assert.ok(out.failures.some((f) => f.id === 'u2' && f.reason === 'echo-mismatch'));
+  assert.equal(out.stats.swapped, true);
+  assert.ok(out.failures.some((f) => f.id === 'u2' && f.reason === 'echo-swap'));
+  assert.ok(out.failures.some((f) => f.id === 'u1' && f.reason === 'echo-swap'));
 });
 
 test('§6.4 第一層:重複 id 只取第一筆,多出來的 id 直接丟', () => {
@@ -161,4 +165,67 @@ test('真的回空陣列時,那一筆仍然算 missing 並標記失敗', () => {
   const out = parseBatch('[]', sent, false);
   assert.equal(out.stats.missing, 1);
   assert.equal(out.failures[0]!.reason, 'missing-id');
+});
+
+/* -------------- echo-mismatch 與 echo-swap:嚴重性不同,不能混為一談 */
+
+const two = [
+  { id: 'u1', src: 'Roughly 99 percent of traffic', maxChars: 40, role: 'body' as const },
+  { id: 'u2', src: 'Claude Academy gives users', maxChars: 40, role: 'body' as const },
+];
+
+test('模型沒照抄 echo(亂寫或翻譯了)→ 只丟那一筆,其他筆留著', () => {
+  const raw = JSON.stringify([
+    { id: 'u1', echo: '大約百分之九十九', t: '全球資料流量…' },
+    { id: 'u2', echo: 'Claude A', t: '克勞德學院…' },
+  ]);
+  const out = parseBatch(raw, two, false);
+  assert.equal(out.results.length, 1);
+  assert.equal(out.results[0]!.id, 'u2');
+  assert.equal(out.failures[0]!.reason, 'echo-mismatch');
+  assert.ok(!out.stats.swapped);
+});
+
+test('echo 對到同批另一筆的原文 → 判定為 id 對滑', () => {
+  const raw = JSON.stringify([
+    { id: 'u1', echo: 'Claude A', t: '克勞德學院…' },
+    { id: 'u2', echo: 'Roughly ', t: '全球資料流量…' },
+  ]);
+  const out = parseBatch(raw, two, false);
+  assert.equal(out.stats.swapped, true);
+  assert.ok(out.failures.every((f) => f.reason === 'echo-swap'));
+  assert.match(out.failures[0]!.detail ?? '', /對到 u2 的原文/);
+});
+
+test('抓到對滑就整批丟棄,對得上的那些也不留', () => {
+  const three = [
+    ...two,
+    { id: 'u3', src: 'Mindsets matter most here', maxChars: 40, role: 'body' as const },
+  ];
+  const raw = JSON.stringify([
+    { id: 'u1', echo: 'Claude A', t: '克勞德學院…' }, // 對滑
+    { id: 'u2', echo: 'Claude A', t: '克勞德學院…' }, // 這筆自己對得上
+    { id: 'u3', echo: 'Mindsets', t: '心態最重要' }, // 這筆也對得上
+  ]);
+  const out = parseBatch(raw, three, false);
+  assert.equal(out.results.length, 0);
+  assert.equal(out.stats.kept, 0);
+  // 對得上的兩筆也被標記,理由是「同批不可信」
+  const ids = out.failures.map((f) => f.id).sort();
+  assert.deepEqual(ids, ['u1', 'u2', 'u3']);
+});
+
+test('兩筆原文開頭相同時不誤判成對滑', () => {
+  const same = [
+    { id: 'u1', src: 'Claude Academy gives users', maxChars: 40, role: 'body' as const },
+    { id: 'u2', src: 'Claude Academy helps teams', maxChars: 40, role: 'body' as const },
+  ];
+  // 兩筆的前 8 字都是 "Claude A",無法判別歸屬 → 不能說是對滑
+  const raw = JSON.stringify([
+    { id: 'u1', echo: 'Claude A', t: '甲' },
+    { id: 'u2', echo: 'Claude A', t: '乙' },
+  ]);
+  const out = parseBatch(raw, same, false);
+  assert.ok(!out.stats.swapped);
+  assert.equal(out.results.length, 2);
 });

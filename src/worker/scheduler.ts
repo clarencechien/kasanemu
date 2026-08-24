@@ -380,12 +380,28 @@ async function runBatch(
     // §6.5 丟棄或失敗的區塊必須明確標示,不得沉默略過
     post(tabId, { type: 'failures', pageKey, failures: parsed.failures });
     const kinds = new Set(parsed.failures.map((f) => f.reason));
-    post(tabId, {
-      type: 'notice',
-      pageKey,
-      level: 'warn',
-      text: `${parsed.failures.length} 個區塊未通過 id 紀律檢查 (${[...kinds].join(', ')})`,
-    });
+    if (parsed.stats.swapped) {
+      // 這是 §5.5 等級的事:這個模型在這個 batch 大小下會對錯句
+      post(tabId, {
+        type: 'notice',
+        pageKey,
+        level: 'error',
+        text:
+          `偵測到 batch 內 id 對滑,${parsed.failures.length} 筆整批丟棄。` +
+          `${spec.modelId} 在 ${batch.length} 筆的 batch 下把譯文對錯了句 —— ` +
+          `換檔位,或把該檔的 batch 調小`,
+      });
+    } else {
+      const first = parsed.failures.find((f) => f.detail)?.detail;
+      post(tabId, {
+        type: 'notice',
+        pageKey,
+        level: 'warn',
+        text:
+          `${parsed.failures.length} 個區塊未通過 id 紀律檢查 (${[...kinds].join(', ')})` +
+          (first ? ` — ${first}` : ''),
+      });
+    }
   }
   await saveQueue(remove(await loadQueue(), batch));
 }
