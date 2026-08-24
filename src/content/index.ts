@@ -10,7 +10,7 @@ import type {
 } from '../shared/types';
 import { setDebug, dbg } from '../shared/log';
 import { diag, setDiagScope } from '../shared/diag';
-import { explainCandidate, findCandidates } from './detect';
+import { explainCandidate, findCandidates, setPageScript } from './detect';
 import {
   assignScales,
   checkOverflow,
@@ -24,7 +24,7 @@ import {
 } from './geometry';
 import { probePackagedFonts } from './fonts';
 import { L0Engine, translatorSupported } from './l0';
-import { pageSourceLang, toTranslatorTarget } from './lang';
+import { pageSourceLang, sampleVisibleText, sniffScript, toTranslatorTarget } from './lang';
 import {
   STALL_MS,
   dwellReady,
@@ -917,9 +917,16 @@ async function start(): Promise<void> {
   resetHintColor();
   clearMeasureCache();
 
+  // 整頁的字集要在掃描之前定案:日文 / 韓文頁面的純漢字標題不能被當成
+  // 「已經是中文」而跳過(見 detect.ts 的 setPageScript)
+  const sample = sampleVisibleText();
+  const script = sniffScript(sample);
+  setPageScript(script);
+
   // feature.md §6:不支援就退回 single 並告知,不報錯
   effective = state.pipeline;
   diag('info', 'start', {
+    script,
     pipeline: state.pipeline,
     tier: state.tier,
     mode: state.mode,
@@ -929,7 +936,7 @@ async function start(): Promise<void> {
   if (usesL0(effective)) {
     if (translatorSupported()) {
       l0 = new L0Engine(
-        pageSourceLang(settings.l0SourceLang),
+        pageSourceLang(settings.l0SourceLang, sample),
         toTranslatorTarget(settings.targetLang),
       );
       // 語言包已在本機時這裡就會成功;需要下載時走 needs-gesture,由 popup 接手
@@ -1233,6 +1240,7 @@ function stop(): void {
   // 留著會讓下一次 scan() 認為整頁都已經建過單元
   unitByEl = new WeakMap<Element, Unit>();
   probed = new WeakSet<Unit>();
+  setPageScript(null);
   // nextId 刻意不重置:worker 佇列裡可能還有已送出的舊 id,
   // 重新從 u1 開始會讓那些結果套到完全不同的區塊上 —— 自己製造 id 對滑。
   // §6.1 說 id 是「本頁單調遞增的穩定 id」,跨 stop/start 也維持單調。

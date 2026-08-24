@@ -1031,3 +1031,38 @@ feature.md §2.1 要 `single` 當對照組,理由是兩週 A/B。
 解開就能點開讀;popup 與設定頁各有一個連結進去。
 內容以「怎麼讀畫面」為主 —— 提示線四種樣子、HUD 四種訊息、
 以及紅了要怎麼辦(hover 或 Alt+Shift+R),那是回報品質的關鍵。
+
+## AV. 來源語言看字集,不看 `<html lang>`
+
+問題:「目前只有英文嗎?日文韓文呢?」
+
+盤點下來,三層各自的狀況不一樣:
+
+| | 日文 | 韓文 |
+|---|---|---|
+| L1(Gemini / Gemma) | 本來就行 —— system prompt 從頭到尾沒提過英文,只說「翻成繁體中文」 | 同左 |
+| 候選判定 | 假名比例 > 5% → 不是目標語言 → 翻(§3.2 早就處理了) | 諺文既不是漢字也不是假名 → 漢字比例 ≈ 0 → 翻 |
+| L0(Translator API) | **壞的** | **壞的** |
+
+L0 壞在 `pageSourceLang()` 只讀 `<html lang>`,讀不到就退回設定值 `en`。
+而 Translator API 的 `sourceLanguage` 是**宣告**不是偵測:
+拿 en→zh 的 translator 去翻日文,它不會報錯,只會安靜地吐回原文或亂碼。
+樣板留下來的 `lang="en"` 在日韓網站上很常見,所以這不是邊角案例。
+
+改成**字集優先**(`lang.ts` 的 `sniffScript` / `resolveSourceLang`):
+
+- 諺文 > 10% → `ko`;假名 > 5% → `ja`;漢字 > 30% → `zh`
+- 判得出來就**不採信** `<html lang>`
+- 判不出來(整頁拉丁字母)時,宣告若是 ja / ko / zh 也一併不採信 ——
+  那多半是整站語言設定,不是這一頁的內容;此時才用設定的預設值
+- 取樣用 TreeWalker 跳過 `<script>` / `<style>`:一頁的 inline script
+  動輒上萬個拉丁字元,用 `body.textContent` 會把日文頁面稀釋成「拉丁」
+
+第二個洞是逐塊判定的盲點:**日文標題常常是純漢字**(「東京都知事選挙」)。
+`looksLikeTargetLang()` 逐塊看是「漢字 100% → 已是中文 → 跳過」,
+於是日文站的標題全部不翻。語言是整頁的性質,不是每一塊各自的性質,
+所以 `detect.ts` 多了一個 `setPageScript()`,start() 時定案一次;
+整頁是 ja / ko 時,漢字堆一律當作要翻。
+
+L0 沒有該語言對的語言包時 `create()` 會丟 `NotSupportedError`,
+整批 `l0-failed` → dwell 之後仍由 L1 接手,不會整頁空白。

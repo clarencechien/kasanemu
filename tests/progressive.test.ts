@@ -2,7 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import { hasPua, mask, protectedFragments } from '../src/content/mask.ts';
-import { normalizeSourceLang, toTranslatorTarget } from '../src/content/lang.ts';
+import {
+  normalizeSourceLang,
+  resolveSourceLang,
+  sniffScript,
+  toTranslatorTarget,
+} from '../src/content/lang.ts';
 import {
   dwellReady,
   hintClassFor,
@@ -216,4 +221,37 @@ test('hover 重試:只有紅的才重排,而且有次數上限', () => {
   assert.equal(hoverRetryReady({ tier: 'failed', maxChars: 120 }, 0, 2), true);
   // 塞不下的區塊本來就不翻,重試也沒意義
   assert.equal(hoverRetryReady({ tier: 'failed', maxChars: 0 }, 0, 2), false);
+});
+
+const JA = '海底ケーブルを通って世界のデータが流れている。東京都知事選挙の結果について、'
+  + '専門家はこう分析する。インターネットの物理的な基盤は今も海の底にある。';
+const KO = '전 세계 데이터 트래픽의 대부분은 해저 케이블을 통해 흐른다. '
+  + '인터넷의 물리적 기반은 여전히 바다 밑에 있다는 사실을 아는 사람은 많지 않다.';
+const EN = 'Roughly ninety nine percent of intercontinental data traffic travels through '
+  + 'undersea cables. The physical backbone of the internet is still at the bottom of the sea.';
+const ZH = '全球資料流量約有九成九走海底電纜。網際網路的實體骨幹至今仍然躺在海底,'
+  + '而不是多數人以為的衛星。';
+
+test('字集偵測:假名 → ja、諺文 → ko、漢字 → zh、拉丁 → 沒有證據', () => {
+  assert.equal(sniffScript(JA), 'ja');
+  assert.equal(sniffScript(KO), 'ko');
+  assert.equal(sniffScript(ZH), 'zh');
+  // 拉丁字母分不出英文 / 法文 / 德文,只能說「沒有證據」
+  assert.equal(sniffScript(EN), null);
+  // 樣本太短就不猜
+  assert.equal(sniffScript('OK'), null);
+});
+
+test('來源語言:字集有證據時,不採信 <html lang>', () => {
+  // 樣板留下來的 lang="en",但畫面上是日文 —— 這是 L0 產出垃圾的主因
+  assert.equal(resolveSourceLang('en', JA, 'en'), 'ja');
+  assert.equal(resolveSourceLang('', KO, 'en'), 'ko');
+  // 宣告與字集一致時當然照用
+  assert.equal(resolveSourceLang('ja-JP', JA, 'en'), 'ja');
+  // 沒有證據(整頁拉丁)時,宣告是 CJK 一律不採信 —— 那是整站設定,不是這一頁
+  assert.equal(resolveSourceLang('ja', EN, 'en'), 'en');
+  assert.equal(resolveSourceLang('zh-TW', EN, 'en'), 'en');
+  // 沒有證據、宣告是別的拉丁語系語言時,宣告可信
+  assert.equal(resolveSourceLang('fr-FR', EN, 'en'), 'fr');
+  assert.equal(resolveSourceLang('', EN, 'en'), 'en');
 });

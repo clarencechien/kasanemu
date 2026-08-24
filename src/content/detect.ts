@@ -146,11 +146,25 @@ export function hasContainerChild(el: Element): boolean {
 }
 
 /**
+ * 整頁的字集(由 lang.ts 的 sniffScript 判定,start() 時設定一次)。
+ *
+ * 逐塊判斷「這塊是不是已經是中文」在日文頁面上會出錯:
+ * 標題常常是純漢字、一個假名都沒有(「東京都知事選挙」),
+ * 逐塊看就變成「漢字比例 100% → 已是中文 → 跳過」,
+ * 於是日文站的標題全部不翻。整頁層級知道這是日文,那一塊就該翻。
+ */
+let pageScript: 'ja' | 'ko' | 'zh' | null = null;
+
+export function setPageScript(s: 'ja' | 'ko' | 'zh' | null): void {
+  pageScript = s;
+}
+
+/**
  * §3.2 語言判定:以 Unicode script 比例判斷,不呼叫語言偵測 API。
  * 對 PRD 的一處收斂:漢字比例高但假名也出現時視為日文,仍然翻譯。
  * 純看漢字比例會讓所有日文頁面被誤判成「已是中文」。
  */
-export function looksLikeTargetLang(text: string): boolean {
+export function looksLikeTargetLang(text: string, script = pageScript): boolean {
   let han = 0;
   let kana = 0;
   let visible = 0;
@@ -162,6 +176,8 @@ export function looksLikeTargetLang(text: string): boolean {
   }
   if (visible === 0) return true;
   if (kana / visible > 0.05) return false;
+  // 整頁是日文 / 韓文時,漢字堆不是中文,是漢字詞
+  if (script === 'ja' || script === 'ko') return false;
   return han / visible > 0.3;
 }
 

@@ -66,9 +66,16 @@
         這一條是成本控制的關鍵:純粹滑過去的區塊留在 L0,不花錢。
         設成 0 等於整頁都升級,LLM 呼叫量會比「只翻可見區」更多。
       </p>
-      <label>L0 來源語言(頁面沒有 &lt;html lang&gt; 時使用)
+      <label>L0 來源語言(判不出字集時的預設值)
         <input type="text" data-k="l0SourceLang" spellcheck="false" />
       </label>
+      <p class="hint">
+        來源語言優先看**畫面上的文字**:假名 → 日文、諺文 → 韓文、漢字 → 中文。
+        <code>&lt;html lang&gt;</code> 只在字集判不出來(整頁拉丁字母)時才採用 ——
+        樣板留下來的 <code>lang="en"</code> 很常見,而 Translator API 的
+        sourceLanguage 是宣告不是偵測,弄錯了它不會報錯,只會安靜地吐出垃圾。
+        整頁都是拉丁字母時分不出英文 / 法文 / 德文,那時才用這個值。
+      </p>
       <label>不翻清單(一行一個:公司名、產品名、人名)
         <textarea id="no-translate" rows="4" spellcheck="false"></textarea>
       </label>

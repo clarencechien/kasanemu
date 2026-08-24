@@ -116,6 +116,13 @@ test('§3.2 已是中文的區塊跳過,但日文(有假名)仍然翻', () => {
   assert.equal(looksLikeTargetLang('全球資料流量約有九成九走海底電纜'), true);
   assert.equal(looksLikeTargetLang('Roughly 99 percent of traffic'), false);
   assert.equal(looksLikeTargetLang('海底ケーブルを通って世界のデータ'), false);
+  // 日文頁面的純漢字標題:逐塊看是「漢字 100%」,整頁層級知道那是日文
+  assert.equal(looksLikeTargetLang('東京都知事選挙'), true);
+  assert.equal(looksLikeTargetLang('東京都知事選挙', 'ja'), false);
+  assert.equal(looksLikeTargetLang('海底電纜與網際網路', 'ja'), false);
+  // 中文頁面(或判不出字集)時,行為不變
+  assert.equal(looksLikeTargetLang('全球資料流量約有九成九走海底電纜', 'zh'), true);
+  assert.equal(looksLikeTargetLang('Roughly 99 percent of traffic', 'ja'), false);
   const body = mount('<p>這一段已經是中文了,不用翻。</p><p>This one needs translating.</p>');
   assert.deepEqual(ids(body), ['This one needs translating.']);
 });
