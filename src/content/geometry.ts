@@ -1,6 +1,7 @@
 import { estimateLines } from './measure';
 import { fontStack } from './fonts';
-import { LETTER_SPACING_EM, STEPS, type Unit } from './unit';
+import { LETTER_SPACING_EM, STEPS, activeText, type Unit } from './unit';
+import { maxCharsAt } from './upgrade';
 
 /**
  * §3.3 幾何量測。座標一律轉成 document 座標,
@@ -37,12 +38,21 @@ function innerHeight(unit: Unit): number {
  * 事前控制長度比事後縮字級乾淨得多。
  */
 export function computeMaxChars(unit: Unit): number {
-  const s = unit.style;
-  const perLine = Math.floor(innerWidth(unit) / (s.fontSizePx * 1.02));
-  const lines = Math.max(1, Math.floor(innerHeight(unit) / s.lineHeightPx));
-  // 留 8% 餘裕給標點與換行禁則
-  const budget = Math.floor(perLine * lines * 0.92);
-  return Math.max(8, budget);
+  return maxCharsAtSize(unit, unit.style.fontSizePx);
+}
+
+/**
+ * feature.md §4.4 / D20:L1 的 maxChars 以「L0 譯文所在容器在鎖定字級下的容量」
+ * 計算,而不是以來源幾何。這樣 L1 譯文多數情況根本不會超出,
+ * 長度預算從排版工具升級成替換穩定性工具。
+ */
+export function maxCharsForUpgrade(unit: Unit): number {
+  const size = unit.lockedFontSize > 0 ? unit.lockedFontSize : unit.style.fontSizePx * unit.scale;
+  return maxCharsAtSize(unit, size);
+}
+
+function maxCharsAtSize(unit: Unit, fontSizePx: number): number {
+  return maxCharsAt(innerWidth(unit), innerHeight(unit), fontSizePx, unit.style.lineHeightPx);
 }
 
 function stepIndexFor(unit: Unit, text: string): { index: number; overflow: boolean } {
@@ -68,7 +78,11 @@ function stepIndexFor(unit: Unit, text: string): { index: number; overflow: bool
 export function assignScales(units: Unit[]): void {
   const groups = new Map<number, Unit[]>();
   for (const u of units) {
-    if (!u.translation) continue;
+    // feature.md §4.4 / D19:鎖定過的區塊不再參與分組,
+    // 否則單一段落的 L1 替換會把整組正文的字級一起拖小
+    if (u.lockedFontSize > 0) continue;
+    const text = activeText(u);
+    if (text === undefined) continue;
     if (u.singleLine) {
       // 一個長標題不該把整組正文都拖小 (D15)
       u.scale = 1;
@@ -83,7 +97,7 @@ export function assignScales(units: Unit[]): void {
   for (const bucket of groups.values()) {
     let worst = 0;
     for (const u of bucket) {
-      const { index, overflow } = stepIndexFor(u, u.translation!);
+      const { index, overflow } = stepIndexFor(u, activeText(u) ?? '');
       u.overflowing = overflow;
       if (index > worst) worst = index;
     }
@@ -91,4 +105,45 @@ export function assignScales(units: Unit[]): void {
     const scale = STEPS[worst]!;
     for (const u of bucket) u.scale = scale;
   }
+}
+
+/**
+ * feature.md §4.4 規則 1:字級分組在 L0 全部完成時定案並鎖定。
+ * 之後 L1 替換只讓個別區塊垂直溢出,不動整組。
+ */
+export function lockScales(units: Unit[]): number {
+  let locked = 0;
+  for (const u of units) {
+    if (u.lockedFontSize > 0) continue;
+    if (activeText(u) === undefined) continue;
+    u.lockedFontSize = u.style.fontSizePx * u.scale;
+    locked++;
+  }
+  return locked;
+}
+
+/**
+ * feature.md §4.4 規則 3:只有 resize、字型載入完成、SPA 換路由、
+ * 使用者手動重新翻譯才解鎖重算。
+ */
+export function unlockScales(units: Iterable<Unit>): void {
+  for (const u of units) u.lockedFontSize = 0;
+}
+
+/** 替換後個別區塊是否溢出(鎖定字級下),只用來在 debug 標記 */
+export function checkOverflow(unit: Unit): boolean {
+  const text = activeText(unit);
+  if (text === undefined) return false;
+  const size = unit.lockedFontSize > 0 ? unit.lockedFontSize : unit.style.fontSizePx * unit.scale;
+  const family = fontStack(unit.style.isSerif, unit.style.sourceStack);
+  const lines = estimateLines(
+    text,
+    innerWidth(unit),
+    unit.style.fontStyle,
+    unit.style.targetWeight,
+    size,
+    family,
+    LETTER_SPACING_EM,
+  );
+  return lines * unit.style.lineHeightPx > innerHeight(unit) + 0.5;
 }

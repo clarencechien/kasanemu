@@ -27,6 +27,8 @@ export async function getDomainState(host: string, s?: Settings): Promise<Domain
     mode: stored.mode ?? 'full',
     // 檔位以網域為單位記憶,與顯示狀態分開存 (§5.1)
     tier: stored.tier ?? settings.defaultTier,
+    // feature.md §2.1 管線模式同樣以網域為單位記憶
+    pipeline: stored.pipeline ?? settings.defaultPipeline,
   };
 }
 

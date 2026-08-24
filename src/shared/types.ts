@@ -1,6 +1,16 @@
 import type { Tier } from './models';
 
 export type DisplayMode = 'full' | 'peek';
+
+/**
+ * feature.md §2.1 三種管線模式。
+ * single 是 Phase 1 的行為,保留為 A/B 對照組 (D17);
+ * l0-only 是正式模式而非除錯選項 —— 零成本、離線、無額度 (D18)。
+ */
+export type Pipeline = 'single' | 'progressive' | 'l0-only';
+
+/** feature.md §4.1 區塊狀態機 */
+export type UnitTier = 'pending' | 'l0' | 'l1' | 'l0-failed' | 'l1-failed' | 'failed' | 'skipped';
 export type OverlayStyleName = 'inherit' | 'annotation';
 export type CacheMode = 'session' | 'persistent' | 'off';
 
@@ -41,6 +51,8 @@ export interface DomainState {
   enabled: boolean;
   mode: DisplayMode;
   tier: Tier;
+  /** feature.md §2.1 管線模式以網域為單位記憶,與顯示狀態、模型檔位各自獨立 */
+  pipeline: Pipeline;
 }
 
 export interface QuotaOverride {
@@ -58,6 +70,17 @@ export interface Settings {
   apiKey: string;
   targetLang: string;
   defaultTier: Tier;
+  /** feature.md §2.1 新網域的預設管線模式 */
+  defaultPipeline: Pipeline;
+  /**
+   * feature.md 實作註記:Translator API 要求明確的 sourceLanguage,
+   * 而 Phase 1 沒有語言偵測。取不到 <html lang> 時用這個值。
+   */
+  l0SourceLang: string;
+  /** feature.md §4.2 第 2 條:可見區停留超過這個時間才排入 L1 (D21) */
+  upgradeDwellMs: number;
+  /** feature.md §3.4 不翻清單(公司名、產品名、人名),以佔位符保護 */
+  noTranslateTerms: string[];
   /** §4.3 中文字重加權 */
   weightOffset: 0 | 100 | 200;
   /** §4.7 提示線 */
@@ -80,6 +103,11 @@ export const DEFAULT_SETTINGS: Settings = {
   apiKey: '',
   targetLang: 'zh-TW',
   defaultTier: 'balanced',
+  // 預設留在 Phase 1 的行為:漸進式要自己開,才有 A/B 的意義
+  defaultPipeline: 'single',
+  l0SourceLang: 'en',
+  upgradeDwellMs: 1500,
+  noTranslateTerms: [],
   weightOffset: 100,
   hintLine: true,
   forceAnnotation: false,
@@ -98,6 +126,19 @@ export const DEFAULT_SETTINGS: Settings = {
 export interface SpendDay {
   /** YYYY-MM-DD,本地日界線 */
   day: string;
+  promptTokens: number;
+  outputTokens: number;
+  thoughtsTokens: number;
+  usd: number;
+  calls: number;
+  /**
+   * feature.md §2.2:每頁 LLM token 消耗要「按模式分開累計」,
+   * 否則兩週的 A/B 沒有數字可比。
+   */
+  byPipeline?: Partial<Record<Pipeline, PipelineSpend>>;
+}
+
+export interface PipelineSpend {
   promptTokens: number;
   outputTokens: number;
   thoughtsTokens: number;

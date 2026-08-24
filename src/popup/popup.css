@@ -61,3 +61,18 @@ td:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
 .thoughts { color: var(--accent); }
 .note { color: var(--dim); font-size: 11px; margin-top: 4px; min-height: 1em; }
 footer { display: flex; justify-content: space-between; border-top: 1px solid var(--line); padding-top: 8px; }
+.hidden { display: none; }
+.mono {
+  font: 11px/1.5 ui-monospace, monospace;
+  white-space: pre-wrap;
+  color: var(--fg);
+}
+.warn {
+  color: #c0392b;
+  font-size: 11px;
+  margin-top: 4px;
+}
+@media (prefers-color-scheme: dark) {
+  .warn { color: #ff8a7a; }
+}
+#by-pipeline td:first-child { color: var(--dim); }

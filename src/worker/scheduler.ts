@@ -1,7 +1,7 @@
 import type { Tier } from '../shared/models';
 import { getSettings, resolveTier } from '../shared/settings';
 import type { ToContent } from '../shared/messages';
-import type { Settings, UnitFailure, UnitRequest, UnitResult } from '../shared/types';
+import type { Pipeline, Settings, UnitFailure, UnitRequest, UnitResult } from '../shared/types';
 import { dbg, warn } from '../shared/log';
 import { callBatch } from './gemini';
 import { estimateTokens, parseBatch } from './protocol';
@@ -14,6 +14,10 @@ interface QueueItem extends UnitRequest {
   pageKey: string;
   tier: Tier;
   attempts: number;
+  /** feature.md §2.2 花費按模式分開累計 */
+  pipeline: Pipeline;
+  /** feature.md §4.2 距視窗中心的距離,越小越先送 */
+  priority: number;
 }
 
 const QUEUE_KEY = 'queue';
@@ -49,18 +53,60 @@ export async function enqueue(
   tabId: number,
   pageKey: string,
   tier: Tier,
+  pipeline: Pipeline,
   units: UnitRequest[],
+  priorities: Record<string, number> = {},
 ): Promise<void> {
   const q = await loadQueue();
   const known = new Set(q.map((i) => `${i.tabId}:${i.pageKey}:${i.id}`));
   for (const u of units) {
     const k = `${tabId}:${pageKey}:${u.id}`;
     if (known.has(k)) continue;
-    q.push({ ...u, tabId, pageKey, tier, attempts: 0 });
+    q.push({ ...u, tabId, pageKey, tier, pipeline, attempts: 0, priority: priorities[u.id] ?? 0 });
   }
   await saveQueue(q);
   await ensureAlarm(q.length > 0);
   void drain();
+}
+
+/**
+ * feature.md §4.2:使用者捲動時重排佇列,距視窗中心越近越優先。
+ * 已送出的請求不取消 —— 取消不會退錢。
+ */
+export async function reprioritize(
+  tabId: number,
+  pageKey: string,
+  priorities: Record<string, number>,
+): Promise<void> {
+  const q = await loadQueue();
+  let touched = 0;
+  for (const item of q) {
+    if (item.tabId !== tabId || item.pageKey !== pageKey) continue;
+    const p = priorities[item.id];
+    if (p === undefined) continue;
+    item.priority = p;
+    touched++;
+  }
+  if (touched > 0) await saveQueue(q);
+}
+
+/**
+ * feature.md §4.6 / D23:快取命中時跳過 L0,直接以 L1 譯文渲染。
+ * 這條路徑不碰保險絲、不碰 token bucket,也不排佇列 —— 純讀。
+ */
+export async function cacheProbe(
+  tier: Tier,
+  units: Array<{ id: string; src: string; maxChars: number }>,
+): Promise<{ hits: UnitResult[] }> {
+  const settings = await getSettings();
+  const spec = resolveTier(tier, settings);
+  const hits: UnitResult[] = [];
+  for (const u of units) {
+    const k = await cache.keyFor(u.src, settings.targetLang, spec.modelId, u.maxChars);
+    const hit = await cache.get(settings.cacheMode, k);
+    if (hit !== null) hits.push({ id: u.id, t: hit });
+  }
+  return { hits };
 }
 
 export async function dropPage(tabId: number, pageKey: string): Promise<void> {
@@ -87,11 +133,21 @@ function sleep(ms: number): Promise<void> {
 function takeBatch(q: QueueItem[], maxUnits: number, maxTokens: number): QueueItem[] {
   const head = q[0];
   if (!head) return [];
+  // feature.md §4.2 佇列排序:距視窗中心越近越優先。
+  // 只在同一個 tab / page / 檔位 / 管線的群組內排序,群組本身照 FIFO。
+  const group = q
+    .filter(
+      (it) =>
+        it.tabId === head.tabId &&
+        it.pageKey === head.pageKey &&
+        it.tier === head.tier &&
+        it.pipeline === head.pipeline,
+    )
+    .sort((a, b) => a.priority - b.priority);
   const batch: QueueItem[] = [];
   let tokens = 0;
-  for (let i = 0; i < q.length && batch.length < maxUnits; i++) {
-    const it = q[i]!;
-    if (it.tabId !== head.tabId || it.pageKey !== head.pageKey || it.tier !== head.tier) continue;
+  for (const it of group) {
+    if (batch.length >= maxUnits) break;
     const t = estimateTokens(it.src) + 24;
     if (batch.length > 0 && tokens + t > maxTokens) break;
     tokens += t;
@@ -259,7 +315,7 @@ async function runBatch(
   }
 
   // ---- 記帳。§8 第 3 層計數跨重排累計
-  await recordSpend(spec, res.usage);
+  await recordSpend(spec, res.usage, batch[0]?.pipeline ?? 'single');
   await addPageTokens(pageKey, res.usage.prompt + res.usage.output + res.usage.thoughts);
 
   const parsed = parseBatch(res.text, units, res.truncated);

@@ -31,6 +31,42 @@
     </section>
 
     <section>
+      <h2>漸進式翻譯</h2>
+      <p class="hint">
+        L0 是 Chrome 內建的 Translator API:本機、毫秒級、零成本,疊層立刻出現;
+        L1 是 Gemini / Gemma 的譯文,回來之後就地替換。
+        <code>single</code> 是 Phase 1 的行為,保留為對照組;
+        <code>l0-only</code> 是零成本離線模式,不是除錯選項。
+        模式以網域為單位記憶,在 popup 切換。
+      </p>
+      <label>新網域的預設管線
+        <select data-k="defaultPipeline">
+          <option value="single">single(Phase 1 行為)</option>
+          <option value="progressive">progressive(L0 打底 + L1 升級)</option>
+          <option value="l0-only">l0-only(零成本、離線)</option>
+        </select>
+      </label>
+      <label>升級門檻:可見區停留幾毫秒才送 L1
+        <input type="number" data-k="upgradeDwellMs" data-num="1" min="0" step="100" />
+      </label>
+      <p class="hint">
+        這一條是成本控制的關鍵:純粹滑過去的區塊留在 L0,不花錢。
+        設成 0 等於整頁都升級,LLM 呼叫量會比「只翻可見區」更多。
+      </p>
+      <label>L0 來源語言(頁面沒有 &lt;html lang&gt; 時使用)
+        <input type="text" data-k="l0SourceLang" spellcheck="false" />
+      </label>
+      <label>不翻清單(一行一個:公司名、產品名、人名)
+        <textarea id="no-translate" rows="4" spellcheck="false"></textarea>
+      </label>
+      <p class="hint">
+        L0 沒有 system prompt 可以交代,所以這些片段會在送出前換成私用區佔位符,
+        翻完再還原;佔位符遺失的區塊一律算失敗,不會交出少了程式碼的譯文。
+        行內 <code>&lt;code&gt;</code>、<code>kbd</code>、<code>samp</code> 自動納入保護,不必列在這裡。
+      </p>
+    </section>
+
+    <section>
       <h2>三檔模型</h2>
       <p class="hint">
         模型 ID 會在啟動時與 <code>GET /v1beta/models</code> 比對;不存在的 ID 標紅,

@@ -1,7 +1,8 @@
 import type { DisplayMode, Settings } from '../shared/types';
 import { fontFaceCss, fontStack } from './fonts';
 import { hintColor } from './styleprobe';
-import { LETTER_SPACING_EM, type Unit } from './unit';
+import { LETTER_SPACING_EM, activeText, effectiveFontSize, type Unit } from './unit';
+import { hintClassFor } from './upgrade';
 
 /**
  * §3.3 疊層掛在單一 document 層級的容器上。
@@ -10,6 +11,9 @@ import { LETTER_SPACING_EM, type Unit } from './unit';
  * §11.1 容器用 closed shadow DOM,樣式不受頁面 CSS 影響。
  */
 const HOST_ID = 'kasanemu-root';
+
+/** feature.md §4.5 過場刻意短。越明顯的動畫越吸引注意,替換應該低調。 */
+const SWAP_MS = 80;
 
 const LAYER_CSS = `
 :host { all: initial; }
@@ -20,7 +24,7 @@ const LAYER_CSS = `
   pointer-events: none;
   z-index: 2147483000;
 }
-.box {
+.box, .ghost {
   position: absolute;
   box-sizing: border-box;
   margin: 0;
@@ -50,7 +54,7 @@ const LAYER_CSS = `
   transition: opacity 130ms ease;
 }
 /* §4.4 單行元素允許橫向溢出,不加入字級分組 (D15) */
-.box.single {
+.box.single, .ghost.single {
   width: max-content;
   min-width: var(--ksnm-w);
   max-width: none;
@@ -62,6 +66,16 @@ const LAYER_CSS = `
 /* §2.1 點閱:疊層預設隱藏,滑過才顯示 */
 .layer.mode-peek .box { opacity: 0; }
 .layer.mode-peek .box.hovered { opacity: 1; }
+/*
+ * feature.md §4.5 cross-fade:舊譯文的複本疊在上面淡出,
+ * 新譯文已經在下面就位。幾何完全相同,所以看起來只是字換掉。
+ */
+.ghost {
+  opacity: 1;
+  transition: opacity ${SWAP_MS}ms linear;
+  z-index: 1;
+}
+.ghost.out { opacity: 0; }
 /* §4.6 標註樣式:fallback、按住 Alt 掃視、或 options 指定 */
 .layer.alt-scan .box,
 .box.annotate {
@@ -73,7 +87,11 @@ const LAYER_CSS = `
   border-radius: 5px;
 }
 .layer.alt-scan .box { opacity: 1; }
-/* §4.7 提示線是唯一表明「這是譯文」的記號;hover 時保留 */
+/*
+ * §4.7 提示線是唯一表明「這是譯文」的記號;hover 時保留。
+ * feature.md §5.1 / D22:並且以虛實與顏色表明階層 ——
+ * 這是安全需求,不是美觀選項。L0 打底會讓 L1 的失敗變隱形。
+ */
 .hint {
   position: absolute;
   left: var(--ksnm-hx);
@@ -84,21 +102,34 @@ const LAYER_CSS = `
   opacity: 0.4;
   background: var(--ksnm-hint);
 }
-/* §6.5 失敗必須可見:提示線改為虛線,不得沉默略過 */
-.hint.failed {
+/* l1:頁面連結色,實線(Phase 1 樣式) */
+.hint.l1 { opacity: 0.4; background: var(--ksnm-hint); }
+/* l0:頁面連結色,虛線,更淡 —— 掃一眼就知道整頁還停在 L0 */
+.hint.l0 {
+  opacity: 0.25;
   background: repeating-linear-gradient(
     to bottom,
     var(--ksnm-hint) 0 3px,
     transparent 3px 6px
   );
-  opacity: 0.75;
+}
+/* l1-failed:警示色,實線(有 L0 可讀,但升級管線死了) */
+.hint.warn { opacity: 0.85; background: var(--ksnm-warn); }
+/* failed:警示色,虛線(連原文都只能自己看) */
+.hint.warn.dashed {
+  background: repeating-linear-gradient(
+    to bottom,
+    var(--ksnm-warn) 0 3px,
+    transparent 3px 6px
+  );
 }
 .panel {
   position: fixed;
   right: 12px;
   bottom: 12px;
-  width: 380px;
-  max-height: 46vh;
+  width: 520px;
+  max-width: calc(100vw - 24px);
+  max-height: 52vh;
   overflow: auto;
   pointer-events: auto;
   background: #10151b;
@@ -109,12 +140,14 @@ const LAYER_CSS = `
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
 }
 .panel h4 { margin: 0 0 6px; font-size: 12px; }
-.panel table { width: 100%; border-collapse: collapse; }
-.panel td { vertical-align: top; padding: 3px 4px; border-top: 1px solid #263039; }
+.panel table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.panel td, .panel th { vertical-align: top; padding: 3px 4px; border-top: 1px solid #263039; }
+.panel th { text-align: left; color: #7f95a8; font-weight: 400; border-top: 0; }
 .panel .s { color: #9db4c8; }
-.panel .t { color: #ffe0a3; }
+.panel .l0 { color: #9fd0a8; }
+.panel .l1 { color: #ffe0a3; }
 @media (prefers-reduced-motion: reduce) {
-  .box { transition: none; }
+  .box, .ghost { transition: none; }
 }
 `;
 
@@ -125,6 +158,7 @@ export class OverlayLayer {
   private panel: HTMLDivElement | null = null;
   private originX = 0;
   private originY = 0;
+  private reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   constructor() {
     const existing = document.getElementById(HOST_ID);
@@ -174,17 +208,55 @@ export class OverlayLayer {
   }
 
   paint(unit: Unit, settings: Settings): void {
-    if (!unit.translation) return;
+    const text = activeText(unit);
+    if (text === undefined) return;
     if (!unit.box) {
       unit.box = document.createElement('div');
       this.layer.appendChild(unit.box);
     }
     const s = unit.style;
     const box = unit.box;
-    const size = s.fontSizePx * unit.scale;
     const annot = unit.annotation || settings.forceAnnotation;
     box.className = `box${unit.singleLine ? ' single' : ''}${annot ? ' annotate' : ''}`;
-    box.textContent = unit.translation;
+    box.textContent = text;
+    this.applyVars(box, unit, effectiveFontSize(unit));
+    this.paintHint(unit, settings);
+  }
+
+  /**
+   * feature.md §4.5 就地替換。
+   * 不改變疊層盒子的幾何,只換內容;舊內容以 80ms cross-fade 淡出。
+   */
+  swap(unit: Unit, settings: Settings): void {
+    const text = activeText(unit);
+    if (text === undefined) return;
+    const box = unit.box;
+    if (!box) {
+      this.paint(unit, settings);
+      return;
+    }
+    if (box.textContent === text) return;
+    if (this.reduceMotion) {
+      // prefers-reduced-motion: reduce → 直接切換
+      box.textContent = text;
+      this.applyVars(box, unit, effectiveFontSize(unit));
+      this.paintHint(unit, settings);
+      return;
+    }
+    const ghost = box.cloneNode(true) as HTMLDivElement;
+    ghost.className = `ghost${unit.singleLine ? ' single' : ''}`;
+    this.layer.appendChild(ghost);
+    box.textContent = text;
+    this.applyVars(box, unit, effectiveFontSize(unit));
+    this.paintHint(unit, settings);
+    requestAnimationFrame(() => {
+      ghost.classList.add('out');
+      setTimeout(() => ghost.remove(), SWAP_MS + 40);
+    });
+  }
+
+  private applyVars(el: HTMLElement, unit: Unit, size: number): void {
+    const s = unit.style;
     const vars: Record<string, string> = {
       '--ksnm-x': `${unit.rect.left - this.originX}px`,
       '--ksnm-y': `${unit.rect.top - this.originY}px`,
@@ -206,13 +278,13 @@ export class OverlayLayer {
       '--ksnm-pad': s.padding.map((p) => `${p}px`).join(' '),
       '--ksnm-radius': s.borderRadius,
     };
-    for (const [k, v] of Object.entries(vars)) box.style.setProperty(k, v);
-    this.paintHint(unit, settings);
+    for (const [k, v] of Object.entries(vars)) el.style.setProperty(k, v);
   }
 
+  /** feature.md §5.1 提示線的階層色(對照表在 upgrade.ts,有測試蓋住) */
   paintHint(unit: Unit, settings: Settings): void {
-    const wanted = settings.hintLine && (unit.status === 'done' || unit.status === 'failed');
-    if (!wanted) {
+    const cls = hintClassFor(unit.tier, settings.hintLine);
+    if (cls === null) {
       unit.hint?.remove();
       unit.hint = undefined;
       return;
@@ -222,13 +294,14 @@ export class OverlayLayer {
       this.layer.appendChild(unit.hint);
     }
     const h = unit.hint;
-    h.className = `hint${unit.status === 'failed' ? ' failed' : ''}`;
+    h.className = `hint ${cls}`;
     const top = unit.firstRectTop;
     const height = Math.max(4, unit.rect.top + unit.rect.height - top);
     h.style.setProperty('--ksnm-hx', `${unit.rect.left - this.originX - 8}px`);
     h.style.setProperty('--ksnm-hy', `${top - this.originY}px`);
     h.style.setProperty('--ksnm-hh', `${height}px`);
     h.style.setProperty('--ksnm-hint', hintColor(unit.style.color));
+    h.style.setProperty('--ksnm-warn', '#c0392b');
   }
 
   drop(unit: Unit): void {
@@ -238,22 +311,29 @@ export class OverlayLayer {
     unit.hint = undefined;
   }
 
-  /** §6.4 第三層防線:抽樣人工比對。自動指標抓不到 id 對滑。 */
+  /**
+   * §6.4 第三層防線:抽樣人工比對。自動指標抓不到 id 對滑。
+   * feature.md §5.3:並列原文 / L0 / L1 —— 這是判斷「L1 值不值得那些錢」
+   * 的唯一可靠辦法。如果 L1 只是把 L0 換成同義句,l0-only 就是正確答案。
+   */
   showSample(units: Unit[], stats: string): void {
     if (!this.panel) {
       this.panel = document.createElement('div');
       this.panel.className = 'panel';
       this.layer.appendChild(this.panel);
     }
+    const cut = (s: string | undefined) => escapeHtml((s ?? '—').slice(0, 160));
     const rows = units
       .map(
         (u) =>
-          `<tr><td class="s">${u.id}<br>${escapeHtml(u.src.slice(0, 120))}</td>` +
-          `<td class="t">${escapeHtml((u.translation ?? '(無)').slice(0, 120))}</td></tr>`,
+          `<tr><td class="s">${u.id}<br>${cut(u.src)}</td>` +
+          `<td class="l0">${cut(u.l0Text)}</td>` +
+          `<td class="l1">${cut(u.l1Text)}</td></tr>`,
       )
       .join('');
     this.panel.innerHTML =
-      `<h4>Kasanemu debug — ${escapeHtml(stats)}</h4><table>${rows}</table>` +
+      `<h4>Kasanemu debug — ${escapeHtml(stats)}</h4>` +
+      `<table><thead><tr><th>原文</th><th>L0</th><th>L1</th></tr></thead><tbody>${rows}</tbody></table>` +
       `<p class="s">Alt+Shift+D 關閉;一致 ≠ 正確,穩定地錯也是一種高一致。</p>`;
   }
 

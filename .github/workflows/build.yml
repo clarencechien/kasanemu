@@ -1,0 +1,94 @@
+name: build
+
+on:
+  push:
+    branches: [main, 'claude/**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: typecheck
+        run: npm run typecheck
+
+      - name: test
+        run: npm test
+
+      # 字型是產生物,不進版控。同一份 subset 腳本就會產出同一份 woff2,
+      # 所以用腳本的 hash 當 cache key,省下每次 ~15 MB 的原始 ttf 下載。
+      - name: cache subset fonts
+        id: fontcache
+        uses: actions/cache@v4
+        with:
+          path: assets/fonts/*.woff2
+          key: fonts-${{ hashFiles('scripts/fetch-fonts.mjs') }}
+
+      - name: install fonttools
+        if: steps.fontcache.outputs.cache-hit != 'true'
+        run: pip install --quiet fonttools brotli
+
+      - name: subset fonts
+        if: steps.fontcache.outputs.cache-hit != 'true'
+        # 抓不到 Google Fonts 不該讓整個 build 失敗:擴充在沒有打包字型時
+        # 會退回系統中文字型,仍然可用(見 docs/fonts.md)。
+        continue-on-error: true
+        run: npm run fonts
+
+      - name: build
+        run: npm run build
+
+      - name: zip
+        run: npm run zip
+
+      - name: report
+        run: |
+          echo "### dist" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          du -ah dist | sort -k2 >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          ls -la release >> "$GITHUB_STEP_SUMMARY"
+
+      # 未封裝載入用:下載後解壓,chrome://extensions → 載入未封裝項目
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kasanemu-unpacked
+          path: dist/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kasanemu-zip
+          path: release/*.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: kasanemu-zip
+          path: release
+      - name: attach zip to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" release/*.zip --generate-notes --title "${GITHUB_REF_NAME}"
