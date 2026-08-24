@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+    <title>Kasanemu</title>
+  </head>
+  <body>
+    <header>
+      <strong>疊 Kasanemu</strong>
+      <span id="host" class="host"></span>
+    </header>
+
+    <section class="row">
+      <button id="toggle" class="primary">啟用</button>
+      <button id="mode">全開</button>
+    </section>
+
+    <section>
+      <div class="label">檔位(本網域)</div>
+      <div class="row tiers">
+        <label><input type="radio" name="tier" value="quality" /> quality</label>
+        <label><input type="radio" name="tier" value="balanced" /> balanced</label>
+        <label><input type="radio" name="tier" value="free" /> free</label>
+      </div>
+      <div id="tier-note" class="note"></div>
+    </section>
+
+    <section>
+      <div class="label">花費(§8.1)</div>
+      <table id="spend">
+        <tbody>
+          <tr><td>今日</td><td id="today-twd">—</td><td id="today-usd" class="dim">—</td></tr>
+          <tr><td>本月</td><td id="month-twd">—</td><td id="month-usd" class="dim">—</td></tr>
+        </tbody>
+      </table>
+      <table id="tokens">
+        <thead><tr><td></td><td class="dim">今日</td><td class="dim">本月</td></tr></thead>
+        <tbody>
+          <tr><td>prompt</td><td id="tk-prompt-d">0</td><td id="tk-prompt-m">0</td></tr>
+          <tr><td>output</td><td id="tk-output-d">0</td><td id="tk-output-m">0</td></tr>
+          <tr class="thoughts"><td>thoughts</td><td id="tk-thoughts-d">0</td><td id="tk-thoughts-m">0</td></tr>
+        </tbody>
+      </table>
+      <div id="fuse" class="note"></div>
+      <div id="notice" class="note"></div>
+    </section>
+
+    <footer>
+      <button id="clear-cache" class="link">清空快取</button>
+      <button id="open-options" class="link">設定</button>
+    </footer>
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>

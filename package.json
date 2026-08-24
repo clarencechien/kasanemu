@@ -1,0 +1,23 @@
+{
+  "name": "kasanemu",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Kasanemu — opaque overlay translation for Chrome (BYOK, self-use)",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "fonts": "node scripts/fetch-fonts.mjs",
+    "probe:gemma": "node scripts/probe-gemma.mjs",
+    "test": "node --experimental-strip-types --test 'tests/*.test.ts'",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.268",
+    "@types/jsdom": "^30.0.0",
+    "esbuild": "^0.23.0",
+    "jsdom": "^30.0.1",
+    "typescript": "^5.5.4"
+  }
+}
