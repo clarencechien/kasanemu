@@ -123,6 +123,31 @@ const LAYER_CSS = `
     transparent 3px 6px
   );
 }
+/*
+ * 頁內狀態列。使用者的原話:「翻譯中還是沒翻譯沒有明確的 status」。
+ * 疊層本身看起來一樣,分不出「還在等」與「已經死了」,所以狀態要自己講。
+ * pointer-events: none —— 與疊層同一條規則,不可攔截 hover。
+ */
+.hud {
+  position: fixed;
+  left: 12px;
+  bottom: 12px;
+  pointer-events: none;
+  background: rgba(16, 21, 27, 0.92);
+  color: #e6edf3;
+  font: 12px/1.4 ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: 0.01em;
+  padding: 6px 10px;
+  border-radius: 6px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  transition: opacity 200ms ease;
+  max-width: 60vw;
+}
+.hud.show { opacity: 0.92; }
+.hud.busy::before { content: '⋯ '; }
+.hud.warn { background: #7a2318; color: #ffe8e3; }
+.hud.warn::before { content: '✗ '; }
 .panel {
   position: fixed;
   right: 12px;
@@ -257,11 +282,17 @@ export class OverlayLayer {
 
   private applyVars(el: HTMLElement, unit: Unit, size: number): void {
     const s = unit.style;
+    // 出血:盒子往四周各撐 bleed,padding 同量補回來,
+    // 於是**譯文的位置一格都沒動**,只有背景多蓋了一圈。
+    // 這就是「蓋得更準」的做法 —— 對齊靠 padding,遮蔽靠 border-box。
+    const bx = unit.bleed?.x ?? 0;
+    const by = unit.bleed?.y ?? 0;
+    const [pt, pr, pb, pl] = s.padding;
     const vars: Record<string, string> = {
-      '--ksnm-x': `${unit.rect.left - this.originX}px`,
-      '--ksnm-y': `${unit.rect.top - this.originY}px`,
-      '--ksnm-w': `${unit.rect.width}px`,
-      '--ksnm-h': `${unit.rect.height}px`,
+      '--ksnm-x': `${unit.rect.left - this.originX - bx}px`,
+      '--ksnm-y': `${unit.rect.top - this.originY - by}px`,
+      '--ksnm-w': `${unit.rect.width + bx * 2}px`,
+      '--ksnm-h': `${unit.rect.height + by * 2}px`,
       '--ksnm-bg': s.background ?? 'rgba(230, 241, 251, 0.94)',
       '--ksnm-fg': s.color,
       '--ksnm-ff': fontStack(s.isSerif, s.sourceStack),
@@ -275,7 +306,7 @@ export class OverlayLayer {
       '--ksnm-lh': `${s.lineHeightPx}px`,
       '--ksnm-align': s.textAlign,
       '--ksnm-dir': s.direction,
-      '--ksnm-pad': s.padding.map((p) => `${p}px`).join(' '),
+      '--ksnm-pad': `${pt + by}px ${pr + bx}px ${pb + by}px ${pl + bx}px`,
       '--ksnm-radius': s.borderRadius,
     };
     for (const [k, v] of Object.entries(vars)) el.style.setProperty(k, v);
@@ -302,6 +333,36 @@ export class OverlayLayer {
     h.style.setProperty('--ksnm-hh', `${height}px`);
     h.style.setProperty('--ksnm-hint', hintColor(unit.style.color));
     h.style.setProperty('--ksnm-warn', '#c0392b');
+  }
+
+  private hud: HTMLDivElement | null = null;
+  private hudTimer = 0;
+
+  /**
+   * 狀態列。`busy` 會持續顯示到下一次更新;`idle` 與 `warn` 顯示幾秒後淡出
+   * (warn 停久一點,那是要被看到的)。
+   */
+  setHud(text: string, level: 'idle' | 'busy' | 'warn'): void {
+    if (!this.hud) {
+      this.hud = document.createElement('div');
+      this.hud.className = 'hud';
+      this.layer.appendChild(this.hud);
+    }
+    const el = this.hud;
+    el.className = `hud show ${level}`;
+    el.textContent = text;
+    clearTimeout(this.hudTimer);
+    if (level === 'busy') return;
+    this.hudTimer = window.setTimeout(
+      () => el.classList.remove('show'),
+      level === 'warn' ? 8000 : 3000,
+    );
+  }
+
+  hideHud(): void {
+    clearTimeout(this.hudTimer);
+    this.hud?.remove();
+    this.hud = null;
   }
 
   drop(unit: Unit): void {

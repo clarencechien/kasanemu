@@ -46,6 +46,18 @@
           <option value="l0-only">l0-only(零成本、離線)</option>
         </select>
       </label>
+      <label class="check">
+        <input type="checkbox" data-k="autoTranslate" />
+        啟用後自動翻譯可見區
+      </label>
+      <p class="hint">
+        關掉的話,啟用只會掃描並顯示狀態,要按 popup 的「翻譯這一頁」或
+        <code>Alt+Shift+R</code> 才真的送出。不想一啟用就花錢時用。
+      </p>
+      <label class="check">
+        <input type="checkbox" data-k="hud" />
+        顯示頁內狀態列(翻了幾塊、還在等幾塊、失敗幾塊)
+      </label>
       <label>升級門檻:可見區停留幾毫秒才送 L1
         <input type="number" data-k="upgradeDwellMs" data-num="1" min="0" step="100" />
       </label>
@@ -86,6 +98,15 @@
           <option value="200">+200</option>
         </select>
       </label>
+      <label>疊層額外出血(px)
+        <input type="number" data-k="overlayBleedPx" data-num="1" min="0" max="12" step="1" />
+      </label>
+      <p class="hint">
+        疊層的盒子等於原文的 border-box,但字的墨水範圍由字型的 ascent / descent
+        決定 —— 行距壓得很緊的大標,第一行的頂端與最後一行的 g 尾巴會落在盒子外面,
+        看起來像沒蓋乾淨。那一部分會用字型度量自動補足;這個值是再多加的固定量,
+        給 text-shadow、斜體尾巴這類量不到的東西。加太多會蓋到相鄰區塊。
+      </p>
       <label class="check"><input type="checkbox" data-k="hintLine" /> 顯示譯文左緣提示線</label>
       <label class="check"><input type="checkbox" data-k="forceAnnotation" /> 一律使用標註樣式</label>
       <p class="hint">

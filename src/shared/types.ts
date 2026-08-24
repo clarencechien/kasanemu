@@ -81,6 +81,20 @@ export interface Settings {
   upgradeDwellMs: number;
   /** feature.md §3.4 不翻清單(公司名、產品名、人名),以佔位符保護 */
   noTranslateTerms: string[];
+  /**
+   * 啟用後是否自動翻譯可見區(PRD §7.1 的行為)。
+   * 關掉就必須按 popup 的「翻譯這一頁」或 Alt+Shift+R 才開始 ——
+   * 想先看清楚狀態、或不想一啟用就花錢的時候用。
+   */
+  autoTranslate: boolean;
+  /** 頁內狀態列:翻了幾塊、還在等幾塊、失敗幾塊 */
+  hud: boolean;
+  /**
+   * 疊層額外往外撐幾 px。
+   * 字型度量算得出來的溢出(緊排標題的 ascender / descender)會自動補,
+   * 這個值是給量不到的東西用的:text-shadow、斜體尾巴、次像素捨入。
+   */
+  overlayBleedPx: number;
   /** §4.3 中文字重加權 */
   weightOffset: 0 | 100 | 200;
   /** §4.7 提示線 */
@@ -108,6 +122,9 @@ export const DEFAULT_SETTINGS: Settings = {
   l0SourceLang: 'en',
   upgradeDwellMs: 1500,
   noTranslateTerms: [],
+  autoTranslate: true,
+  hud: true,
+  overlayBleedPx: 2,
   weightOffset: 100,
   hintLine: true,
   forceAnnotation: false,

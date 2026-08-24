@@ -150,3 +150,117 @@ D23(快取命中跳過 L0)需要在跑 L0 **之前**就知道 L1 快取有沒有
 content script 繼續回報 `needs-gesture`、popup 繼續顯示下載按鈕 ——
 會很煩,但不會壞掉,也不會靜默失敗。真的錯的話,替代方案是把 L0 整段
 搬進 service worker 或 offscreen document 執行。
+
+---
+
+# 真實網站回報的修正(2026-08-24,claude.com/blog)
+
+第一次拿到真的網頁跑,三個問題:
+
+## G. `<style>` 的 CSS 被當成文章翻譯
+
+頁面頂端出現一行「在多個作者之間添加 comman `.blog_author_wrap > div:not(:last-child)`…」。
+
+病根:`walk()` 不會遞迴進 `<style>`,但單元的 `src` 取的是 `el.textContent`,
+而 `textContent` **會把被排除的子樹一起吃進來**。Webflow 在 body 內散佈 `<style>`,
+於是 CSS 原始碼混進了段落。
+
+修法:新增 `ownText()`,只收「真的會被讀到」的文字節點。
+排除清單是 `NON_TEXT_TAGS`(script / style / noscript / template / svg / pre / 表單元件),
+刻意**不含** `code` / `kbd` / `samp` —— 那些是行內的、給人讀的,
+剝掉會讓「Call `compute()` before rendering.」變成「Call before rendering.」,
+語意破碎比沒保護還糟。行內 code 仍然留在句子裡,由 L1 的 prompt 與
+L0 的佔位符(§3.4)負責不讓它被翻掉。順手把 `[translate="no"]` / `.notranslate`
+也接到同一條佔位符路徑上 —— 品牌名要留在原地,不是被剝掉。
+
+## H. 整篇文章疊成一個巨大疊層
+
+hover 之後整頁變成互相重疊的文字牆(使用者的圖 2)。
+
+病根:`walk()` 的規則是「子孫有產生單元就不建自己的」,反過來說,
+**子孫全部沒產生單元時,容器就自己變成一個單元**。
+Webflow 的捲動動畫讓整篇文章的 `<p>` 初始 `opacity: 0`,每一段都被
+「不可見 → 跳過」擋掉,於是父容器吃下了整篇文章 + 所有 CSS。
+
+修法兩道:
+
+1. `hasContainerChild()` —— 底下還有帶文字的結構性 block(p / div / section / li…)
+   就**不建立**這個單元,即使那些子孫因為隱形、已是中文之類的理由沒有產生單元。
+   容器永遠不是段落。
+2. `MAX_UNIT_CHARS = 1000` —— 段落不會有一千字,超過一定是容器誤判。
+   最後一道防線,擋掉所有還沒想到的結構。
+
+代價:`opacity: 0` 的捲動動畫段落在動畫跑起來之前不會被翻譯。
+下一次 `MutationObserver` / `ResizeObserver` 觸發重掃時會補上。
+這比「整頁疊成一坨」好。
+
+## I. 沒有明確的狀態,也沒有明確的「開始翻譯」
+
+使用者的原話:「翻譯中還是沒翻譯沒有明確的 status,應該是啟用後再按翻譯之類的」。
+
+疊層在「還沒送出」「送出了在等」「整條管線已經死了」三種情況下**長得一模一樣**,
+這正是 feature.md §5.1 想防的那件事,只是 Phase 1 的單段模式沒有等價的指示。
+
+修法:
+
+- **頁內狀態列**(左下角,`pointer-events: none`,options 可關):
+  `疊 · L0 12 · L1 3 · 等升級 9`,失敗時轉成警示色並顯示原因。
+  worker 的 notice(API 400/401/429、id 紀律失敗)直接顯示在上面。
+- **「翻譯這一頁」按鈕**(popup)與 `Alt+Shift+R`:手動觸發,
+  同時是失敗區塊的重試入口。沒啟用的話會先啟用。
+- **`autoTranslate` 開關**(預設開):關掉之後,啟用只會掃描並顯示
+  「已啟用,N 塊待翻」,要按下去才送出。不想一啟用就花錢時用。
+- **模型 ID 的驗證結果接到狀態列**:§5.2 說「不要等到執行時才 400」,
+  但驗證結果本來只躺在 options 頁。現在啟用時就會講
+  「free 檔的模型 ID 不存在:gemma-4-31b-it」。
+
+## J. 還沒解決的:L0 的中文品質
+
+同一頁的 `h1` 被 L0 翻成「人工教的教學方法 人工智慧」(原文
+Anthropic's approach to teaching and learning AI)。
+
+這不是 bug,是 feature.md 開放問題 1 的答案:**L0 的品質天花板就是
+Google 翻譯離線版**,而「不要翻譯腔」是這個專案唯一在意的品質軸。
+規格早就寫了「先看到一份不合格的譯文再被換掉,可能比多等 0.8 秒更煩」——
+現在有了實例。要不要留 L0 當首屏層,等 L1 真的跑起來、能並排比較之後再決定
+(debug 面板 Alt+Shift+D 的三欄就是為了這個)。
+
+## K. 疊層蓋不住原文的墨水(緊排標題)
+
+回報:標題疊層上方一排小點、下方一個孤零零的 `g` 尾巴露在外面。
+
+病根不是「譯文太短」,是 **border-box ≠ 墨水範圍**。
+`getBoundingClientRect()` 給的是 border-box,而字實際畫到哪裡由字型的
+ascent / descent 決定。`line-height` 壓得比墨水高度小的時候(緊排大標的
+標準做法,claude.com/blog 的 h1 就是 64px 字配 64px 行高),
+第一行的頂端與最後一行的 descender 會落在 box 外面。
+疊層精準貼合 border-box,那兩截就露出來。
+
+修法:**出血(bleed)**。不是猜一個固定值往外加,而是用字型度量算:
+
+```
+溢出量 = max(0, 墨水高度 − line-height) / 2      // 上下各一半
+墨水高度 = canvas measureText 的 fontBoundingBoxAscent + Descent
+```
+
+`line-height` 正常的段落算出來是 0,完全不會動到相鄰疊層;
+只有真的緊排的標題才會撐開(那個 h1 撐 6px,剛好蓋掉 g 的尾巴)。
+
+實作的關鍵是**盒子往外撐、padding 同量補回來**:
+
+```
+left  = rect.left − bleedX      padding-left = 原 padding-left + bleedX
+width = rect.width + bleedX × 2
+```
+
+因為 `box-sizing: border-box`,這樣做**譯文的位置一格都沒動**
+(§4.5 第一行基線仍然對齊原文),只有背景多蓋了一圈。
+對齊靠 padding,遮蔽靠 border-box,兩件事分開。
+
+另外 options 有一個固定出血(預設 2px),給量不到的東西:
+`text-shadow`、斜體的尾巴、次像素捨入。表格儲存格左右不出血 ——
+蓋掉相鄰資料比露出一點點更糟(PRD §14 開放問題 5)。
+
+**沒有動的是譯文比原文短時底部的留白。** 那是 §4.5 / D09 明確決定接受的:
+「早期版本嘗試譯文較短時拉大行距填滿空白,結果行距鬆到不自然,是退步。」
+背景同色,視覺上只是段距略大,垂直節奏完全不動。

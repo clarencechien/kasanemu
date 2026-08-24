@@ -81,7 +81,11 @@ export function mask(src: string, protect: readonly string[]): Masked {
  */
 export function protectedFragments(el: Element, terms: readonly string[]): string[] {
   const out: string[] = [];
-  for (const node of el.querySelectorAll('code,kbd,samp,var,tt,abbr[title]')) {
+  // translate="no" / .notranslate 是「留在句子裡但不要翻」,
+  // 與行內 code 同一類問題,所以走同一條佔位符路徑
+  for (const node of el.querySelectorAll(
+    'code,kbd,samp,var,tt,abbr[title],[translate="no"],.notranslate',
+  )) {
     const t = (node.textContent ?? '').replace(/\s+/g, ' ').trim();
     if (t.length > 0) out.push(t);
   }

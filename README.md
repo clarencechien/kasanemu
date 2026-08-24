@@ -27,9 +27,14 @@ release 並附上 zip。
 | `Alt+Shift+T` | 全開 ⇄ 點閱 |
 | 按住 `Alt` | 所有疊層切成標註樣式,用來掃視哪些區塊被翻了 |
 | 滑過區塊 | 全開時淡出露出原文;點閱時顯示譯文 |
+| `Alt+Shift+R` | 翻譯這一頁 / 重試失敗的區塊 |
 | `Alt+Shift+D` | debug 抽樣面板(需在設定頁開 debug) |
 
 狀態、檔位都**以網域為單位**記憶:技術文件站可以留在點閱,長文站留在全開。
+
+頁面左下角的狀態列會講現在在做什麼(`疊 · L0 12 · L1 3 · 等升級 9`),
+失敗時轉成警示色並說原因。設定頁可以關掉自動翻譯,改成只有按
+「翻譯這一頁」才送出。
 
 ## 先跑這個實驗
 
@@ -96,7 +101,7 @@ systemInstruction 是否支援、schema 強制或只有 JSON mode、以及
 
 ```bash
 npm run typecheck
-npm test          # 50 個測試:選取規則、id 紀律、截斷修復、字重、快取 key、
+npm test          # 63 個測試:選取規則、id 紀律、截斷修復、字重、快取 key、
                   #            佔位符保護、升級資格、替換時機、長度預算、提示線階層
 npm run build     # 也會回報 dist 體積對 §10.2 的 1.5 MB 預算
 npm run zip       # dist/ → release/kasanemu-<version>.zip(自己寫的 zip,無外部依賴)
@@ -108,7 +113,7 @@ npm run check     # typecheck + test + build
 src/
   manifest.json
   shared/     types / models(三檔與牌價)/ settings / hash / log
-  content/    detect  幾何  styleprobe  measure  fonts  overlay  index
+  content/    detect  幾何  styleprobe  measure  bleed  fonts  overlay  index
               l0(Translator API)  mask(佔位符)  lang  upgrade(升級管線的純判斷)
   worker/     gemini  protocol  scheduler  tokenBucket  budget  cache  index
   options/    設定頁(金鑰、三檔、視覺、快取、保險絲)

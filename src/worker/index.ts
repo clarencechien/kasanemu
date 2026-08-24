@@ -105,7 +105,9 @@ chrome.runtime.onMessage.addListener((raw: ToWorker, sender, reply) => {
 
 /** §2.1 快捷鍵。用 commands API 而不是 content script 的 keydown,焦點在輸入框時也有效。 */
 chrome.commands.onCommand.addListener((command) => {
-  if (command !== 'toggle-enabled' && command !== 'toggle-mode') return;
+  if (command !== 'toggle-enabled' && command !== 'toggle-mode' && command !== 'translate-page') {
+    return;
+  }
   void (async () => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab?.id === undefined) return;
