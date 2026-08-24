@@ -1,13 +1,40 @@
 import { estimateLines, measureInkHeight } from './measure';
 import { bleedFor } from './bleed';
 import { fontStack } from './fonts';
-import { LETTER_SPACING_EM, STEPS, activeText, type Unit } from './unit';
+import { LETTER_SPACING_EM, STEPS, activeText, type DocRect, type Unit } from './unit';
 import { maxCharsAt } from './upgrade';
 
 /**
  * §3.3 幾何量測。座標一律轉成 document 座標,
  * 所以捲動不需要重算 (§3.4 / D02 的代價僅限重排)。
  */
+/**
+ * 疊層該蓋住的範圍,document 座標。
+ *
+ * **量測與驗證必須用同一個函式**:measureUnit 存的是取過 max 的高度,
+ * 而 auditPositions 若拿原始的 border-box 去比,那 62 個「內容比盒子高」的
+ * 區塊會永遠被判定成漂移 → 重排 → 再判定,每 600ms 空轉一次。
+ * (實際發生過:診斷 log 被 dh≈7.5 / dx=0 / dy=0 的 position-drift 洗版。)
+ */
+export function coverRect(unit: Unit): { rect: DocRect; overflows: boolean } {
+  const r = unit.el.getBoundingClientRect();
+  const el = unit.el as HTMLElement;
+  const [bt, br, bb, bl] = unit.style.border;
+  // 原文的內容可能比自己的 border-box 大:固定 height + overflow: visible,
+  // 或子元素有負 margin。照 border-box 蓋就會漏(標題底下露出半個 g)。
+  const contentH = (el.scrollHeight || 0) + bt + bb;
+  const contentW = (el.scrollWidth || 0) + bl + br;
+  return {
+    rect: {
+      left: r.left + window.scrollX,
+      top: r.top + window.scrollY,
+      width: Math.max(r.width, contentW),
+      height: Math.max(r.height, contentH),
+    },
+    overflows: contentH > r.height + 1 || contentW > r.width + 1,
+  };
+}
+
 export function measureUnit(unit: Unit, extraBleedPx = 0): void {
   const r = unit.el.getBoundingClientRect();
   const rects = unit.el.getClientRects();
@@ -23,17 +50,9 @@ export function measureUnit(unit: Unit, extraBleedPx = 0): void {
    * §10.1:這幾個都是 layout 讀取,但和上面的 getBoundingClientRect()
    * 在同一個讀取批次裡,layout 已經是 clean 的,不會多觸發一次 reflow。
    */
-  const el = unit.el as HTMLElement;
-  const [bt, br2, bb, bl] = unit.style.border;
-  const contentH = (el.scrollHeight || 0) + bt + bb;
-  const contentW = (el.scrollWidth || 0) + bl + br2;
-  unit.rect = {
-    left: r.left + sx,
-    top: r.top + sy,
-    width: Math.max(r.width, contentW),
-    height: Math.max(r.height, contentH),
-  };
-  unit.overflowsBox = contentH > r.height + 1 || contentW > r.width + 1;
+  const cover = coverRect(unit);
+  unit.rect = cover.rect;
+  unit.overflowsBox = cover.overflows;
   // §4.7 提示線對齊第一個 client rect 的頂端,不是 border-box 頂端
   const first = rects.length > 0 ? rects[0]! : r;
   unit.firstRectTop = first.top + sy;
