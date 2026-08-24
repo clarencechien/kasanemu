@@ -53,12 +53,35 @@ export function translatorSupported(): boolean {
   return ctor() !== null;
 }
 
-/*
- * 診斷 log:一批 9 塊要 3.7 秒、單獨一塊也要 0.7–2.3 秒 ——
- * 瓶頸是每次呼叫的等待,不是本機 CPU 吃緊。提高併發直接縮短整批的牆鐘時間。
- * 再高沒有意義:on-device 模型內部本來就會排隊。
+/**
+ * 併發**隨機器調整**,不是固定值。
+ *
+ * 這一條是量錯之後學到的。先前把併發從 4 提到 8,理由是「瓶頸是等待,
+ * 不是 CPU」—— 錯了。乾淨的量測(把排隊與呼叫分開)顯示:
+ *
+ * | 併發 | translate() 本身 | 被排隊吃掉 |
+ * |---|---|---|
+ * | 4 | 0.8–3.7 秒 | — |
+ * | 8 | 6–12 秒(最高 25) | 1–5 秒 |
+ *
+ * **on-device 模型共用同一份計算資源**,八個一起跑只是讓每個都變慢。
+ * 吞吐量差不多,但單塊延遲翻倍 —— 而使用者的體感是
+ * 「我正在看的那塊什麼時候好」,那是延遲,不是吞吐。
+ *
+ * 同一份程式在 Windows 桌機上可以一口氣翻完整頁,在低階 Chromebook 上
+ * 每塊要好幾秒。所以起始值看機器,再依實測延遲上下調。
  */
-const CONCURRENCY = 8;
+function initialConcurrency(): number {
+  const cores = navigator.hardwareConcurrency || 4;
+  return Math.max(2, Math.min(8, Math.floor(cores / 2)));
+}
+
+/** 超過這個延遲就降併發(ms) */
+const SLOW_CALL_MS = 3000;
+/** 低於這個延遲才敢升(ms) */
+const FAST_CALL_MS = 600;
+/** 每幾次呼叫檢討一次 */
+const ADAPT_EVERY = 6;
 
 export class L0Engine {
   state: L0State = 'idle';
@@ -87,6 +110,11 @@ export class L0Engine {
   callMsTotal = 0;
   callMsMax = 0;
   waitMsTotal = 0;
+  /** 目前的併發上限;依實測延遲調整 */
+  private concurrency = initialConcurrency();
+  /** 檢討用的滑動視窗(累計值要留給 timing()) */
+  private recentCalls = 0;
+  private recentMs = 0;
 
   constructor(sourceLang: string, targetLang: string) {
     this.sourceLang = sourceLang;
@@ -184,6 +212,9 @@ export class L0Engine {
       this.calls++;
       this.callMsTotal += took;
       if (took > this.callMsMax) this.callMsMax = took;
+      this.recentCalls++;
+      this.recentMs += took;
+      this.adapt();
       if (out.length === 0) return null;
       if (this.cache.size < 3000) this.cache.set(text, out);
       return out;
@@ -202,8 +233,25 @@ export class L0Engine {
    * 預翻進去的遠處區塊前面。預翻範圍拉大之後這件事變得必要 ——
    * 否則新看到的段落要排在幾十個離螢幕很遠的區塊後面。
    */
+  /**
+   * 依實測延遲調整併發:慢就降(讓每塊早點好),快就升(把機器吃滿)。
+   * 降到 2 為止 —— 再低就等於序列化,連預翻都跑不動。
+   */
+  private adapt(): void {
+    if (this.recentCalls < ADAPT_EVERY) return;
+    const avg = this.recentMs / this.recentCalls;
+    const before = this.concurrency;
+    if (avg > SLOW_CALL_MS) this.concurrency = Math.max(2, this.concurrency - 1);
+    else if (avg < FAST_CALL_MS) this.concurrency = Math.min(8, this.concurrency + 1);
+    this.recentCalls = 0;
+    this.recentMs = 0;
+    if (this.concurrency !== before) {
+      dbg('l0 concurrency', before, '→', this.concurrency, `avg ${Math.round(avg)}ms`);
+    }
+  }
+
   private slot(priority: number): Promise<void> {
-    if (this.inFlight < CONCURRENCY) {
+    if (this.inFlight < this.concurrency) {
       this.inFlight++;
       return Promise.resolve();
     }
@@ -223,18 +271,28 @@ export class L0Engine {
 
   private release(): void {
     this.inFlight--;
+    // 併發降下來時,多出來的正在跑的請求跑完就好,不再補新的
+    if (this.inFlight >= this.concurrency) return;
     const next = this.queue.shift();
     if (next) next.go();
   }
 
   /** 給診斷用:真正的呼叫延遲,以及被排隊吃掉多少 */
-  timing(): { calls: number; avgMs: number; maxMs: number; avgWaitMs: number; queued: number } {
+  timing(): {
+    calls: number;
+    avgMs: number;
+    maxMs: number;
+    avgWaitMs: number;
+    queued: number;
+    concurrency: number;
+  } {
     return {
       calls: this.calls,
       avgMs: this.calls > 0 ? Math.round(this.callMsTotal / this.calls) : 0,
       maxMs: Math.round(this.callMsMax),
       avgWaitMs: this.calls > 0 ? Math.round(this.waitMsTotal / this.calls) : 0,
       queued: this.queue.length,
+      concurrency: this.concurrency,
     };
   }
 
