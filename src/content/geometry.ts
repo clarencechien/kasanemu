@@ -56,6 +56,8 @@ export function measureUnit(unit: Unit, extraBleedPx = 0): void {
   // §4.7 提示線對齊第一個 client rect 的頂端,不是 border-box 頂端
   const first = rects.length > 0 ? rects[0]! : r;
   unit.firstRectTop = first.top + sy;
+  const last = rects.length > 0 ? rects[rects.length - 1]! : r;
+  unit.lastRectBottom = last.bottom + sy;
   // §4.4 單行元素走另一條路
   unit.singleLine = r.height <= unit.style.lineHeightPx * 1.5;
   // 原文的墨水可能超出 border-box(緊排標題),疊層要跟著往外撐

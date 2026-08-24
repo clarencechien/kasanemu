@@ -31,6 +31,12 @@ export interface Unit {
   overflowsBox: boolean;
   /** §4.7 提示線對齊第一個 client rect 的頂端 */
   firstRectTop: number;
+  /**
+   * 文字真正的最後一行底部(最後一個 client rect)。
+   * 提示線用它,不能用 rect.height —— 那個為了蓋住溢出的墨水
+   * 取了 max(border-box, scrollHeight),拿去畫線就會跑過頭。
+   */
+  lastRectBottom: number;
   /** feature.md §4.1 區塊狀態機 */
   tier: UnitTier;
   failReason?: string;

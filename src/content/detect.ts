@@ -37,6 +37,38 @@ const CONTAINER_TAGS =
 export const MAX_UNIT_CHARS = 1000;
 
 /**
+ * 互動元素裡的**短**文字是 UI 標籤,不是內容。
+ *
+ * PRD §3.1 排除了 <button>,但沒排除 `<a class="button">` 這種連結型按鈕 ——
+ * 「See pricing」「Contact sales」就是這樣被翻進來的,而按鈕又剛好是
+ * 疊層最容易出事的地方(hover 位移、隱藏的行動版複本、輪播複製)。
+ *
+ * Margin(withmargin/margin-read)的做法更硬:導覽、表單、按鈕、widget
+ * 整個不翻。這裡取中間值 —— 以**長度**分辨 UI 標籤與內容:
+ * 卡片標題、文章裡的行內連結都是長文字,照翻;
+ * 24 字以內的連結/按鈕當成 UI 元件,跳過。
+ */
+const INTERACTIVE_SELECTOR =
+  'a[href],button,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[role="switch"],[role="option"]';
+const UI_LABEL_MAX_CHARS = 24;
+
+export function isUiLabel(el: Element): boolean {
+  const act = el.closest(INTERACTIVE_SELECTOR);
+  if (act) return normalizeText(act.textContent ?? '').length <= UI_LABEL_MAX_CHARS;
+  /*
+   * 自己不是互動元素,但文字**全部**來自互動子孫 —— 那是按鈕列 / 連結列,
+   * 不是段落。段落裡夾一個行內連結不會命中:那時連結外面還有文字。
+   */
+  const actives = el.querySelectorAll(INTERACTIVE_SELECTOR);
+  if (actives.length === 0) return false;
+  const total = normalizeText(el.textContent ?? '');
+  if (total.length > UI_LABEL_MAX_CHARS * actives.length) return false;
+  let inside = 0;
+  for (const a of actives) inside += normalizeText(a.textContent ?? '').length;
+  return inside >= total.length - 2;
+}
+
+/**
  * 「這根本不是給人讀的文字」的標籤,它們的內容不得進入 src。
  *
  * 刻意**不含** code / kbd / samp:那些是行內的、給人讀的,只是不該被翻譯,
@@ -202,6 +234,8 @@ function walk(el: Element, ctx: WalkCtx): boolean {
 
   const text = normalizeText(ownText(el));
   if (!isMeaningfulText(text)) return false;
+  // 互動元素裡的短文字是 UI 標籤,不是內容
+  if (isUiLabel(el)) return false;
   // 最後一道防線:段落不會有一千字
   if (text.length > MAX_UNIT_CHARS) return false;
   if (looksLikeTargetLang(text)) return false;

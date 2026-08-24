@@ -148,6 +148,7 @@ function scan(): void {
       bleed: { x: 0, y: 0 },
       overflowsBox: false,
       firstRectTop: 0,
+      lastRectBottom: 0,
       // §3.5 元素環繞浮動圖片 → bounding box 會蓋住圖片,跳過該單元
       tier: c.geometryRisk ? 'skipped' : 'pending',
       l1Queued: false,
@@ -950,24 +951,32 @@ function applyChromeClip(): void {
 }
 
 /**
- * 來源元素在它自己的位置上到底看不看得見。
+ * 元素是不是被某個祖先的 `overflow: hidden` 整個裁掉了。
  *
- * 打中的不是它、不是它的子孫、也不是它的祖先 → 它被別的東西蓋住,
- * 或它根本是被 overflow: hidden 裁掉的重複 DOM(輪播的另一份、隱藏的行動版選單)。
- * 那種疊層會浮在完全無關的位置上 —— 卡片列上方那排、按鈕右上角那兩個,
- * 症狀都是這個:座標沒錯,錯在那個元素本來就看不見。
+ * 這是「看不見的重複 DOM」的成因:輪播的另一份、隱藏的行動版選單。
+ * 頁面把它裁掉了,而我們的疊層在最上層不受任何裁切,於是浮在無關的位置。
+ *
+ * build 15 用 `elementFromPoint` 做這件事,結果**把正確的疊層藏掉了** ——
+ * 卡片常有一個絕對定位的 stretched link 蓋住整張卡,它既不是標題的祖先
+ * 也不是子孫,命中測試就判成「被蓋住」。幾何判定沒有這個問題:
+ * 只問「這個元素的矩形有沒有落在裁切框外面」,不管誰蓋在上面。
+ *
+ * 可捲動的容器**照樣算**:現在看不見就是看不見,使用者把它捲進來之後
+ * 下一輪稽核會再把疊層放出來。
  */
-function occludedNow(u: Unit): boolean {
-  const rects = u.el.getClientRects();
-  const r = rects.length > 0 ? rects[0]! : u.el.getBoundingClientRect();
+function clippedAway(u: Unit): boolean {
+  const r = u.el.getBoundingClientRect();
   if (r.width < 1 || r.height < 1) return true;
-  const x = r.left + Math.min(r.width / 2, 30);
-  const y = r.top + r.height / 2;
-  // 不在視窗內就不判斷:elementFromPoint 只認視窗座標
-  if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) return false;
-  const hit = document.elementFromPoint(x, y);
-  if (!hit) return true;
-  return !(hit === u.el || u.el.contains(hit) || hit.contains(u.el));
+  for (let p = u.el.parentElement; p && p !== document.documentElement; p = p.parentElement) {
+    const cs = getComputedStyle(p);
+    if (cs.overflowX === 'visible' && cs.overflowY === 'visible') continue;
+    const pr = p.getBoundingClientRect();
+    if (pr.width < 1 || pr.height < 1) return true;
+    const outside =
+      r.right <= pr.left + 1 || r.left >= pr.right - 1 || r.bottom <= pr.top + 1 || r.top >= pr.bottom - 1;
+    if (outside) return true;
+  }
+  return false;
 }
 
 function checkOcclusion(): void {
@@ -977,15 +986,15 @@ function checkOcclusion(): void {
   for (const u of units) {
     if (!u.box) continue;
     const vTop = u.rect.top - window.scrollY;
-    if (vTop + u.rect.height < 0 || vTop > window.innerHeight) continue;
-    if (checked++ > 80) break; // 一輪的上限,避免整頁 hit-test
-    const covered = occludedNow(u);
-    layer.setCovered(u, covered);
-    if (covered) hidden++;
+    if (vTop + u.rect.height < -200 || vTop > window.innerHeight + 200) continue;
+    if (checked++ > 80) break;
+    const gone = clippedAway(u);
+    layer.setCovered(u, gone);
+    if (gone) hidden++;
   }
   if (hidden !== lastCovered) {
     lastCovered = hidden;
-    diag('info', 'covered-overlays', { hidden, checked });
+    diag('info', 'clipped-overlays', { hidden, checked });
   }
 }
 

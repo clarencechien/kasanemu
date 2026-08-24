@@ -374,7 +374,8 @@ export class OverlayLayer {
     const h = unit.hint;
     h.className = `hint ${cls}`;
     const top = unit.firstRectTop;
-    const height = Math.max(4, unit.rect.top + unit.rect.height - top);
+    // 用文字的最後一行底部,不是覆蓋用的 rect.height(那個灌過 scrollHeight)
+    const height = Math.max(4, unit.lastRectBottom - top);
     h.style.setProperty('--ksnm-hx', `${unit.rect.left - 8}px`);
     h.style.setProperty('--ksnm-hy', `${top}px`);
     h.style.setProperty('--ksnm-hh', `${height}px`);
