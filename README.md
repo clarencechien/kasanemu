@@ -36,6 +36,10 @@ release 並附上 zip。
 失敗時轉成警示色並說原因。設定頁可以關掉自動翻譯,改成只有按
 「翻譯這一頁」才送出。
 
+出問題時按 popup 的**「匯出診斷 log」**:會把掃描結果、L0 狀態、佇列、
+API 錯誤、id 紀律統計組成一份 Markdown,複製到剪貼簿並存成檔案,可以直接貼出來。
+API key 只留長度與前後兩碼,所有字串截斷到 60 字 —— 那份東西是設計來給別人看的。
+
 ## 先跑這個實驗
 
 PRD 開放問題 3 說得對:free 檔的價值全押在 Gemma 走 Gemini API 的行為上,
@@ -101,7 +105,7 @@ systemInstruction 是否支援、schema 強制或只有 JSON mode、以及
 
 ```bash
 npm run typecheck
-npm test          # 63 個測試:選取規則、id 紀律、截斷修復、字重、快取 key、
+npm test          # 75 個測試:選取規則、id 紀律、截斷修復、字重、快取 key、
                   #            佔位符保護、升級資格、替換時機、長度預算、提示線階層
 npm run build     # 也會回報 dist 體積對 §10.2 的 1.5 MB 預算
 npm run zip       # dist/ → release/kasanemu-<version>.zip(自己寫的 zip,無外部依賴)
@@ -112,7 +116,7 @@ npm run check     # typecheck + test + build
 ```
 src/
   manifest.json
-  shared/     types / models(三檔與牌價)/ settings / hash / log
+  shared/     types / models(三檔與牌價)/ settings / hash / log / diag / report
   content/    detect  幾何  styleprobe  measure  bleed  fonts  overlay  index
               l0(Translator API)  mask(佔位符)  lang  upgrade(升級管線的純判斷)
   worker/     gemini  protocol  scheduler  tokenBucket  budget  cache  index

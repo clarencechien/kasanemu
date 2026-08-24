@@ -1,6 +1,8 @@
 import type { PageStats, ToWorker } from '../shared/messages';
 import { TIERS, type Tier } from '../shared/models';
 import type { DomainState, Pipeline, PipelineSpend, Settings, SpendDay } from '../shared/types';
+import { clearDiag, readDiag, setDiagScope } from '../shared/diag';
+import { buildReport } from '../shared/report';
 import { L0Engine, translatorSupported } from '../content/l0';
 import { toTranslatorTarget } from '../content/lang';
 
@@ -12,6 +14,8 @@ interface Totals {
   monthByPipeline: Partial<Record<Pipeline, PipelineSpend>>;
   degraded?: string;
 }
+
+setDiagScope('popup');
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 
@@ -212,6 +216,46 @@ async function downloadL0(): Promise<void> {
   engine.destroy();
 }
 
+/**
+ * 一鍵匯出可以直接貼出來的診斷報告。
+ * API key 只留長度與前後兩碼;原文與譯文一律截斷到 60 字。
+ */
+async function exportLog(): Promise<void> {
+  const note = $('export-note');
+  const tab = await activeTab();
+  const stored = await chrome.storage.local.get('modelCheck');
+  const md = buildReport({
+    version: chrome.runtime.getManifest().version,
+    url: tab?.url ?? '(unknown)',
+    userAgent: navigator.userAgent,
+    settings,
+    domain: state ?? null,
+    stats,
+    modelCheck: stored['modelCheck'],
+    events: await readDiag(),
+    now: Date.now(),
+  });
+
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(md);
+    copied = true;
+  } catch {
+    /* 沒有剪貼簿權限就只給檔案 */
+  }
+
+  // 存檔:popup 關掉之後剪貼簿還在,但有檔案比較不會弄丟
+  const url = URL.createObjectURL(new Blob([md], { type: 'text/markdown' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `kasanemu-diag-${new Date().toISOString().replace(/[:.]/g, '-')}.md`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+
+  const kb = (md.length / 1024).toFixed(1);
+  note.textContent = copied ? `已複製到剪貼簿並下載(${kb} KB)` : `已下載(${kb} KB);剪貼簿被擋了`;
+}
+
 async function main(): Promise<void> {
   const tab = await activeTab();
   tabId = tab?.id ?? -1;
@@ -276,6 +320,12 @@ async function main(): Promise<void> {
       await refresh();
       btn.disabled = false;
     }, 500);
+  });
+
+  $('export-log').addEventListener('click', () => void exportLog());
+  $('clear-log').addEventListener('click', async () => {
+    await clearDiag();
+    $('export-note').textContent = '記錄已清空 —— 重現一次問題再匯出';
   });
 
   $('l0-download').addEventListener('click', () => void downloadL0());

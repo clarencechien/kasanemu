@@ -32,8 +32,19 @@ export function priorityOf(
 }
 
 /**
- * feature.md §4.3 不得替換使用者當前正在互動的區塊:
- * hover 中 → 等 mouseleave;在可見區中央三分之一且距上次捲動 < 400ms → 延後。
+ * feature.md §4.3「不得替換使用者當前正在互動的區塊」。
+ *
+ * 規格的字面規則有個洞:它只保護 hover 中、以及「在中央三分之一**且**
+ * 距上次捲動 < 400ms」的區塊。停著讀的時候沒有捲動,400ms 早就過了,
+ * 於是正在讀的那一段會在眼前被換掉 —— 那正是 §4.3 標題要防的事,
+ * 只是「互動」被寫成了「剛捲過」。
+ *
+ * 收斂成:**視線帶(可見區中央三分之一)內一律不換**,等它離開那一帶
+ * 或使用者捲走再說。加上捲動中(< 400ms)一律不換,因為畫面本來就在動。
+ *
+ * 代價寫在明處:一直不捲動的話,那一段會停在 L0 直到你捲走。
+ * 花了錢的 L1 譯文可能沒被看到 —— 這正是 §2.2 要量的
+ * 「L0 讀完就沒再看 L1」的比例,代價本來就在規格的視野裡。
  */
 export function swapAllowed(o: {
   isHovered: boolean;
@@ -44,10 +55,12 @@ export function swapAllowed(o: {
   viewportH: number;
 }): boolean {
   if (o.isHovered) return false;
-  if (o.sinceScrollMs >= 400) return true;
+  // 捲動中畫面本來就在動,再換內容會更明顯
+  if (o.sinceScrollMs < 400) return false;
   const top = o.rectTop - o.scrollY;
   const bottom = top + o.rectHeight;
   const third = o.viewportH / 3;
+  // 視線帶:使用者正在讀的那一段,不動它
   const inMiddleThird = bottom > third && top < third * 2;
   return !inMiddleThird;
 }

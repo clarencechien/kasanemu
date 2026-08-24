@@ -144,14 +144,21 @@ test('§4.3 hover 中的區塊不被替換', () => {
   assert.equal(swapAllowed(swapBase), true);
 });
 
-test('§4.3 剛捲動 < 400ms 且在中央三分之一 → 延後', () => {
-  // 中央三分之一 = 300–600
-  const middle = { ...swapBase, sinceScrollMs: 100, rectTop: 400 };
-  assert.equal(swapAllowed(middle), false);
-  // 同樣剛捲動,但不在中央三分之一 → 可以換
-  assert.equal(swapAllowed({ ...middle, rectTop: 50, rectHeight: 20 }), true);
-  // 捲動已經停了 → 中央也可以換
-  assert.equal(swapAllowed({ ...middle, sinceScrollMs: 500 }), true);
+test('§4.3 捲動中(< 400ms)一律不換:畫面本來就在動', () => {
+  const scrolling = { ...swapBase, sinceScrollMs: 100 };
+  assert.equal(swapAllowed(scrolling), false);
+  assert.equal(swapAllowed({ ...scrolling, rectTop: 50, rectHeight: 20 }), false);
+});
+
+test('§4.3 視線帶內不換,即使使用者早就停止捲動', () => {
+  // 視窗 900 高,中央三分之一 = 300–600
+  const reading = { ...swapBase, sinceScrollMs: 9999, rectTop: 400 };
+  assert.equal(swapAllowed(reading), false);
+});
+
+test('離開視線帶就可以換', () => {
+  assert.equal(swapAllowed({ ...swapBase, sinceScrollMs: 9999, rectTop: 50, rectHeight: 20 }), true);
+  assert.equal(swapAllowed({ ...swapBase, sinceScrollMs: 9999, rectTop: 700, rectHeight: 20 }), true);
 });
 
 /* ------------------------------------------------ §4.4 長度預算 (D20) */

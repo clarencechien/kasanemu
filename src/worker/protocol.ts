@@ -150,7 +150,7 @@ export function parseBatch(raw: string, sent: UnitRequest[], truncated: boolean)
       continue;
     }
     const want = echoOf(src.src);
-    if (normalizeEcho(echo) !== normalizeEcho(want)) {
+    if (!echoMatches(echo, want)) {
       stats.echoMismatch++;
       failures.push({ id, reason: 'echo-mismatch', detail: `want ${JSON.stringify(want)} got ${JSON.stringify(echo)}` });
       continue;
@@ -167,6 +167,38 @@ export function parseBatch(raw: string, sent: UnitRequest[], truncated: boolean)
   return { results, failures, stats };
 }
 
-function normalizeEcho(s: string): string {
-  return s.replace(/\s+/g, ' ').trim();
+/**
+ * §6.4 第二層防線的比對用正規化。
+ *
+ * 放寬的只有「同一句話的不同寫法」:空白、全形/半形(NFKC)、大小寫、
+ * 以及模型愛自作主張的引號與破折號。**沒有**放寬到失去偵測力 ——
+ * batch 內 id 對滑時,echo 來自完全不同的句子,正規化後照樣對不上。
+ *
+ * 起因:實際跑 claude.com/blog 時出現一批 echo-mismatch,
+ * 而那些譯文其實是對的。誤殺會讓區塊變成失敗(提示線警示色),
+ * 比放寬這幾種等價寫法更糟。
+ */
+export function normalizeEcho(s: string): string {
+  return s
+    .normalize('NFKC')
+    .replace(/[\u2018\u2019\u02BC]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2010-\u2015]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * 模型有時候回的 echo 短一截(數到第 8 個字的方式不同,尤其有 emoji
+ * 或組合字時)。互為前綴且長度夠([...4 個字元])就算過。
+ */
+export function echoMatches(got: string, want: string): boolean {
+  const a = normalizeEcho(got);
+  const b = normalizeEcho(want);
+  if (a === b) return true;
+  if (a.length === 0 || b.length === 0) return false;
+  const short = a.length < b.length ? a : b;
+  const long = a.length < b.length ? b : a;
+  return short.length >= 4 && long.startsWith(short);
 }

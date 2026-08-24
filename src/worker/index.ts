@@ -2,6 +2,18 @@ import type { ToWorker } from '../shared/messages';
 import { getDomainState, getSettings, resolveTier, setDomainState, setSettings } from '../shared/settings';
 import { TIER_ORDER, isBlockedModel } from '../shared/models';
 import { setDebug, warn } from '../shared/log';
+import { diag, setDiagScope } from '../shared/diag';
+
+setDiagScope('worker');
+
+/**
+ * chrome.storage.session 預設只開放給 trusted contexts,content script 讀不到也寫不了。
+ * 診斷 log 要跨 content / worker / popup 三邊彙整,所以在這裡把存取層級打開。
+ * 只有這個擴充自己的 content script 進得來,頁面碰不到。
+ */
+chrome.storage.session
+  .setAccessLevel?.({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' })
+  .catch((e: unknown) => warn('storage.session accessLevel 設定失敗,content 的 log 會缺', e));
 import { listModels } from './gemini';
 import { cacheProbe, drain, dropPage, dropTab, enqueue, reprioritize } from './scheduler';
 import { totals } from './budget';
@@ -31,6 +43,10 @@ async function validateModels(): Promise<ModelCheck> {
   }
   const check: ModelCheck = { at: Date.now(), available, problems };
   await chrome.storage.local.set({ modelCheck: check });
+  diag(check.problems.length > 0 ? 'warn' : 'info', 'model-check', {
+    available: check.available === null ? null : check.available.length,
+    problems: check.problems,
+  });
   return check;
 }
 
