@@ -103,6 +103,12 @@ export interface Settings {
    * 這個值是給量不到的東西用的:text-shadow、斜體尾巴、次像素捨入。
    */
   overlayBleedPx: number;
+  /**
+   * 疊層前先確認來源元素真的看得見(elementFromPoint 命中測試)。
+   * 擋掉被裁切的重複 DOM 與被固定頁首蓋住的內容。
+   * 頁面若有透明的點擊攔截層可能造成誤判,那時關掉。
+   */
+  occlusionCheck: boolean;
   /** §4.3 中文字重加權 */
   weightOffset: 0 | 100 | 200;
   /** §4.7 提示線 */
@@ -133,6 +139,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autoTranslate: true,
   hud: true,
   overlayBleedPx: 2,
+  occlusionCheck: true,
   weightOffset: 100,
   hintLine: true,
   forceAnnotation: false,

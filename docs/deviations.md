@@ -633,3 +633,73 @@ L0 打底的意義完全沒發揮到。而 L0 後來就緒了,那 12 個卻沒�
 原本只有 popup 按下下載鈕才會觸發補翻(`l0-ready` 訊息)。
 現在週期性 tick 也會檢查:L0 是 ready 而且還有 `l0-failed` 的區塊沒等到 L1,
 就補翻一次。
+
+## AC. 「跑到 header」從頭到尾不是幾何問題
+
+build 14 的診斷 log 裡 **`position-drift` 是零筆** —— 疊層記錄的座標與元素
+現在的座標完全吻合 —— 而畫面上譯文明明浮在頁首上。
+
+因為那根本不是錯位:原文捲到 **fixed 頁首底下被蓋住**了,
+而疊層的 z-index 是 2147483000,畫在頁首**上面**。位置一直都對,
+只是沒有任何東西遮住它。
+
+我前面三輪(R / X / AA)全部在修「座標算錯」,而座標從來沒錯過。
+這是這整串除錯裡最貴的一次誤判:**症狀說「位置不對」,
+但唯一的證據(drift = 0)一直在說位置是對的,我沒有聽。**
+
+修法是讓疊層跟原文一起被遮:每個捲動 frame 用 `elementFromPoint`
+量出視窗上下緣被 fixed / sticky 元素佔掉多少(兩次命中測試),
+再對每個盒子套 `clip-path: inset(...)` 把被蓋住的那一段裁掉。
+純算術,不讀 layout —— `u.rect` 是快取值。
+
+疊層的 `pointer-events: none` 在這裡第二次派上用場:
+`elementFromPoint` 打不到我們自己,回來的一定是頁面的東西。
+
+## AD. build 14 我自己弄壞的兩件事
+
+**HUD 消失。** build 14 在 layer 上加了 `transform: translate(-scrollX, -scrollY)`,
+而 HUD 是 `position: fixed` 且掛在 layer 裡面 ——
+**祖先一有 transform,`position: fixed` 就退化成相對那個祖先定位**,
+於是 HUD 跟著捲動跑出畫面。HUD 與 debug 面板改成 shadow root 的直接子節點,
+與 layer 平行:layer 是 document 座標,那兩個是視窗座標,不該混在一起。
+
+**捲動抖動、原文從縫隙漏出來。** 同一個 transform:JS 在 scroll 事件的 rAF 裡
+補捲動量,而瀏覽器自己的捲動跑在合成器上,**JS 永遠慢一幀**。
+在一個以「不動版面」為唯一形式差異的專案裡,這種抖動比任何錯位都糟。
+
+所以 AA 段的方向整個倒回去:host 回到 `position: absolute`,
+疊層留在 document 座標系,**位置交還給瀏覽器,JS 完全不參與捲動**。
+AA 段擔心的原點問題用另一個方式解掉:host 掛在 `documentElement` 下,
+它的 absolute 定位基準就是初始包含塊,`left/top` 直接等於 document 座標,
+沒有原點要算。
+
+## AE. 診斷報告的表頭曾經整段是假的
+
+build 14 的 log:
+
+```
+管線:progressive(實際生效 single)   ← 事件裡 start 明明是 progressive
+區塊:總 0 · 首屏 -1ms · L0:idle      ← 事件裡 69 個單元、L0 ready、一直在翻
+```
+
+`chrome.tabs.sendMessage(tabId, …)` 會**廣播到分頁裡的每一個 frame**,誰先回誰算。
+回答的是某個 iframe 裡的實例(`effective` 還停在模組初始值 `single`、
+`units` 是空的)。加 `{ frameId: 0 }` 只問最上層。
+
+這條的教訓比它的修法重要:**診斷工具自己說謊的時候,
+它會把後面每一輪的判斷一起帶偏。** 那份 log 的表頭我看了兩輪才發現與事件矛盾。
+
+## AF. 看不見的重複 DOM
+
+卡片列上方那排、按鈕右上角那兩個,座標一直沒有漂移紀錄,
+而且同一段原文出現兩份**不同**譯文(一份 L0、一份 L1)——
+那是兩個單元:看得見的那個,和一份被 `overflow: hidden` 裁掉的重複
+(輪播的另一份、隱藏的行動版選單)。頁面把它裁掉了,
+但我們的疊層在最上層,不受任何裁切影響,於是浮在無關的位置上。
+
+修法:`elementFromPoint` 打在來源元素自己的位置上,
+打中的不是它、不是它的子孫、也不是它的祖先 → 那個元素其實看不見,
+疊層藏起來(不是刪掉 —— 它可能又出現)。
+每輪稽核最多測 80 個,只測視窗內的。
+
+options 有開關:頁面若有透明的點擊攔截層可能誤判,那時關掉。

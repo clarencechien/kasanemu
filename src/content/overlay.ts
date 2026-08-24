@@ -50,6 +50,8 @@ const LAYER_CSS = `
   width: var(--ksnm-w);
   /* §3.3 min-height 解掉「疊一半、原文尾巴露出來」 */
   min-height: var(--ksnm-h);
+  /* 被固定頁首 / 頁尾蓋住的部分要跟著原文一起消失,見 applyChromeClip */
+  clip-path: var(--ksnm-clip, none);
   opacity: 0;
   transition: opacity 130ms ease;
 }
@@ -87,6 +89,8 @@ const LAYER_CSS = `
   border-radius: 5px;
 }
 .layer.alt-scan .box { opacity: 1; }
+/* 來源元素其實看不見(被裁切、隱藏的重複 DOM)→ 疊層也不該出現 */
+.box.covered, .hint.covered { display: none; }
 /*
  * §4.7 提示線是唯一表明「這是譯文」的記號;hover 時保留。
  * feature.md §5.1 / D22:並且以虛實與顏色表明階層 ——
@@ -193,8 +197,7 @@ export class OverlayLayer {
   private root: ShadowRoot;
   private layer: HTMLDivElement;
   private panel: HTMLDivElement | null = null;
-  private scrollX = 0;
-  private scrollY = 0;
+
   private reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   constructor() {
@@ -205,7 +208,7 @@ export class OverlayLayer {
     // host 自身的樣式用 inline + !important,頁面 CSS 打不進來
     this.host.setAttribute(
       'style',
-      'all: initial !important; position: fixed !important; left: 0 !important; top: 0 !important;' +
+      'all: initial !important; position: absolute !important; left: 0 !important; top: 0 !important;' +
         'width: 0 !important; height: 0 !important; margin: 0 !important; padding: 0 !important;' +
         'pointer-events: none !important; z-index: 2147483000 !important;',
     );
@@ -221,32 +224,20 @@ export class OverlayLayer {
      * 那些都會讓 host 自己跟著跑掉。html 幾乎不會被這樣對待。
      */
     (document.documentElement ?? document.body).appendChild(this.host);
-    this.syncScroll();
   }
 
   /**
-   * 盒子直接用 **document 座標**,由 layer 的 transform 減掉捲動量。
+   * 疊層留在 **document 座標系**,由瀏覽器自己跟著頁面捲。
    *
-   * 之前的做法是量 host 自己的原點再相減,但那個原點只在重排時算一次,
-   * 而且**沒有任何機制驗證它** —— 座標稽核比的是「疊層記錄的 document 座標」
-   * 對「元素現在的 document 座標」,兩邊都對得上,原點錯了照樣說一切正常。
-   * 整片歪掉而 log 乾乾淨淨,就是這麼來的。
+   * build 14 試過另一條路:host 用 position: fixed,再由 JS 每個捲動 frame
+   * 補 translate(-scrollY)。座標是對的,但**瀏覽器的捲動跑在合成器上,
+   * JS 永遠慢一幀** —— 疊層跟著抖,原文從縫隙漏出來。
+   * 這是「不動版面」的專案裡最不能接受的一種動。
    *
-   * 現在 host 是 position: fixed(錨在視窗,不管 body / html 被做了什麼:
-   * margin、transform、smooth-scroll wrapper 都影響不到它),
-   * layer 每個捲動 frame 平移 -scrollX / -scrollY。
-   * document 座標 (X, Y) 於是永遠落在視窗的 (X - scrollX, Y - scrollY)。
-   * 沒有原點可以過期,因為沒有原點了。
+   * 所以位置交還給瀏覽器,JS 只負責兩件它非做不可的事:
+   * 遮住被固定頁首蓋住的部分(applyChromeClip),
+   * 以及藏掉根本看不見的元素的疊層(occlusion 檢查)。
    */
-  syncScroll(): void {
-    const x = window.scrollX;
-    const y = window.scrollY;
-    if (x === this.scrollX && y === this.scrollY) return;
-    this.scrollX = x;
-    this.scrollY = y;
-    this.layer.style.transform = `translate(${-x}px, ${-y}px)`;
-  }
-
 
 
   setMode(mode: DisplayMode): void {
@@ -256,6 +247,23 @@ export class OverlayLayer {
 
   setOutline(on: boolean): void {
     this.layer.classList.toggle('outline', on);
+  }
+
+  /** 把盒子上下裁掉一段(px);0 / 0 表示不裁 */
+  setClip(unit: Unit, top: number, bottom: number): void {
+    const box = unit.box;
+    if (!box) return;
+    const v = top <= 0 && bottom <= 0 ? '' : `inset(${Math.max(0, top)}px 0 ${Math.max(0, bottom)}px 0)`;
+    if (box.dataset['clip'] === v) return; // 沒變就不要寫 style
+    box.dataset['clip'] = v;
+    if (v) box.style.setProperty('--ksnm-clip', v);
+    else box.style.removeProperty('--ksnm-clip');
+  }
+
+  /** 來源元素看不見時把疊層藏起來(不是刪掉 —— 它可能又出現) */
+  setCovered(unit: Unit, covered: boolean): void {
+    unit.box?.classList.toggle('covered', covered);
+    unit.hint?.classList.toggle('covered', covered);
   }
 
   setAltScan(on: boolean): void {
@@ -385,7 +393,7 @@ export class OverlayLayer {
     if (!this.hud) {
       this.hud = document.createElement('div');
       this.hud.className = 'hud';
-      this.layer.appendChild(this.hud);
+      this.root.appendChild(this.hud);
     }
     const el = this.hud;
     el.className = `hud show ${level}`;
@@ -420,7 +428,7 @@ export class OverlayLayer {
     if (!this.panel) {
       this.panel = document.createElement('div');
       this.panel.className = 'panel';
-      this.layer.appendChild(this.panel);
+      this.root.appendChild(this.panel);
     }
     const cut = (s: string | undefined) => escapeHtml((s ?? '—').slice(0, 160));
     const rows = units

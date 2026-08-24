@@ -82,6 +82,9 @@ let settleTimer = 0;
 /** 只在數量變化時記錄,否則每次重排都記一筆會把 log 洗掉 */
 let lastOverflowCount = -1;
 let lastShiftBucket = '';
+let lastTopBand = -1;
+let lastBottomBand = -1;
+let lastCovered = -1;
 /** 掃到 0 個候選時的重試次數(頁面可能還在載入、入場動畫還沒跑完) */
 let emptyScans = 0;
 let running = false;
@@ -218,7 +221,8 @@ function scheduleFlush(alsoScan = false): void {
  */
 function auditPositions(): void {
   if (!layer || !running) return;
-  layer.syncScroll();
+  applyChromeClip();
+  checkOcclusion();
   // 用**疊層畫在哪**來決定要驗誰,而不是來源元素現在在哪:
   // 錯位的症狀正是「來源元素跑掉了,疊層還留在視口裡」,
   // 只驗 inView 的來源元素會漏掉那些。
@@ -291,7 +295,6 @@ function flush(): void {
   if (doScan) scan();
 
   // ---- 讀取階段:只讀,不寫
-  layer.syncScroll();
   for (const u of units) {
     if (u.tier === 'skipped') continue;
     measureUnit(u, settings.overlayBleedPx);
@@ -310,6 +313,7 @@ function flush(): void {
     lastOverflowCount = overflowing;
     if (overflowing > 0) diag('info', 'content-overflows-box', { count: overflowing });
   }
+  applyChromeClip();
   if (firstPaintMs < 0 && paintable.length > 0) {
     firstPaintMs = Math.round(performance.now() - startedAt);
     dbg('first paint', firstPaintMs, 'ms', effective);
@@ -895,6 +899,96 @@ function onDocLeave(): void {
  *  2. 一個可見單元當哨兵(內容自己在動的話,整批座標都要重算)
  * 兩個都對得上就什麼都不做。
  */
+/**
+ * 找出視窗上下緣被 position: fixed / sticky 的頁面元素佔掉多少。
+ *
+ * 為什麼需要:原文捲到固定頁首**底下**會被蓋住,而我們的疊層 z-index 是
+ * 2147483000,畫在頁首**上面** —— 位置完全正確,卻浮在頁首上。
+ * 使用者一路回報的「跑到 header」就是這個,不是幾何錯位
+ * (診斷 log 裡 position-drift 是零筆,座標一直都對)。
+ *
+ * 疊層的 pointer-events: none 在這裡第二次派上用場:
+ * elementFromPoint 打不到我們自己,回來的一定是頁面的東西。
+ */
+function chromeBand(y: number, top: boolean): number {
+  const x = Math.round(window.innerWidth / 2);
+  const hit = document.elementFromPoint(x, y);
+  for (let el: Element | null = hit; el && el !== document.body; el = el.parentElement) {
+    const cs = getComputedStyle(el);
+    if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
+    // 透明的覆蓋層不會擋住文字,不要當成頁首
+    if (Number(cs.opacity) === 0 || cs.visibility === 'hidden') continue;
+    const r = el.getBoundingClientRect();
+    const band = top ? r.bottom : window.innerHeight - r.top;
+    return Math.max(0, Math.min(band, window.innerHeight / 2));
+  }
+  return 0;
+}
+
+/** 把被固定頁首 / 頁尾蓋住的那一段從疊層上裁掉,讓它跟原文一樣消失 */
+function applyChromeClip(): void {
+  if (!layer || !running) return;
+  const h = window.innerHeight;
+  const top = chromeBand(2, true);
+  const bottom = chromeBand(h - 2, false);
+  if (top !== lastTopBand || bottom !== lastBottomBand) {
+    lastTopBand = top;
+    lastBottomBand = bottom;
+    diag('info', 'chrome-band', { top, bottom });
+  }
+  // 純算術,不讀 layout:u.rect 是快取值
+  for (const u of units) {
+    if (!u.box) continue;
+    const vTop = u.rect.top - window.scrollY - u.bleed.y;
+    const vBottom = vTop + u.rect.height + u.bleed.y * 2;
+    if (vBottom < -50 || vTop > h + 50) {
+      layer.setClip(u, 0, 0);
+      continue;
+    }
+    layer.setClip(u, Math.max(0, top - vTop), Math.max(0, vBottom - (h - bottom)));
+  }
+}
+
+/**
+ * 來源元素在它自己的位置上到底看不看得見。
+ *
+ * 打中的不是它、不是它的子孫、也不是它的祖先 → 它被別的東西蓋住,
+ * 或它根本是被 overflow: hidden 裁掉的重複 DOM(輪播的另一份、隱藏的行動版選單)。
+ * 那種疊層會浮在完全無關的位置上 —— 卡片列上方那排、按鈕右上角那兩個,
+ * 症狀都是這個:座標沒錯,錯在那個元素本來就看不見。
+ */
+function occludedNow(u: Unit): boolean {
+  const rects = u.el.getClientRects();
+  const r = rects.length > 0 ? rects[0]! : u.el.getBoundingClientRect();
+  if (r.width < 1 || r.height < 1) return true;
+  const x = r.left + Math.min(r.width / 2, 30);
+  const y = r.top + r.height / 2;
+  // 不在視窗內就不判斷:elementFromPoint 只認視窗座標
+  if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) return false;
+  const hit = document.elementFromPoint(x, y);
+  if (!hit) return true;
+  return !(hit === u.el || u.el.contains(hit) || hit.contains(u.el));
+}
+
+function checkOcclusion(): void {
+  if (!layer || !running || !settings.occlusionCheck) return;
+  let hidden = 0;
+  let checked = 0;
+  for (const u of units) {
+    if (!u.box) continue;
+    const vTop = u.rect.top - window.scrollY;
+    if (vTop + u.rect.height < 0 || vTop > window.innerHeight) continue;
+    if (checked++ > 80) break; // 一輪的上限,避免整頁 hit-test
+    const covered = occludedNow(u);
+    layer.setCovered(u, covered);
+    if (covered) hidden++;
+  }
+  if (hidden !== lastCovered) {
+    lastCovered = hidden;
+    diag('info', 'covered-overlays', { hidden, checked });
+  }
+}
+
 /** 疊層畫的位置與來源元素現在的位置差多少 */
 function driftOf(u: Unit): { dx: number; dy: number } {
   const r = u.el.getBoundingClientRect();
@@ -914,8 +1008,9 @@ function driftOf(u: Unit): { dx: number; dy: number } {
 function scrollSync(): void {
   scrollRaf = 0;
   if (!layer || !running) return;
-  // 疊層跟上捲動:一次 transform 寫入,沒有盒子要重算
-  layer.syncScroll();
+  // 疊層本身由瀏覽器跟著頁面捲(document 座標),JS 不碰位置。
+  // 這裡只處理「被固定頁首蓋住的那一段要跟著消失」。
+  applyChromeClip();
   // 再看內容自己有沒有移動(sticky、lazy load、內容插入)
   const probe = [...units].find((u) => u.box && u.inView && u.tier !== 'skipped');
   if (!probe) return;

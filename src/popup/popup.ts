@@ -38,7 +38,12 @@ async function activeTab(): Promise<chrome.tabs.Tab | null> {
 async function fetchStats(): Promise<PageStats | null> {
   if (tabId < 0) return null;
   try {
-    return (await chrome.tabs.sendMessage(tabId, { type: 'get-page-stats' })) as PageStats;
+    // frameId: 0 = 只問最上層 frame。不指定的話訊息會廣播到分頁裡每一個
+    // frame,誰先回誰算 —— 診斷報告的表頭曾經整段來自某個 iframe 裡
+    // 還卡在啟動中的實例(總 0 區塊、實際生效 single)。
+    return (await chrome.tabs.sendMessage(tabId, { type: 'get-page-stats' }, {
+      frameId: 0,
+    })) as PageStats;
   } catch {
     return null; // 這一頁沒有 content script(擴充頁、chrome:// 之類)
   }
@@ -210,7 +215,11 @@ async function downloadL0(): Promise<void> {
   if (ok) {
     btn.classList.add('hidden');
     // 語言包是瀏覽器層級的資源,下載完就叫頁面重試卡住的區塊
-    if (tabId >= 0) await chrome.tabs.sendMessage(tabId, { type: 'l0-ready' }).catch(() => undefined);
+    if (tabId >= 0) {
+      await chrome.tabs
+        .sendMessage(tabId, { type: 'l0-ready' }, { frameId: 0 })
+        .catch(() => undefined);
+    }
     window.setTimeout(() => void refresh(), 400);
   }
   engine.destroy();
