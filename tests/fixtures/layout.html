@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Kasanemu geometry fixture</title>
+    <style>
+      body { margin: 0; font: 16px/1.6 system-ui, -apple-system, sans-serif; color: #16202b; background: #fff; }
+      .sticky { position: sticky; top: 0; background: #eef3f8; padding: 8px 24px; }
+      main { max-width: 720px; margin: 0 auto; padding: 24px; }
+      section { border-top: 1px solid #dde4ea; padding: 18px 0; }
+      h1 { font-size: 34px; line-height: 1.15; margin: 0 0 8px; }
+      h2 { font-size: 20px; margin: 0 0 8px; }
+      .serif { font-family: Georgia, "Times New Roman", serif; }
+      .justify { text-align: justify; }
+      .float img, .float .ph { float: left; width: 120px; height: 90px; margin: 0 14px 8px 0; background: #c9d6e2; }
+      .dark { background: #131a21; color: #e6edf3; padding: 18px 24px; }
+      .dark a { color: #7fb2ff; }
+      .gradient { background: linear-gradient(120deg, #ffd9c0, #cfe6ff); padding: 18px 24px; }
+      .card { background: #f6f8fa; border: 1px solid #dde4ea; border-radius: 10px; padding: 14px 16px; }
+      .cols { column-count: 2; column-gap: 24px; }
+      table { border-collapse: collapse; width: 100%; }
+      th, td { border: 1px solid #dde4ea; padding: 6px 8px; text-align: left; font-size: 14px; }
+      pre { background: #10151b; color: #e6edf3; padding: 12px; border-radius: 8px; overflow-x: auto; }
+      .tiny { font-size: 12px; color: #6b7b8c; }
+      nav, footer { background: #f0f3f6; padding: 10px 24px; font-size: 14px; }
+      button { font: inherit; padding: 6px 12px; }
+    </style>
+  </head>
+  <body>
+    <!-- §3.5 sticky:整個子樹應該被跳過 -->
+    <div class="sticky"><p>Sticky toolbar — this must never get an overlay.</p></div>
+
+    <!-- §3.1 nav / footer:不該被翻 -->
+    <nav><a href="#a">Overview</a> · <a href="#b">Geometry</a> · <a href="#c">Failure modes</a></nav>
+
+    <main>
+      <section>
+        <!-- §4.4 單行元素允許橫向溢出,不加入字級分組 (D15) -->
+        <h1>A deliberately long headline that should not drag the body text down a size</h1>
+        <p class="tiny">Published on March 3, 2026 · 8 min read</p>
+      </section>
+
+      <section id="a">
+        <h2>Ordinary paragraphs</h2>
+        <p>
+          Roughly ninety-nine percent of the world's data traffic travels through
+          undersea cables, and the <a href="#">cable maps</a> that circulate online
+          are mostly <em>schematic</em> rather than accurate.
+        </p>
+        <p>
+          A sentence split across <a href="#">an anchor</a>, <em>an emphasis</em> and
+          <span>a span</span> must still be translated as one block, otherwise the
+          result reads as broken fragments.
+        </p>
+      </section>
+
+      <section>
+        <h2>Same role, different lengths</h2>
+        <!-- §4.4 這一組的 font-size 相同,字級級距必須整組統一 -->
+        <p>Short one.</p>
+        <p>
+          A considerably longer paragraph in exactly the same typographic role, which
+          exists to check that the size step chosen for the worst case in this group is
+          applied to every member of the group, including the short one above.
+        </p>
+        <p>Another short one.</p>
+      </section>
+
+      <section class="serif">
+        <h2>Serif stack</h2>
+        <p>
+          This block declares Georgia and should be matched with a serif Chinese face —
+          or fall back to the system serif when the serif subset is not packaged.
+        </p>
+      </section>
+
+      <section class="justify">
+        <h2>Justified text</h2>
+        <p>
+          Justified text is a known mismatch: the overlay copies text-align but the
+          translated line breaks will not land in the same places, so the ragged edge
+          will differ from the original underneath it.
+        </p>
+      </section>
+
+      <section class="float">
+        <!-- §3.5 float:bounding box 會蓋住圖片,這個單元應該被跳過 -->
+        <h2>Wrapped around a floated figure</h2>
+        <div class="ph"></div>
+        <p>
+          This paragraph wraps around a floated placeholder box. Its bounding rectangle
+          covers the image, so the unit is marked geometry-risk and skipped instead of
+          painting a solid rectangle over the artwork.
+        </p>
+      </section>
+
+      <section>
+        <h2>Code must stay untranslated</h2>
+        <pre><code>const overlay = document.createElement('div');
+overlay.style.pointerEvents = 'none'; // non-negotiable</code></pre>
+        <p>Call <code>refreshOrigin()</code> before writing any box positions.</p>
+      </section>
+
+      <section>
+        <h2>Table cells</h2>
+        <table>
+          <caption>Per-tier batch limits</caption>
+          <thead><tr><th>Tier</th><th>Units</th><th>Input tokens</th><th>Why</th></tr></thead>
+          <tbody>
+            <tr><td>Quality</td><td>20</td><td>6000</td><td>No dropped lines in the 686-sentence run</td></tr>
+            <tr><td>Balanced</td><td>10</td><td>3000</td><td>Large batches drop lines</td></tr>
+            <tr><td>Free</td><td>6</td><td>2000</td><td>Squeezed by free-tier TPM</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Many short blocks</h2>
+        <ul>
+          <li>Sticky elements drift when the page scrolls.</li>
+          <li>Closed shadow roots hide page styles.</li>
+          <li>Fonts change every rect when they finish loading.</li>
+          <li>Reconciliation wipes custom DOM attributes.</li>
+        </ul>
+      </section>
+
+      <section class="cols">
+        <h2>Multi-column</h2>
+        <p>
+          Column layouts split one element into several client rects. The hint line
+          anchors to the first rect, and the overlay box covers the whole bounding box,
+          which is wrong here — an accepted Phase 1 mismatch.
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>Card with its own background</h2>
+        <p>The overlay must pick up this card's background colour, not the page's.</p>
+      </section>
+
+      <section class="gradient">
+        <h2>Gradient background</h2>
+        <p>No opaque colour is obtainable here, so this block must fall back to the annotation style.</p>
+      </section>
+
+      <section class="dark">
+        <h2>Dark block</h2>
+        <p>
+          Inheriting both background and colour means dark sections come out right
+          without a separate dark theme. The hint line takes its colour from the first
+          link on the page.
+        </p>
+      </section>
+
+      <section>
+        <h2>Dynamic insertion</h2>
+        <p>Adding nodes after load must re-scan, and removing them must leave no orphan overlays.</p>
+        <button id="add">Append a paragraph</button>
+        <button id="drop">Remove the last one</button>
+        <button id="route">Change the path (fake SPA route)</button>
+        <div id="sink"></div>
+      </section>
+    </main>
+
+    <footer>Footer text — must not be translated.</footer>
+
+    <script>
+      let n = 0;
+      document.getElementById('add').addEventListener('click', () => {
+        const p = document.createElement('p');
+        p.textContent =
+          'Appended paragraph number ' + ++n + ', inserted after the initial scan to check that the mutation observer picks it up and anchors it correctly.';
+        document.getElementById('sink').appendChild(p);
+      });
+      document.getElementById('drop').addEventListener('click', () => {
+        const sink = document.getElementById('sink');
+        if (sink.lastElementChild) sink.removeChild(sink.lastElementChild);
+      });
+      document.getElementById('route').addEventListener('click', () => {
+        history.pushState({}, '', location.pathname + '#route-' + Date.now());
+        const p = document.createElement('p');
+        p.textContent = 'Route changed, and this paragraph belongs to the new view.';
+        document.getElementById('sink').replaceChildren(p);
+      });
+    </script>
+  </body>
+</html>

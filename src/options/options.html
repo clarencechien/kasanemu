@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="options.css" />
+    <title>Kasanemu 設定</title>
+  </head>
+  <body>
+    <h1>疊 Kasanemu <small>Phase 1</small></h1>
+    <p class="lede">
+      自己安裝、自己付 API 帳單的疊層翻譯。譯文是主體,原文是備查;
+      不改動網頁 DOM 與 CSS。
+    </p>
+
+    <section>
+      <h2>金鑰與語言</h2>
+      <label>Gemini API key
+        <input type="password" data-k="apiKey" autocomplete="off" spellcheck="false" />
+      </label>
+      <p class="hint">存在 <code>chrome.storage.local</code>。瀏覽器 profile 即信任邊界,無任何自架後端或遙測。</p>
+      <label>目標語言
+        <input type="text" data-k="targetLang" />
+      </label>
+      <label>預設檔位
+        <select data-k="defaultTier">
+          <option value="quality">quality</option>
+          <option value="balanced">balanced</option>
+          <option value="free">free</option>
+        </select>
+      </label>
+    </section>
+
+    <section>
+      <h2>三檔模型</h2>
+      <p class="hint">
+        模型 ID 會在啟動時與 <code>GET /v1beta/models</code> 比對;不存在的 ID 標紅,
+        不要等到執行時才 400。gemini-3.6 系列一律拒收:實測有 batch 內 id 對滑。
+      </p>
+      <div id="tiers"></div>
+      <button id="validate">驗證模型 ID</button>
+      <div id="model-check" class="note"></div>
+    </section>
+
+    <section>
+      <h2>視覺</h2>
+      <label>中文字重加權
+        <select data-k="weightOffset" data-num="1">
+          <option value="0">+0</option>
+          <option value="100">+100(預設)</option>
+          <option value="200">+200</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" data-k="hintLine" /> 顯示譯文左緣提示線</label>
+      <label class="check"><input type="checkbox" data-k="forceAnnotation" /> 一律使用標註樣式</label>
+      <p class="hint">
+        疊層背景永遠不透明:底下是活文字不是死像素,半透明會讓兩層字互相干擾,
+        所以這裡沒有透明度旋鈕。
+      </p>
+    </section>
+
+    <section>
+      <h2>快取</h2>
+      <label>模式
+        <select data-k="cacheMode">
+          <option value="session">session(預設)</option>
+          <option value="persistent">persistent(IndexedDB)</option>
+          <option value="off">off(除錯用)</option>
+        </select>
+      </label>
+      <label>persistent LRU 上限(MB)
+        <input type="number" data-k="persistentCacheMB" data-num="1" min="1" />
+      </label>
+      <button id="clear-cache">清空快取</button>
+    </section>
+
+    <section>
+      <h2>成本保險絲</h2>
+      <p class="hint">
+        第 1 層在供應商端:請在
+        <a href="https://console.cloud.google.com/iam-admin/quotas" target="_blank" rel="noreferrer">Google Cloud 配額頁</a>
+        自行設專案層日配額。擴充管不到那一層,而那是唯一擋得住失控的硬牆。
+      </p>
+      <label>每頁 token 上限
+        <input type="number" data-k="pageTokenCap" data-num="1" min="1000" step="1000" />
+      </label>
+      <label>全域日預算(TWD)
+        <input type="number" data-k="globalDailyTWD" data-num="1" min="0" step="1" />
+      </label>
+      <label>USD → TWD
+        <input type="number" data-k="usdToTwd" data-num="1" min="1" step="0.1" />
+      </label>
+      <label class="check"><input type="checkbox" data-k="debug" /> debug mode(抽樣面板 Alt+Shift+D、詳細 log)</label>
+    </section>
+
+    <div id="saved" class="saved">已儲存</div>
+    <script src="options.js" type="module"></script>
+  </body>
+</html>
