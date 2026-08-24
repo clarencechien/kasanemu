@@ -225,7 +225,8 @@ async function exportLog(): Promise<void> {
   const tab = await activeTab();
   const stored = await chrome.storage.local.get('modelCheck');
   const md = buildReport({
-    version: chrome.runtime.getManifest().version,
+    version:
+      chrome.runtime.getManifest().version_name ?? chrome.runtime.getManifest().version,
     url: tab?.url ?? '(unknown)',
     userAgent: navigator.userAgent,
     settings,
@@ -265,6 +266,10 @@ async function main(): Promise<void> {
     host = '';
   }
   $('host').textContent = host || '(無法作用的頁面)';
+  // 每一包都叫 0.1.0 的話,回報問題時沒人知道手上那包含不含某個修正
+  const mf = chrome.runtime.getManifest();
+  $('version').textContent = mf.version_name ?? mf.version;
+  $('version').title = `manifest ${mf.version}`;
   await refresh();
 
   $('toggle').addEventListener('click', async () => {

@@ -2,8 +2,9 @@
 // content script 必須是 classic script(MV3 的 content script 不吃 ESM),
 // worker / options / popup 走 module。
 import * as esbuild from 'esbuild';
-import { cp, mkdir, rm, readdir, stat } from 'node:fs/promises';
+import { cp, mkdir, readFile, rm, readdir, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
 const watch = process.argv.includes('--watch');
@@ -34,9 +35,48 @@ const contexts = await Promise.all([
   }),
 ]);
 
+/**
+ * Chrome 的 manifest.version 只吃 1–4 段數字,所以 build number 當第四段:
+ * 0.1.0.<commit 數>。version_name 可以是任意字串,放人看的資訊
+ * (short sha + 日期 + 工作區是否乾淨)。
+ *
+ * 為什麼要有:每一包都叫 0.1.0 的話,回報問題時沒人知道手上那包
+ * 含不含某個修正 —— 診斷 log 的第一行就會是騙人的。
+ */
+function buildStamp(baseVersion) {
+  const git = (args, fallback = '') => {
+    try {
+      return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+      return fallback;
+    }
+  };
+  const count = Number(git(['rev-list', '--count', 'HEAD'], '0')) || 0;
+  const sha = git(['rev-parse', '--short=7', 'HEAD'], 'nogit');
+  const dirty = git(['status', '--porcelain']).length > 0;
+  // 沒有 git(例如從 zip 解出來重建)就退回日期序號,至少單調遞增
+  const build = count > 0 ? count : Math.floor(Date.now() / 86_400_000);
+  const day = new Date().toISOString().slice(0, 10);
+  return {
+    version: `${baseVersion}.${build}`,
+    versionName: `${baseVersion} build ${build} · ${sha}${dirty ? '+dirty' : ''} · ${day}`,
+  };
+}
+
+async function writeManifest() {
+  const pkg = JSON.parse(await readFile('package.json', 'utf8'));
+  const manifest = JSON.parse(await readFile('src/manifest.json', 'utf8'));
+  const stamp = buildStamp(pkg.version);
+  manifest.version = stamp.version;
+  manifest.version_name = stamp.versionName;
+  await mkdir('dist', { recursive: true });
+  await writeFile('dist/manifest.json', `${JSON.stringify(manifest, null, 2)}\n`);
+  console.log(`version ${stamp.versionName}`);
+}
+
 async function copyStatic() {
+  await writeManifest();
   const files = [
-    ['src/manifest.json', 'dist/manifest.json'],
     ['src/options/options.html', 'dist/options.html'],
     ['src/options/options.css', 'dist/options.css'],
     ['src/popup/popup.html', 'dist/popup.html'],

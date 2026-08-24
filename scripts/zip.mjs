@@ -94,11 +94,9 @@ async function main() {
     console.error('沒有 dist/,先跑 npm run build。');
     process.exit(1);
   }
-  const pkg = JSON.parse(await readFile('package.json', 'utf8'));
+  // 版本以 dist/manifest.json 為準 —— build 時蓋上了 build number,
+  // package.json 只有基準版號
   const manifest = JSON.parse(await readFile(path.join(SRC, 'manifest.json'), 'utf8'));
-  if (manifest.version !== pkg.version) {
-    console.warn(`!! manifest ${manifest.version} 與 package.json ${pkg.version} 版本不一致`);
-  }
 
   const files = await walk(SRC);
   const entries = [];
@@ -131,10 +129,11 @@ async function main() {
   end.writeUInt32LE(offset, 16);
 
   await mkdir(OUT_DIR, { recursive: true });
-  const out = path.join(OUT_DIR, `kasanemu-${pkg.version}.zip`);
+  const out = path.join(OUT_DIR, `kasanemu-${manifest.version}.zip`);
   const buf = Buffer.concat([...chunks, ...central, end]);
   await writeFile(out, buf);
   console.log(`${out}  ${(buf.length / 1024).toFixed(0)} KB  ${entries.length} 個檔`);
+  if (manifest.version_name) console.log(manifest.version_name);
   console.log('載入方式:解壓後 chrome://extensions → 載入未封裝項目 → 選解壓出來的目錄');
 }
 

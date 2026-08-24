@@ -17,6 +17,10 @@ npm run package      # build + release/kasanemu-<version>.zip
 `chrome://extensions` → 開開發人員模式 → 「載入未封裝項目」→ 選 `dist/`。
 然後在擴充的設定頁填 Gemini API key,在任一頁面按 popup 的「啟用」或 `Alt+T`。
 
+版本號會在 build 時蓋上 build number:`manifest.version` 是 `0.1.0.<commit 數>`,
+`version_name` 是 `0.1.0 build 9 · 94ed507 · 2026-08-24`,popup 右上角與診斷 log
+的第一行都看得到。每一包都叫 0.1.0 的話,回報問題時沒人知道手上那包含不含某個修正。
+
 不想自己 build:GitHub Actions 每次 push 都會跑 typecheck + test + 字型 subset + build,
 並把 `dist/`(未封裝)與 zip 當 artifact 掛在該次 run 上;打 `v*` tag 會另外開一個
 release 並附上 zip。
