@@ -376,6 +376,24 @@ async function runBatch(
     }
     if (settings.cacheMode === 'persistent') await cache.evictIfNeeded(settings.persistentCacheMB);
   }
+  /*
+   * 整批回 0 筆:重送一次同一批。
+   *
+   * 實測 gemma-4-31b-it 偶爾回 `[]`(rawHead 記到的是 "[]\n```" ——
+   * 一個包在 markdown 圍籬裡的空陣列)。那不是缺句,是模型這一次沒產出,
+   * 重送通常就有了。
+   *
+   * 這**不違反** §5.4「不要用縮小 chunk 再戰解決缺句」:
+   * 那條講的是把 batch 切小去追缺句,病根在 id 紀律。這裡不切小、不改協定,
+   * 只是同一批再送一次,屬於 §7.3 的重試範疇。上限一次,避免無人看管的重試迴圈。
+   */
+  if (parsed.stats.got === 0 && batch.every((b) => b.attempts === 0)) {
+    diag('warn', 'empty-response-retry', { model: spec.modelId, units: batch.length });
+    const q = await loadQueue();
+    await saveQueue([...batch.map((b) => ({ ...b, attempts: 1 })), ...remove(q, batch)]);
+    return;
+  }
+
   if (parsed.failures.length > 0) {
     // §6.5 丟棄或失敗的區塊必須明確標示,不得沉默略過
     post(tabId, { type: 'failures', pageKey, failures: parsed.failures });

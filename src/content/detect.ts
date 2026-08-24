@@ -114,7 +114,7 @@ export function normalizeText(raw: string): string {
  * 送去翻譯,頁面頂端出現一行
  * 「在多個作者之間添加 comman .blog_author_wrap > div…」。
  */
-export function ownText(el: Element): string {
+export function ownText(el: Element, skip?: ReadonlySet<Element>): string {
   let out = '';
   for (const node of Array.from(el.childNodes)) {
     // 用 nodeType 而不是 instanceof:content script 與測試環境的
@@ -126,7 +126,9 @@ export function ownText(el: Element): string {
     if (node.nodeType !== 1 /* ELEMENT_NODE */) continue;
     const kid = node as Element;
     if (NON_TEXT_TAGS.has(kid.tagName)) continue;
-    out += ownText(kid);
+    // 螢幕閱讀器標籤的文字不算數:視覺上不存在的字不該讓祖先變成翻譯單元
+    if (skip?.has(kid)) continue;
+    out += ownText(kid, skip);
   }
   return out;
 }
@@ -234,6 +236,15 @@ function hasFloatDescendant(el: Element): boolean {
 }
 
 interface WalkCtx {
+  /**
+   * 已認定為螢幕閱讀器專用的元素。
+   *
+   * walk 是先遞迴子節點、再評估自己,所以父層評估時這個集合已經填好了。
+   * 沒有這一步的話,跳過 sr-only 的 <span> 只會把問題往上搬一層:
+   * 包著它的 stretched link(覆蓋整張卡片的 <a>)接著變成翻譯單元,
+   * 疊層就蓋掉整張圖 —— 實際發生過。
+   */
+  srOnly: Set<Element>;
   seen: (el: Element) => boolean;
   out: Candidate[];
   root: Element;
@@ -256,6 +267,17 @@ function walk(el: Element, ctx: WalkCtx): boolean {
   if (isInvisible(cs)) return false;
   // §3.5 sticky / fixed 元素捲動時疊層會脫位,跳過該元素及其子樹
   if (cs.position === 'sticky' || cs.position === 'fixed') return false;
+  /*
+   * 螢幕閱讀器專用標籤:整棵跳過,並登記起來讓祖先扣掉它的文字。
+   * walk 先遞迴子節點再評估自己,所以父層評估時這個集合已經填好。
+   * 少了登記這一步,跳過 sr-only 的 <span> 只會把問題往上搬一層 ——
+   * 包著它的 stretched link(覆蓋整張卡片的 <a>)接著變成翻譯單元,
+   * 疊層蓋掉整張圖。實際發生過。
+   */
+  if (isScreenReaderOnly(el, cs)) {
+    ctx.srOnly.add(el);
+    return false;
+  }
 
   let produced = false;
   for (const child of Array.from(el.children)) {
@@ -268,12 +290,10 @@ function walk(el: Element, ctx: WalkCtx): boolean {
   // 子孫沒產生單元不代表可以退而求其次把容器整個吃下來
   if (hasContainerChild(el)) return false;
 
-  const text = normalizeText(ownText(el));
+  const text = normalizeText(ownText(el, ctx.srOnly));
   if (!isMeaningfulText(text)) return false;
   // 互動元素裡的短文字是 UI 標籤,不是內容
   if (isUiLabel(el)) return false;
-  // 螢幕閱讀器專用標籤:視覺上不存在,疊層卻會長出一條橫跨版面的盒子
-  if (isScreenReaderOnly(el, cs)) return false;
   // 最後一道防線:段落不會有一千字
   if (text.length > MAX_UNIT_CHARS) return false;
   if (looksLikeTargetLang(text)) return false;
@@ -286,7 +306,7 @@ function walk(el: Element, ctx: WalkCtx): boolean {
 
 export function findCandidates(root: Element, seen: (el: Element) => boolean): Candidate[] {
   const out: Candidate[] = [];
-  walk(root, { seen, out, root });
+  walk(root, { seen, out, root, srOnly: new Set<Element>() });
   return out;
 }
 

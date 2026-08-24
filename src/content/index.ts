@@ -434,7 +434,8 @@ async function runL0(list: Unit[]): Promise<void> {
       if (u.l1Text !== undefined) return;
       // §3.4 送出前把行內 code 與不翻清單換成佔位符
       const masked = mask(u.src, protectedFragments(u.el, settings.noTranslateTerms));
-      const raw = await engine.translate(masked.text);
+      // 距視窗中心越近越先翻 —— 捲到新一屏時會插隊到預翻的遠處區塊前面
+      const raw = await engine.translate(masked.text, Math.round(priorityOf(u)));
       if (raw === null) {
         u.tier = effective === 'l0-only' ? 'failed' : 'l0-failed';
         u.failReason = 'l0';
@@ -462,10 +463,10 @@ async function runL0(list: Unit[]): Promise<void> {
   diag(failedL0 > 0 ? 'warn' : 'info', 'l0-done', {
     asked: list.length,
     failed: failedL0,
-    // 每塊平均幾毫秒 —— L0 的賣點就是快,慢下來要看得見
-    ms,
-    perUnit: Math.round(ms / Math.max(1, list.length)),
-    state: engine.state,
+    // batchMs 是整批的牆鐘時間(含排隊);call 才是 translate() 本身的延遲。
+    // 兩個分開才知道慢在 API 還是慢在我們自己的併發池。
+    batchMs: ms,
+    call: engine.timing(),
   });
   // §4.4 規則 1:這一輪 L0 收斂之後就把字級分組定案
   lockAfterL0();
