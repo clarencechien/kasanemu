@@ -215,7 +215,12 @@ export class OverlayLayer {
     this.layer = document.createElement('div');
     this.layer.className = 'layer mode-full';
     this.root.append(style, this.layer);
-    document.body.appendChild(this.host);
+    /*
+     * 掛在 documentElement 而不是 body:body 常被頁面拿去做別的事
+     * (smooth scroll 的 wrapper、開選單時 position: fixed、transform 動畫),
+     * 那些都會讓 host 自己跟著跑掉。html 幾乎不會被這樣對待。
+     */
+    (document.documentElement ?? document.body).appendChild(this.host);
     this.refreshOrigin();
   }
 
@@ -231,24 +236,19 @@ export class OverlayLayer {
   }
 
   /**
-   * 捲動時原點可能移動:頁面若在 body 底下用 transform 做平滑捲動
-   * (Webflow / Lenis 那一類),host 會跟著那個容器走,而盒子的
-   * left/top 是用重排當下的原點算的 —— 於是整片疊層平移到 header 上。
+   * 整片平移補償。
    *
-   * 這裡不重算任何盒子,只把整個 layer 平移回去:一次 rect 讀取 + 一次
-   * transform 寫入。§10.2 的「捲動零開銷」因此不再嚴格成立,
-   * 但錯位比那點開銷嚴重得多。
+   * 頁面若用 transform 做平滑捲動(Webflow / Lenis 那一類),內容會相對
+   * 疊層整片移動,而盒子的 left/top 是重排當下算的 —— 於是整片疊層跑到
+   * header 上。之前這裡量的是 **host 自己**有沒有移動,但真正在動的是
+   * 「內容相對 host」,量錯了對象。
+   *
+   * 現在由呼叫端量兩個哨兵單元(頭與尾)實際位移多少:兩者一致就是整片
+   * 在動,直接平移 layer 補回去,**不重算任何盒子**。一次 transform 寫入。
    */
-  syncOrigin(): boolean {
-    const r = this.host.getBoundingClientRect();
-    const dx = this.originX - (r.left + window.scrollX);
-    const dy = this.originY - (r.top + window.scrollY);
-    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) {
-      if (this.layer.style.transform !== '') this.layer.style.transform = '';
-      return false;
-    }
-    this.layer.style.transform = `translate(${dx}px, ${dy}px)`;
-    return true;
+  setShift(dx: number, dy: number): void {
+    const v = Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5 ? '' : `translate(${dx}px, ${dy}px)`;
+    if (this.layer.style.transform !== v) this.layer.style.transform = v;
   }
 
   setMode(mode: DisplayMode): void {

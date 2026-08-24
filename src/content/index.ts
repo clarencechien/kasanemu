@@ -15,6 +15,7 @@ import {
   assignScales,
   checkOverflow,
   computeMaxChars,
+  coverRect,
   lockScales,
   maxCharsForUpgrade,
   measureUnit,
@@ -78,6 +79,9 @@ let reprioTimer = 0;
 let motionTimer = 0;
 let scrollRaf = 0;
 let settleTimer = 0;
+/** 只在數量變化時記錄,否則每次重排都記一筆會把 log 洗掉 */
+let lastOverflowCount = -1;
+let lastShiftBucket = '';
 /** 掃到 0 個候選時的重試次數(頁面可能還在載入、入場動畫還沒跑完) */
 let emptyScans = 0;
 let running = false;
@@ -224,11 +228,12 @@ function auditPositions(): void {
     if (u.tier === 'skipped') continue;
     if (!u.box && !u.inView) continue;
     if (u.rect.top + u.rect.height < top || u.rect.top > bottom) continue;
-    const r = u.el.getBoundingClientRect();
-    const dx = Math.abs(r.left + window.scrollX - u.rect.left);
-    const dy = Math.abs(r.top + window.scrollY - u.rect.top);
-    const dw = Math.abs(r.width - u.rect.width);
-    const dh = Math.abs(r.height - u.rect.height);
+    // 用同一個公式算「現在應該蓋哪裡」,否則取過 max 的高度會永遠對不上
+    const { rect } = coverRect(u);
+    const dx = Math.abs(rect.left - u.rect.left);
+    const dy = Math.abs(rect.top - u.rect.top);
+    const dw = Math.abs(rect.width - u.rect.width);
+    const dh = Math.abs(rect.height - u.rect.height);
     if (dx > 1 || dy > 1 || dw > 1 || dh > 1) {
       diag('info', 'position-drift', { id: u.id, dx, dy, dw, dh });
       scheduleFlush();
@@ -300,7 +305,10 @@ function flush(): void {
     else layer.paintHint(u, settings);
   }
   const overflowing = [...units].filter((u) => u.overflowsBox).length;
-  if (overflowing > 0) diag('info', 'content-overflows-box', { count: overflowing });
+  if (overflowing !== lastOverflowCount) {
+    lastOverflowCount = overflowing;
+    if (overflowing > 0) diag('info', 'content-overflows-box', { count: overflowing });
+  }
   if (firstPaintMs < 0 && paintable.length > 0) {
     firstPaintMs = Math.round(performance.now() - startedAt);
     dbg('first paint', firstPaintMs, 'ms', effective);
@@ -882,20 +890,52 @@ function onDocLeave(): void {
  *  2. 一個可見單元當哨兵(內容自己在動的話,整批座標都要重算)
  * 兩個都對得上就什麼都不做。
  */
+/** 疊層畫的位置與來源元素現在的位置差多少 */
+function driftOf(u: Unit): { dx: number; dy: number } {
+  const r = u.el.getBoundingClientRect();
+  return { dx: r.left + window.scrollX - u.rect.left, dy: r.top + window.scrollY - u.rect.top };
+}
+
+/**
+ * 捲動中的自我修正,每 frame 最多讀兩個 rect。
+ *
+ * 取頭尾兩個可見單元:
+ *  - 兩者位移**一致** → 整片內容在動(transform 平滑捲動)。
+ *    直接平移整個 layer 補回去,不重算任何盒子。
+ *  - 位移**不一致** → 個別元素在動(lazy load、內容插入)。那要重排。
+ *
+ * 兩個哨兵是必要的:只看一個分不出這兩種情況,而它們的處置完全相反。
+ */
 function scrollSync(): void {
   scrollRaf = 0;
   if (!layer || !running) return;
-  const shifted = layer.syncOrigin();
-  const probe = [...units].find((u) => u.inView && u.tier !== 'skipped');
-  if (probe) {
-    const r = probe.el.getBoundingClientRect();
-    const dy = Math.abs(r.top + window.scrollY - probe.rect.top);
-    const dx = Math.abs(r.left + window.scrollX - probe.rect.left);
-    if (dx > 2 || dy > 2) {
-      diag('info', 'scroll-drift', { id: probe.id, dx, dy, hostShifted: shifted });
-      scheduleFlush();
-    }
+  const vis = [...units].filter((u) => u.box && u.inView && u.tier !== 'skipped');
+  if (vis.length === 0) {
+    layer.setShift(0, 0);
+    return;
   }
+  const a = driftOf(vis[0]!);
+  const b = vis.length > 1 ? driftOf(vis[vis.length - 1]!) : a;
+  const consistent = Math.abs(a.dx - b.dx) < 1 && Math.abs(a.dy - b.dy) < 1;
+  const moved = Math.abs(a.dx) > 0.5 || Math.abs(a.dy) > 0.5;
+  if (consistent) {
+    layer.setShift(a.dx, a.dy);
+    if (moved) noteShift(a.dx, a.dy);
+    return;
+  }
+  layer.setShift(0, 0);
+  if (Math.abs(a.dx) > 2 || Math.abs(a.dy) > 2 || Math.abs(b.dx) > 2 || Math.abs(b.dy) > 2) {
+    diag('info', 'scroll-drift', { a, b, ids: [vis[0]!.id, vis[vis.length - 1]!.id] });
+    scheduleFlush();
+  }
+}
+
+/** 平移補償只在量級變化時記一筆,不然每 frame 一筆會把 log 洗掉 */
+function noteShift(dx: number, dy: number): void {
+  const bucket = `${Math.round(dx / 20)},${Math.round(dy / 20)}`;
+  if (bucket === lastShiftBucket) return;
+  lastShiftBucket = bucket;
+  diag('info', 'layer-shift', { dx: Math.round(dx), dy: Math.round(dy) });
 }
 
 function onScroll(): void {
@@ -1152,6 +1192,41 @@ Object.assign(globalThis as Record<string, unknown>, {
     /** 為什麼這個元素沒被翻:__ksnm.explain(document.querySelector('h1')) */
     explain: (el: Element | string) =>
       explainCandidate(typeof el === 'string' ? document.querySelector(el)! : el),
+    /**
+     * 查某個座標上畫的是哪個疊層:__ksnm.at(x, y)(viewport 座標)。
+     * 把滑鼠停在錯位的譯文上,按 F12 執行這行,就知道:
+     *  - painted:疊層畫在哪(document 座標)
+     *  - live:來源元素現在在哪
+     * 兩者差很多 → 位置漂移沒被偵測到;
+     * 兩者一致 → 疊層位置其實是對的,問題在那個元素根本不該被翻
+     *            (隱藏的重複 DOM、被裁切的內容)。
+     */
+    at: (x: number, y: number) => {
+      const dx = x + window.scrollX;
+      const dy = y + window.scrollY;
+      return [...units]
+        .filter(
+          (u) =>
+            u.box &&
+            dx >= u.rect.left &&
+            dx <= u.rect.left + u.rect.width &&
+            dy >= u.rect.top &&
+            dy <= u.rect.top + u.rect.height,
+        )
+        .map((u) => {
+          const r = u.el.getBoundingClientRect();
+          return {
+            id: u.id,
+            tier: u.tier,
+            src: u.src.slice(0, 60),
+            text: activeText(u)?.slice(0, 60),
+            painted: { x: Math.round(u.rect.left), y: Math.round(u.rect.top) },
+            live: { x: Math.round(r.left + window.scrollX), y: Math.round(r.top + window.scrollY) },
+            visible: r.width > 0 && r.height > 0,
+            el: u.el,
+          };
+        });
+    },
     /** 把疊層盒子的邊界畫出來:__ksnm.outline() */
     outline: (on = true) => layer?.setOutline(on),
     rescan: () => {
