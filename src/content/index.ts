@@ -18,6 +18,7 @@ import {
   coverRect,
   lockScales,
   maxCharsForUpgrade,
+  measureTextHeight,
   measureUnit,
   unlockScales,
 } from './geometry';
@@ -35,6 +36,19 @@ setDiagScope('content');
 
 /** 掃到 0 個候選時的重掃間隔(ms) */
 const EMPTY_SCAN_RETRIES = [300, 900, 2000, 4000];
+
+/**
+ * L0 的預翻範圍(視窗上下各幾 px)。
+ *
+ * §7.1 的 `rootMargin: 200px` 是**成本**規則:控制 TPM 與帳單。
+ * 那是 L1 的顧慮 —— L0 在本機跑、零成本、不吃額度,卻一直跟著同一條規則,
+ * 於是每捲一段就要重等一次翻譯。診斷 log 顯示 L0 一批 9 塊要 3.7 秒,
+ * 首屏 4 秒幾乎全花在這裡。
+ *
+ * 分開之後:L0 提前翻視窗外 1500px 的內容(捲到之前就翻好了),
+ * L1 仍然嚴守「可見 + 停留 1.5 秒」(D21,那條是拿來省錢的)。
+ */
+const L0_LOOKAHEAD_PX = 1500;
 
 const host = location.hostname;
 
@@ -149,6 +163,7 @@ function scan(): void {
       overflowsBox: false,
       firstRectTop: 0,
       lastRectBottom: 0,
+      textHeight: 0,
       // §3.5 元素環繞浮動圖片 → bounding box 會蓋住圖片,跳過該單元
       tier: c.geometryRisk ? 'skipped' : 'pending',
       l1Queued: false,
@@ -303,6 +318,7 @@ function flush(): void {
   }
   const paintable = [...units].filter(hasText);
   assignScales(paintable);
+  for (const u of paintable) u.textHeight = measureTextHeight(u);
 
   // ---- 寫入階段
   for (const u of units) {
@@ -331,34 +347,60 @@ function flush(): void {
  */
 async function intake(): Promise<void> {
   if (!running) return;
-  // 沒開自動翻譯就等使用者明確按下去
   if (!settings.autoTranslate && !manualArmed) {
     updateHud();
     return;
   }
+
+  if (effective === 'single') {
+    // Phase 1 的路徑:要花錢,所以嚴守可見區
+    const visible = [...units].filter(
+      (u) => u.tier === 'pending' && u.inView && u.maxChars > 0 && !probed.has(u),
+    );
+    if (visible.length === 0) return;
+    for (const u of visible) probed.add(u);
+    queueUpgrade(visible);
+    return;
+  }
+
+  // L0 免費且在本機,取材範圍可以遠大於可見區
+  const top = window.scrollY - L0_LOOKAHEAD_PX;
+  const bottom = window.scrollY + window.innerHeight + L0_LOOKAHEAD_PX;
   const fresh = [...units].filter(
-    (u) => u.tier === 'pending' && u.inView && u.maxChars > 0 && !probed.has(u),
+    (u) =>
+      u.tier === 'pending' &&
+      u.maxChars > 0 &&
+      !probed.has(u) &&
+      u.rect.top + u.rect.height >= top &&
+      u.rect.top <= bottom,
   );
   if (fresh.length === 0) return;
   for (const u of fresh) probed.add(u);
 
-  if (effective === 'single') {
-    // Phase 1 的路徑:直接送 L1,沒有 L0 打底
-    queueUpgrade(fresh);
-    return;
-  }
+  /*
+   * 快取查詢**不擋** L0。
+   *
+   * 之前這裡是 `await probeCache()` 再跑 L0,而那是一次到 service worker 的
+   * 往返(SW 睡著時還要先喚醒)—— L0 還沒開始就先等了幾百毫秒,
+   * 而 L0 存在的唯一理由就是快。
+   *
+   * 兩邊同時跑:快取先回來的話,runL0 裡面會跳過已經有 L1 譯文的區塊,
+   * D23「快取命中不閃 L0」在多數情況下仍然成立(SW 熱的時候查詢很快)。
+   */
+  const probing = probeCache(fresh).then((hits) => {
+    for (const u of fresh) {
+      const hit = hits.get(u.id);
+      if (hit === undefined) continue;
+      u.l1Text = hit;
+      u.tier = 'l1';
+    }
+    if (hits.size > 0) scheduleFlush();
+    return hits.size;
+  });
 
-  const hits = await probeCache(fresh);
-  const misses = fresh.filter((u) => !hits.has(u.id));
-  for (const u of fresh) {
-    const hit = hits.get(u.id);
-    if (hit === undefined) continue;
-    u.l1Text = hit;
-    u.tier = 'l1';
-  }
-  if (hits.size > 0) scheduleFlush();
-  diag('info', 'intake', { fresh: fresh.length, cacheHits: hits.size, toL0: misses.length });
-  await runL0(misses);
+  const l0 = runL0(fresh);
+  const [cacheHits] = await Promise.all([probing, l0]);
+  diag('info', 'intake', { fresh: fresh.length, cacheHits, lookahead: L0_LOOKAHEAD_PX });
 }
 
 async function probeCache(list: Unit[]): Promise<Map<string, string>> {
@@ -383,8 +425,11 @@ async function runL0(list: Unit[]): Promise<void> {
     scheduleFlush();
     return;
   }
+  const startedAt = performance.now();
   await Promise.all(
     list.map(async (u) => {
+      // 快取比 L0 先回來 → 不必翻了(D23:不閃 L0)
+      if (u.l1Text !== undefined) return;
       // §3.4 送出前把行內 code 與不翻清單換成佔位符
       const masked = mask(u.src, protectedFragments(u.el, settings.noTranslateTerms));
       const raw = await engine.translate(masked.text);
@@ -407,11 +452,14 @@ async function runL0(list: Unit[]): Promise<void> {
   );
   scheduleFlush();
   const failedL0 = list.filter((u) => u.tier === 'l0-failed' || u.tier === 'failed').length;
+  const ms = Math.round(performance.now() - startedAt);
   diag(failedL0 > 0 ? 'warn' : 'info', 'l0-done', {
     asked: list.length,
     failed: failedL0,
+    // 每塊平均幾毫秒 —— L0 的賣點就是快,慢下來要看得見
+    ms,
+    perUnit: Math.round(ms / Math.max(1, list.length)),
     state: engine.state,
-    detail: engine.detail,
   });
   // §4.4 規則 1:這一輪 L0 收斂之後就把字級分組定案
   lockAfterL0();

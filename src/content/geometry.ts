@@ -180,6 +180,24 @@ export function unlockScales(units: Iterable<Unit>): void {
   for (const u of units) u.lockedFontSize = 0;
 }
 
+/** 譯文實際佔幾行 × 行高。提示線用這個,不要用原文區塊的高度 */
+export function measureTextHeight(unit: Unit): number {
+  const text = activeText(unit);
+  if (text === undefined) return 0;
+  const size = unit.lockedFontSize > 0 ? unit.lockedFontSize : unit.style.fontSizePx * unit.scale;
+  const lines = estimateLines(
+    text,
+    innerWidth(unit),
+    unit.style.fontStyle,
+    unit.style.targetWeight,
+    size,
+    fontStack(unit.style.isSerif, unit.style.sourceStack),
+    LETTER_SPACING_EM,
+  );
+  const [pt, , pb] = unit.style.padding;
+  return lines * unit.style.lineHeightPx + pt + pb;
+}
+
 /** 替換後個別區塊是否溢出(鎖定字級下),只用來在 debug 標記 */
 export function checkOverflow(unit: Unit): boolean {
   const text = activeText(unit);
