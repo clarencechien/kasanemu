@@ -121,6 +121,7 @@ function scan(): void {
       scale: 1,
       maxChars: 0,
       rect: { left: 0, top: 0, width: 0, height: 0 },
+      bleed: { x: 0, y: 0 },
       firstRectTop: 0,
       // §3.5 元素環繞浮動圖片 → bounding box 會蓋住圖片,跳過該單元
       tier: c.geometryRisk ? 'skipped' : 'pending',
@@ -187,7 +188,7 @@ function flush(): void {
   layer.refreshOrigin();
   for (const u of units) {
     if (u.tier === 'skipped') continue;
-    measureUnit(u);
+    measureUnit(u, settings.overlayBleedPx);
     if (u.maxChars === 0) u.maxChars = computeMaxChars(u);
   }
   const paintable = [...units].filter(hasText);

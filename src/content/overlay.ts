@@ -282,11 +282,17 @@ export class OverlayLayer {
 
   private applyVars(el: HTMLElement, unit: Unit, size: number): void {
     const s = unit.style;
+    // 出血:盒子往四周各撐 bleed,padding 同量補回來,
+    // 於是**譯文的位置一格都沒動**,只有背景多蓋了一圈。
+    // 這就是「蓋得更準」的做法 —— 對齊靠 padding,遮蔽靠 border-box。
+    const bx = unit.bleed?.x ?? 0;
+    const by = unit.bleed?.y ?? 0;
+    const [pt, pr, pb, pl] = s.padding;
     const vars: Record<string, string> = {
-      '--ksnm-x': `${unit.rect.left - this.originX}px`,
-      '--ksnm-y': `${unit.rect.top - this.originY}px`,
-      '--ksnm-w': `${unit.rect.width}px`,
-      '--ksnm-h': `${unit.rect.height}px`,
+      '--ksnm-x': `${unit.rect.left - this.originX - bx}px`,
+      '--ksnm-y': `${unit.rect.top - this.originY - by}px`,
+      '--ksnm-w': `${unit.rect.width + bx * 2}px`,
+      '--ksnm-h': `${unit.rect.height + by * 2}px`,
       '--ksnm-bg': s.background ?? 'rgba(230, 241, 251, 0.94)',
       '--ksnm-fg': s.color,
       '--ksnm-ff': fontStack(s.isSerif, s.sourceStack),
@@ -300,7 +306,7 @@ export class OverlayLayer {
       '--ksnm-lh': `${s.lineHeightPx}px`,
       '--ksnm-align': s.textAlign,
       '--ksnm-dir': s.direction,
-      '--ksnm-pad': s.padding.map((p) => `${p}px`).join(' '),
+      '--ksnm-pad': `${pt + by}px ${pr + bx}px ${pb + by}px ${pl + bx}px`,
       '--ksnm-radius': s.borderRadius,
     };
     for (const [k, v] of Object.entries(vars)) el.style.setProperty(k, v);

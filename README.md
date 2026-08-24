@@ -101,7 +101,7 @@ systemInstruction 是否支援、schema 強制或只有 JSON mode、以及
 
 ```bash
 npm run typecheck
-npm test          # 58 個測試:選取規則、id 紀律、截斷修復、字重、快取 key、
+npm test          # 63 個測試:選取規則、id 紀律、截斷修復、字重、快取 key、
                   #            佔位符保護、升級資格、替換時機、長度預算、提示線階層
 npm run build     # 也會回報 dist 體積對 §10.2 的 1.5 MB 預算
 npm run zip       # dist/ → release/kasanemu-<version>.zip(自己寫的 zip,無外部依賴)
@@ -113,7 +113,7 @@ npm run check     # typecheck + test + build
 src/
   manifest.json
   shared/     types / models(三檔與牌價)/ settings / hash / log
-  content/    detect  幾何  styleprobe  measure  fonts  overlay  index
+  content/    detect  幾何  styleprobe  measure  bleed  fonts  overlay  index
               l0(Translator API)  mask(佔位符)  lang  upgrade(升級管線的純判斷)
   worker/     gemini  protocol  scheduler  tokenBucket  budget  cache  index
   options/    設定頁(金鑰、三檔、視覺、快取、保險絲)

@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { bleedFor, inkOverflow } from '../src/content/bleed.ts';
 import { isSerifStack, parseColor, rgbToCss, targetWeight } from '../src/content/styleprobe.ts';
 import { cacheKey, maxCharsBucket } from '../src/shared/hash.ts';
 
@@ -54,4 +55,39 @@ test('§9 快取 key 由 src / 語言 / 模型 / 長度桶 四者決定', async 
   assert.notEqual(a, otherModel);
   assert.notEqual(a, otherBucket);
   assert.match(a, /^[0-9a-f]{64}$/);
+});
+
+/* -------------------------------------------------- 出血:蓋住原文的墨水 */
+
+test('行距壓得比墨水高度小時,上下各補一半的溢出量', () => {
+  // claude.com/blog 的 h1:64px 字、line-height 64px,墨水約 1.16 em = 74px
+  const ink = 64 * 1.16;
+  assert.equal(inkOverflow(ink, 64), (74.24 - 64) / 2);
+  const b = bleedFor(ink, 64, 0, 'heading');
+  assert.equal(b.y, Math.ceil((74.24 - 64) / 2)); // 6px:g 的尾巴不再露出來
+});
+
+test('行距正常的段落不出血,不會蓋到相鄰區塊', () => {
+  const ink = 16 * 1.16; // 18.56
+  const b = bleedFor(ink, 26, 0, 'body');
+  assert.equal(b.y, 0);
+  assert.equal(b.x, 0);
+});
+
+test('options 的固定出血一律加上去,量不到的東西靠它', () => {
+  const b = bleedFor(16 * 1.16, 26, 2, 'body');
+  assert.equal(b.y, 2);
+  assert.equal(b.x, 2);
+});
+
+test('表格儲存格左右不出血:蓋掉相鄰資料比露一點更糟', () => {
+  const b = bleedFor(16 * 1.16, 12, 3, 'cell');
+  assert.equal(b.x, 0);
+  assert.ok(b.y > 0);
+});
+
+test('出血永遠不是負的', () => {
+  const b = bleedFor(10, 40, 0, 'body');
+  assert.equal(b.y, 0);
+  assert.equal(b.x, 0);
 });

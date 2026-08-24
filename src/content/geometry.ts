@@ -1,4 +1,5 @@
-import { estimateLines } from './measure';
+import { estimateLines, measureInkHeight } from './measure';
+import { bleedFor } from './bleed';
 import { fontStack } from './fonts';
 import { LETTER_SPACING_EM, STEPS, activeText, type Unit } from './unit';
 import { maxCharsAt } from './upgrade';
@@ -7,7 +8,7 @@ import { maxCharsAt } from './upgrade';
  * §3.3 幾何量測。座標一律轉成 document 座標,
  * 所以捲動不需要重算 (§3.4 / D02 的代價僅限重排)。
  */
-export function measureUnit(unit: Unit): void {
+export function measureUnit(unit: Unit, extraBleedPx = 0): void {
   const r = unit.el.getBoundingClientRect();
   const rects = unit.el.getClientRects();
   const sx = window.scrollX;
@@ -18,6 +19,14 @@ export function measureUnit(unit: Unit): void {
   unit.firstRectTop = first.top + sy;
   // §4.4 單行元素走另一條路
   unit.singleLine = r.height <= unit.style.lineHeightPx * 1.5;
+  // 原文的墨水可能超出 border-box(緊排標題),疊層要跟著往外撐
+  const ink = measureInkHeight(
+    unit.style.fontStyle,
+    unit.style.sourceWeight,
+    unit.style.fontSizePx,
+    unit.style.sourceStack,
+  );
+  unit.bleed = bleedFor(ink, unit.style.lineHeightPx, extraBleedPx, unit.role);
 }
 
 function innerWidth(unit: Unit): number {

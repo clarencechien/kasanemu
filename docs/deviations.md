@@ -224,3 +224,43 @@ Google 翻譯離線版**,而「不要翻譯腔」是這個專案唯一在意的�
 規格早就寫了「先看到一份不合格的譯文再被換掉,可能比多等 0.8 秒更煩」——
 現在有了實例。要不要留 L0 當首屏層,等 L1 真的跑起來、能並排比較之後再決定
 (debug 面板 Alt+Shift+D 的三欄就是為了這個)。
+
+## K. 疊層蓋不住原文的墨水(緊排標題)
+
+回報:標題疊層上方一排小點、下方一個孤零零的 `g` 尾巴露在外面。
+
+病根不是「譯文太短」,是 **border-box ≠ 墨水範圍**。
+`getBoundingClientRect()` 給的是 border-box,而字實際畫到哪裡由字型的
+ascent / descent 決定。`line-height` 壓得比墨水高度小的時候(緊排大標的
+標準做法,claude.com/blog 的 h1 就是 64px 字配 64px 行高),
+第一行的頂端與最後一行的 descender 會落在 box 外面。
+疊層精準貼合 border-box,那兩截就露出來。
+
+修法:**出血(bleed)**。不是猜一個固定值往外加,而是用字型度量算:
+
+```
+溢出量 = max(0, 墨水高度 − line-height) / 2      // 上下各一半
+墨水高度 = canvas measureText 的 fontBoundingBoxAscent + Descent
+```
+
+`line-height` 正常的段落算出來是 0,完全不會動到相鄰疊層;
+只有真的緊排的標題才會撐開(那個 h1 撐 6px,剛好蓋掉 g 的尾巴)。
+
+實作的關鍵是**盒子往外撐、padding 同量補回來**:
+
+```
+left  = rect.left − bleedX      padding-left = 原 padding-left + bleedX
+width = rect.width + bleedX × 2
+```
+
+因為 `box-sizing: border-box`,這樣做**譯文的位置一格都沒動**
+(§4.5 第一行基線仍然對齊原文),只有背景多蓋了一圈。
+對齊靠 padding,遮蔽靠 border-box,兩件事分開。
+
+另外 options 有一個固定出血(預設 2px),給量不到的東西:
+`text-shadow`、斜體的尾巴、次像素捨入。表格儲存格左右不出血 ——
+蓋掉相鄰資料比露出一點點更糟(PRD §14 開放問題 5)。
+
+**沒有動的是譯文比原文短時底部的留白。** 那是 §4.5 / D09 明確決定接受的:
+「早期版本嘗試譯文較短時拉大行距填滿空白,結果行距鬆到不自然,是退步。」
+背景同色,視覺上只是段距略大,垂直節奏完全不動。
