@@ -31,6 +31,18 @@ export interface Unit {
   overflowsBox: boolean;
   /** §4.7 提示線對齊第一個 client rect 的頂端 */
   firstRectTop: number;
+  /**
+   * 文字真正的最後一行底部(最後一個 client rect)。
+   * 提示線用它,不能用 rect.height —— 那個為了蓋住溢出的墨水
+   * 取了 max(border-box, scrollHeight),拿去畫線就會跑過頭。
+   */
+  lastRectBottom: number;
+  /**
+   * 譯文實際佔的高度(估算)。提示線用它。
+   * 英文比中文長,原文區塊常常比譯文高一大截 —— 照原文高度畫線,
+   * 線就會從譯文末尾繼續往下拖一段,看起來像壞掉。
+   */
+  textHeight: number;
   /** feature.md §4.1 區塊狀態機 */
   tier: UnitTier;
   failReason?: string;

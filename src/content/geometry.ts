@@ -20,10 +20,19 @@ export function coverRect(unit: Unit): { rect: DocRect; overflows: boolean } {
   const r = unit.el.getBoundingClientRect();
   const el = unit.el as HTMLElement;
   const [bt, br, bb, bl] = unit.style.border;
-  // 原文的內容可能比自己的 border-box 大:固定 height + overflow: visible,
-  // 或子元素有負 margin。照 border-box 蓋就會漏(標題底下露出半個 g)。
-  const contentH = (el.scrollHeight || 0) + bt + bb;
-  const contentW = (el.scrollWidth || 0) + bl + br;
+  /*
+   * 原文的內容可能比自己的 border-box 大:固定 height + overflow: visible,
+   * 或子元素有負 margin。照 border-box 蓋就會漏(標題底下露出半個 g)。
+   *
+   * **但只有 overflow: visible 才算。** 元素自己有裁切時,溢出的內容
+   * 根本沒被畫出來,拿 scrollWidth 去撐大盒子只會蓋到旁邊的東西 ——
+   * sr-only 的 1×1 元素配上 nowrap 長句,scrollWidth 是整句話的寬度,
+   * 就是這樣長出一條橫跨整張卡的疊層。
+   */
+  const cs = getComputedStyle(el);
+  const spills = cs.overflowX === 'visible' && cs.overflowY === 'visible';
+  const contentH = spills ? (el.scrollHeight || 0) + bt + bb : 0;
+  const contentW = spills ? (el.scrollWidth || 0) + bl + br : 0;
   return {
     rect: {
       left: r.left + window.scrollX,
@@ -56,6 +65,8 @@ export function measureUnit(unit: Unit, extraBleedPx = 0): void {
   // §4.7 提示線對齊第一個 client rect 的頂端,不是 border-box 頂端
   const first = rects.length > 0 ? rects[0]! : r;
   unit.firstRectTop = first.top + sy;
+  const last = rects.length > 0 ? rects[rects.length - 1]! : r;
+  unit.lastRectBottom = last.bottom + sy;
   // §4.4 單行元素走另一條路
   unit.singleLine = r.height <= unit.style.lineHeightPx * 1.5;
   // 原文的墨水可能超出 border-box(緊排標題),疊層要跟著往外撐
@@ -176,6 +187,24 @@ export function lockScales(units: Unit[]): number {
  */
 export function unlockScales(units: Iterable<Unit>): void {
   for (const u of units) u.lockedFontSize = 0;
+}
+
+/** 譯文實際佔幾行 × 行高。提示線用這個,不要用原文區塊的高度 */
+export function measureTextHeight(unit: Unit): number {
+  const text = activeText(unit);
+  if (text === undefined) return 0;
+  const size = unit.lockedFontSize > 0 ? unit.lockedFontSize : unit.style.fontSizePx * unit.scale;
+  const lines = estimateLines(
+    text,
+    innerWidth(unit),
+    unit.style.fontStyle,
+    unit.style.targetWeight,
+    size,
+    fontStack(unit.style.isSerif, unit.style.sourceStack),
+    LETTER_SPACING_EM,
+  );
+  const [pt, , pb] = unit.style.padding;
+  return lines * unit.style.lineHeightPx + pt + pb;
 }
 
 /** 替換後個別區塊是否溢出(鎖定字級下),只用來在 debug 標記 */

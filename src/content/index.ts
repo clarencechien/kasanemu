@@ -18,6 +18,7 @@ import {
   coverRect,
   lockScales,
   maxCharsForUpgrade,
+  measureTextHeight,
   measureUnit,
   unlockScales,
 } from './geometry';
@@ -35,6 +36,19 @@ setDiagScope('content');
 
 /** 掃到 0 個候選時的重掃間隔(ms) */
 const EMPTY_SCAN_RETRIES = [300, 900, 2000, 4000];
+
+/**
+ * L0 的預翻範圍(視窗上下各幾 px)。
+ *
+ * §7.1 的 `rootMargin: 200px` 是**成本**規則:控制 TPM 與帳單。
+ * 那是 L1 的顧慮 —— L0 在本機跑、零成本、不吃額度,卻一直跟著同一條規則,
+ * 於是每捲一段就要重等一次翻譯。診斷 log 顯示 L0 一批 9 塊要 3.7 秒,
+ * 首屏 4 秒幾乎全花在這裡。
+ *
+ * 分開之後:L0 提前翻視窗外 1500px 的內容(捲到之前就翻好了),
+ * L1 仍然嚴守「可見 + 停留 1.5 秒」(D21,那條是拿來省錢的)。
+ */
+const L0_LOOKAHEAD_PX = 1500;
 
 const host = location.hostname;
 
@@ -148,6 +162,8 @@ function scan(): void {
       bleed: { x: 0, y: 0 },
       overflowsBox: false,
       firstRectTop: 0,
+      lastRectBottom: 0,
+      textHeight: 0,
       // §3.5 元素環繞浮動圖片 → bounding box 會蓋住圖片,跳過該單元
       tier: c.geometryRisk ? 'skipped' : 'pending',
       l1Queued: false,
@@ -302,6 +318,7 @@ function flush(): void {
   }
   const paintable = [...units].filter(hasText);
   assignScales(paintable);
+  for (const u of paintable) u.textHeight = measureTextHeight(u);
 
   // ---- 寫入階段
   for (const u of units) {
@@ -330,34 +347,62 @@ function flush(): void {
  */
 async function intake(): Promise<void> {
   if (!running) return;
-  // 沒開自動翻譯就等使用者明確按下去
   if (!settings.autoTranslate && !manualArmed) {
     updateHud();
     return;
   }
-  const fresh = [...units].filter(
-    (u) => u.tier === 'pending' && u.inView && u.maxChars > 0 && !probed.has(u),
-  );
-  if (fresh.length === 0) return;
-  for (const u of fresh) probed.add(u);
 
   if (effective === 'single') {
-    // Phase 1 的路徑:直接送 L1,沒有 L0 打底
-    queueUpgrade(fresh);
+    // Phase 1 的路徑:要花錢,所以嚴守可見區
+    const visible = [...units].filter(
+      (u) => u.tier === 'pending' && u.inView && u.maxChars > 0 && !probed.has(u),
+    );
+    if (visible.length === 0) return;
+    for (const u of visible) probed.add(u);
+    queueUpgrade(visible);
     return;
   }
 
-  const hits = await probeCache(fresh);
-  const misses = fresh.filter((u) => !hits.has(u.id));
-  for (const u of fresh) {
-    const hit = hits.get(u.id);
-    if (hit === undefined) continue;
-    u.l1Text = hit;
-    u.tier = 'l1';
-  }
-  if (hits.size > 0) scheduleFlush();
-  diag('info', 'intake', { fresh: fresh.length, cacheHits: hits.size, toL0: misses.length });
-  await runL0(misses);
+  // L0 免費且在本機,取材範圍可以遠大於可見區
+  const top = window.scrollY - L0_LOOKAHEAD_PX;
+  const bottom = window.scrollY + window.innerHeight + L0_LOOKAHEAD_PX;
+  const fresh = [...units].filter(
+    (u) =>
+      u.tier === 'pending' &&
+      u.maxChars > 0 &&
+      !probed.has(u) &&
+      u.rect.top + u.rect.height >= top &&
+      u.rect.top <= bottom,
+  );
+  if (fresh.length === 0) return;
+  // 先翻使用者現在看得到的:預翻範圍拉大之後,順序比以前更重要
+  fresh.sort((a, b) => priorityOf(a) - priorityOf(b));
+  for (const u of fresh) probed.add(u);
+
+  /*
+   * 快取查詢**不擋** L0。
+   *
+   * 之前這裡是 `await probeCache()` 再跑 L0,而那是一次到 service worker 的
+   * 往返(SW 睡著時還要先喚醒)—— L0 還沒開始就先等了幾百毫秒,
+   * 而 L0 存在的唯一理由就是快。
+   *
+   * 兩邊同時跑:快取先回來的話,runL0 裡面會跳過已經有 L1 譯文的區塊,
+   * D23「快取命中不閃 L0」在多數情況下仍然成立(SW 熱的時候查詢很快)。
+   */
+  const probing = probeCache(fresh).then((hits) => {
+    for (const u of fresh) {
+      const hit = hits.get(u.id);
+      if (hit === undefined) continue;
+      u.l1Text = hit;
+      u.tier = 'l1';
+    }
+    if (hits.size > 0) scheduleFlush();
+    return hits.size;
+  });
+
+  const l0 = runL0(fresh);
+  const [cacheHits] = await Promise.all([probing, l0]);
+  diag('info', 'intake', { fresh: fresh.length, cacheHits, lookahead: L0_LOOKAHEAD_PX });
 }
 
 async function probeCache(list: Unit[]): Promise<Map<string, string>> {
@@ -382,8 +427,11 @@ async function runL0(list: Unit[]): Promise<void> {
     scheduleFlush();
     return;
   }
+  const startedAt = performance.now();
   await Promise.all(
     list.map(async (u) => {
+      // 快取比 L0 先回來 → 不必翻了(D23:不閃 L0)
+      if (u.l1Text !== undefined) return;
       // §3.4 送出前把行內 code 與不翻清單換成佔位符
       const masked = mask(u.src, protectedFragments(u.el, settings.noTranslateTerms));
       const raw = await engine.translate(masked.text);
@@ -402,15 +450,22 @@ async function runL0(list: Unit[]): Promise<void> {
       }
       u.l0Text = restored;
       u.tier = 'l0';
+      // **逐塊上畫**。之前整批做完才 flush 一次 —— 一批 16 塊、每塊 850ms,
+      // 於是 13.6 秒內畫面上什麼都沒有(log 的首屏 13970ms 就是這樣來的)。
+      // scheduleFlush 自帶 120ms debounce,不會變成每塊一次重排。
+      scheduleFlush();
     }),
   );
   scheduleFlush();
   const failedL0 = list.filter((u) => u.tier === 'l0-failed' || u.tier === 'failed').length;
+  const ms = Math.round(performance.now() - startedAt);
   diag(failedL0 > 0 ? 'warn' : 'info', 'l0-done', {
     asked: list.length,
     failed: failedL0,
+    // 每塊平均幾毫秒 —— L0 的賣點就是快,慢下來要看得見
+    ms,
+    perUnit: Math.round(ms / Math.max(1, list.length)),
     state: engine.state,
-    detail: engine.detail,
   });
   // §4.4 規則 1:這一輪 L0 收斂之後就把字級分組定案
   lockAfterL0();
@@ -950,24 +1005,32 @@ function applyChromeClip(): void {
 }
 
 /**
- * 來源元素在它自己的位置上到底看不看得見。
+ * 元素是不是被某個祖先的 `overflow: hidden` 整個裁掉了。
  *
- * 打中的不是它、不是它的子孫、也不是它的祖先 → 它被別的東西蓋住,
- * 或它根本是被 overflow: hidden 裁掉的重複 DOM(輪播的另一份、隱藏的行動版選單)。
- * 那種疊層會浮在完全無關的位置上 —— 卡片列上方那排、按鈕右上角那兩個,
- * 症狀都是這個:座標沒錯,錯在那個元素本來就看不見。
+ * 這是「看不見的重複 DOM」的成因:輪播的另一份、隱藏的行動版選單。
+ * 頁面把它裁掉了,而我們的疊層在最上層不受任何裁切,於是浮在無關的位置。
+ *
+ * build 15 用 `elementFromPoint` 做這件事,結果**把正確的疊層藏掉了** ——
+ * 卡片常有一個絕對定位的 stretched link 蓋住整張卡,它既不是標題的祖先
+ * 也不是子孫,命中測試就判成「被蓋住」。幾何判定沒有這個問題:
+ * 只問「這個元素的矩形有沒有落在裁切框外面」,不管誰蓋在上面。
+ *
+ * 可捲動的容器**照樣算**:現在看不見就是看不見,使用者把它捲進來之後
+ * 下一輪稽核會再把疊層放出來。
  */
-function occludedNow(u: Unit): boolean {
-  const rects = u.el.getClientRects();
-  const r = rects.length > 0 ? rects[0]! : u.el.getBoundingClientRect();
+function clippedAway(u: Unit): boolean {
+  const r = u.el.getBoundingClientRect();
   if (r.width < 1 || r.height < 1) return true;
-  const x = r.left + Math.min(r.width / 2, 30);
-  const y = r.top + r.height / 2;
-  // 不在視窗內就不判斷:elementFromPoint 只認視窗座標
-  if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) return false;
-  const hit = document.elementFromPoint(x, y);
-  if (!hit) return true;
-  return !(hit === u.el || u.el.contains(hit) || hit.contains(u.el));
+  for (let p = u.el.parentElement; p && p !== document.documentElement; p = p.parentElement) {
+    const cs = getComputedStyle(p);
+    if (cs.overflowX === 'visible' && cs.overflowY === 'visible') continue;
+    const pr = p.getBoundingClientRect();
+    if (pr.width < 1 || pr.height < 1) return true;
+    const outside =
+      r.right <= pr.left + 1 || r.left >= pr.right - 1 || r.bottom <= pr.top + 1 || r.top >= pr.bottom - 1;
+    if (outside) return true;
+  }
+  return false;
 }
 
 function checkOcclusion(): void {
@@ -977,15 +1040,15 @@ function checkOcclusion(): void {
   for (const u of units) {
     if (!u.box) continue;
     const vTop = u.rect.top - window.scrollY;
-    if (vTop + u.rect.height < 0 || vTop > window.innerHeight) continue;
-    if (checked++ > 80) break; // 一輪的上限,避免整頁 hit-test
-    const covered = occludedNow(u);
-    layer.setCovered(u, covered);
-    if (covered) hidden++;
+    if (vTop + u.rect.height < -200 || vTop > window.innerHeight + 200) continue;
+    if (checked++ > 80) break;
+    const gone = clippedAway(u);
+    layer.setCovered(u, gone);
+    if (gone) hidden++;
   }
   if (hidden !== lastCovered) {
     lastCovered = hidden;
-    diag('info', 'covered-overlays', { hidden, checked });
+    diag('info', 'clipped-overlays', { hidden, checked });
   }
 }
 

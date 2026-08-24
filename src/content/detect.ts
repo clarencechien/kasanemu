@@ -37,6 +37,38 @@ const CONTAINER_TAGS =
 export const MAX_UNIT_CHARS = 1000;
 
 /**
+ * 互動元素裡的**短**文字是 UI 標籤,不是內容。
+ *
+ * PRD §3.1 排除了 <button>,但沒排除 `<a class="button">` 這種連結型按鈕 ——
+ * 「See pricing」「Contact sales」就是這樣被翻進來的,而按鈕又剛好是
+ * 疊層最容易出事的地方(hover 位移、隱藏的行動版複本、輪播複製)。
+ *
+ * Margin(withmargin/margin-read)的做法更硬:導覽、表單、按鈕、widget
+ * 整個不翻。這裡取中間值 —— 以**長度**分辨 UI 標籤與內容:
+ * 卡片標題、文章裡的行內連結都是長文字,照翻;
+ * 24 字以內的連結/按鈕當成 UI 元件,跳過。
+ */
+const INTERACTIVE_SELECTOR =
+  'a[href],button,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[role="switch"],[role="option"]';
+const UI_LABEL_MAX_CHARS = 24;
+
+export function isUiLabel(el: Element): boolean {
+  const act = el.closest(INTERACTIVE_SELECTOR);
+  if (act) return normalizeText(act.textContent ?? '').length <= UI_LABEL_MAX_CHARS;
+  /*
+   * 自己不是互動元素,但文字**全部**來自互動子孫 —— 那是按鈕列 / 連結列,
+   * 不是段落。段落裡夾一個行內連結不會命中:那時連結外面還有文字。
+   */
+  const actives = el.querySelectorAll(INTERACTIVE_SELECTOR);
+  if (actives.length === 0) return false;
+  const total = normalizeText(el.textContent ?? '');
+  if (total.length > UI_LABEL_MAX_CHARS * actives.length) return false;
+  let inside = 0;
+  for (const a of actives) inside += normalizeText(a.textContent ?? '').length;
+  return inside >= total.length - 2;
+}
+
+/**
  * 「這根本不是給人讀的文字」的標籤,它們的內容不得進入 src。
  *
  * 刻意**不含** code / kbd / samp:那些是行內的、給人讀的,只是不該被翻譯,
@@ -138,6 +170,42 @@ export function isMeaningfulText(text: string): boolean {
   return true;
 }
 
+/**
+ * 螢幕閱讀器專用標籤(`.sr-only` / `.visually-hidden` / `.u-sr-only`)。
+ *
+ * 經典寫法是 `position:absolute; width:1px; height:1px; overflow:hidden;
+ * clip:rect(0,0,0,0)` —— 對視覺使用者完全不存在,但 §3.1 的檢查全部漏掉它:
+ * 不是 display:none、不是 visibility:hidden、opacity 是 1、
+ * `getClientRects()` 還會回一個 1×1 的矩形,「有繪製面積」也過關。
+ *
+ * 實例(claude.com 的相關文章卡片):
+ *   <a class="clickable_link"><span class="u-sr-only">Build production agents…</span></a>
+ *
+ * 疊層在這種元素上特別糟:1×1 的盒子配上 nowrap 的長句,
+ * `scrollWidth` 是整句話的寬度,於是長出一條橫跨整張卡的譯文貼在卡片頂端。
+ *
+ * 判定看 computed style 的特徵,不看 class 名稱 —— 各家命名不同,行為一樣。
+ */
+function isScreenReaderOnly(el: Element, cs: CSSStyleDeclaration): boolean {
+  const clip = cs.clip;
+  if (clip && clip !== 'auto' && /rect\(\s*0(?:px)?[,\s]+0(?:px)?[,\s]+0(?:px)?[,\s]+0(?:px)?\s*\)/.test(clip)) {
+    return true;
+  }
+  const clipPath = cs.clipPath;
+  if (clipPath && clipPath !== 'none' && /inset\(\s*(?:50|100)%/.test(clipPath)) return true;
+  // 用 client rects 而不是 bounding box:inline 元素的 bounding box
+  // 會把換行後的空白也算進去,client rects 才是真正畫出來的那幾塊
+  const rects = el.getClientRects();
+  let w = 0;
+  let h = 0;
+  for (const r of rects) {
+    if (r.width > w) w = r.width;
+    if (r.height > h) h = r.height;
+  }
+  // 幾乎沒有面積:蓋不蓋都沒有意義,而算出來的盒子只會亂跑
+  return w <= 4 || h <= 4;
+}
+
 function isInvisible(cs: CSSStyleDeclaration): boolean {
   return (
     cs.display === 'none' ||
@@ -202,6 +270,10 @@ function walk(el: Element, ctx: WalkCtx): boolean {
 
   const text = normalizeText(ownText(el));
   if (!isMeaningfulText(text)) return false;
+  // 互動元素裡的短文字是 UI 標籤,不是內容
+  if (isUiLabel(el)) return false;
+  // 螢幕閱讀器專用標籤:視覺上不存在,疊層卻會長出一條橫跨版面的盒子
+  if (isScreenReaderOnly(el, cs)) return false;
   // 最後一道防線:段落不會有一千字
   if (text.length > MAX_UNIT_CHARS) return false;
   if (looksLikeTargetLang(text)) return false;
@@ -262,5 +334,6 @@ export function explainCandidate(el: Element): string[] {
   if (text.length > MAX_UNIT_CHARS) return [`文字 ${text.length} 字,超過單元上限 ${MAX_UNIT_CHARS}`];
   if (looksLikeTargetLang(text)) return ['判定為已是目標語言 (CJK 比例 > 30%)'];
   if (el.getClientRects().length === 0) return ['沒有繪製面積 (getClientRects 為空)'];
+  if (isScreenReaderOnly(el, cs)) return ['螢幕閱讀器專用標籤(sr-only:1×1 + clip),視覺上不存在'];
   return ['符合所有規則 —— 應該會成為翻譯單元'];
 }

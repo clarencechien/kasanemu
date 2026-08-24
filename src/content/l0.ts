@@ -53,7 +53,12 @@ export function translatorSupported(): boolean {
   return ctor() !== null;
 }
 
-const CONCURRENCY = 4;
+/*
+ * 診斷 log:一批 9 塊要 3.7 秒、單獨一塊也要 0.7–2.3 秒 ——
+ * 瓶頸是每次呼叫的等待,不是本機 CPU 吃緊。提高併發直接縮短整批的牆鐘時間。
+ * 再高沒有意義:on-device 模型內部本來就會排隊。
+ */
+const CONCURRENCY = 8;
 
 export class L0Engine {
   state: L0State = 'idle';

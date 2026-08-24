@@ -105,6 +105,8 @@ const LAYER_CSS = `
   border-radius: 1px;
   opacity: 0.4;
   background: var(--ksnm-hint);
+  /* 跟盒子一樣要被固定頁首裁掉 —— 之前只裁盒子,線照樣畫在 header 上 */
+  clip-path: var(--ksnm-clip, none);
 }
 /* l1:頁面連結色,實線(Phase 1 樣式) */
 .hint.l1 { opacity: 0.4; background: var(--ksnm-hint); }
@@ -251,13 +253,13 @@ export class OverlayLayer {
 
   /** 把盒子上下裁掉一段(px);0 / 0 表示不裁 */
   setClip(unit: Unit, top: number, bottom: number): void {
-    const box = unit.box;
-    if (!box) return;
     const v = top <= 0 && bottom <= 0 ? '' : `inset(${Math.max(0, top)}px 0 ${Math.max(0, bottom)}px 0)`;
-    if (box.dataset['clip'] === v) return; // 沒變就不要寫 style
-    box.dataset['clip'] = v;
-    if (v) box.style.setProperty('--ksnm-clip', v);
-    else box.style.removeProperty('--ksnm-clip');
+    for (const el of [unit.box, unit.hint]) {
+      if (!el || el.dataset['clip'] === v) continue;
+      el.dataset['clip'] = v;
+      if (v) el.style.setProperty('--ksnm-clip', v);
+      else el.style.removeProperty('--ksnm-clip');
+    }
   }
 
   /** 來源元素看不見時把疊層藏起來(不是刪掉 —— 它可能又出現) */
@@ -374,7 +376,14 @@ export class OverlayLayer {
     const h = unit.hint;
     h.className = `hint ${cls}`;
     const top = unit.firstRectTop;
-    const height = Math.max(4, unit.rect.top + unit.rect.height - top);
+    /*
+     * 提示線的高度是**譯文**佔多高,不是原文區塊多高。
+     * 英文通常比中文長,原文區塊常常高出一截;照原文高度畫,
+     * 線就會從譯文末尾繼續往下拖 —— 回報的「線會跑過頭」。
+     * 上限仍是原文的最後一行底部,免得譯文溢出時線比區塊還長。
+     */
+    const source = Math.max(4, unit.lastRectBottom - top);
+    const height = unit.textHeight > 0 ? Math.min(source, Math.max(4, unit.textHeight)) : source;
     h.style.setProperty('--ksnm-hx', `${unit.rect.left - 8}px`);
     h.style.setProperty('--ksnm-hy', `${top}px`);
     h.style.setProperty('--ksnm-hh', `${height}px`);

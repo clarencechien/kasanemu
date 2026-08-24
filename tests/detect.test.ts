@@ -31,6 +31,22 @@ function ids(body: Element): string[] {
 
 before(() => {
   // 讓 detect.ts 在 import 之後才碰到 DOM
+
+/** 在 jsdom 上跑一次選取 */
+function collect(dom: JSDOM): Array<{ src: string }> {
+  const g = globalThis as Record<string, unknown>;
+  const prevDoc = g['document'];
+  const prevWin = g['window'];
+  g['document'] = dom.window.document;
+  g['window'] = dom.window;
+  g['getComputedStyle'] = dom.window.getComputedStyle.bind(dom.window);
+  try {
+    return findCandidates(dom.window.document.body, () => false);
+  } finally {
+    g['document'] = prevDoc;
+    g['window'] = prevWin;
+  }
+}
 });
 
 test('§3.1 一句話被 inline 元素切碎時,整個 block 是一個單元', () => {
@@ -200,4 +216,30 @@ test('超過字數上限的區塊不建立單元(容器誤判的最後防線)', 
 test('行內 code 留在句子裡(§3.4 靠佔位符保護,不是靠剝掉)', () => {
   const body = mount('<p>Call <code>compute()</code> before <kbd>Ctrl+S</kbd>.</p>');
   assert.deepEqual(ids(body), ['Call compute() before Ctrl+S.']);
+});
+
+/* ---------------- 互動元素裡的短文字是 UI 標籤,不是內容 ---------------- */
+
+test('連結型按鈕不翻:PRD 只排除 <button>,漏掉 <a class="button">', () => {
+  const body = mount(
+    '<a href="/pricing" class="button">See pricing</a>' +
+      '<a href="/sales" role="button">Contact sales</a>',
+  );
+  assert.deepEqual(ids(body), []);
+});
+
+test('連結裡的長文字是內容,照翻(卡片標題、文章行內連結)', () => {
+  const body = mount(
+    '<a href="/post"><h3>Bringing the cybersecurity capabilities of Claude to more defenders</h3></a>',
+  );
+  const out = ids(body);
+  assert.equal(out.length, 1);
+  assert.match(out[0]!, /cybersecurity/);
+});
+
+test('段落裡夾一個短連結不影響整段', () => {
+  const body = mount('<p>Read the <a href="/docs">docs</a> before you start the migration.</p>');
+  const out = ids(body);
+  assert.equal(out.length, 1);
+  assert.match(out[0]!, /migration/);
 });
