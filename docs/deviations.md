@@ -583,3 +583,123 @@ R 段做的補償量的是 **host 自己**有沒有移動。但回報的「滾�
 §3.4 列得出來的事件(resize、mutation、字型)之外,永遠有下一個來源
 (transform 動畫、`<img>`、背景圖、輪播、JS 改 style)。
 週期性稽核是兜底,事件監聽只是讓修正更快。
+
+## AA. 拿掉原點:host 改 `position: fixed`,盒子用 document 座標
+
+build 13 的診斷 log 是決定性的一份:3.5 分鐘只有 4 筆 `position-drift`,
+其中兩筆是真的元素位移(dy 452 / 502),其餘乾乾淨淨 ——
+**而畫面明顯是歪的。**
+
+也就是說座標稽核對真正的病因是瞎的。原因很直接:
+
+- 稽核比的是「疊層記錄的 document 座標」對「元素現在的 document 座標」
+- 但畫到螢幕上還要再減一個**原點**(`host.getBoundingClientRect() + scroll`)
+- **原點從來沒有被任何機制驗證過**,而且只在重排時算一次
+
+原點一錯,整片一起歪,而稽核照樣回報一切正常。R / X 段兩次補償都在猜
+「是誰把 host 弄歪的」(body 的 transform?smooth-scroll wrapper?),
+猜錯了兩次。
+
+這次不猜了,**把原點整個拿掉**:
+
+| 之前 | 現在 |
+|---|---|
+| host `position: absolute` 掛在 body / html | host **`position: fixed`**,錨在視窗 |
+| 盒子 left = docX − originX | 盒子 left = **docX**(直接用 document 座標) |
+| 捲動時猜原點有沒有跑掉 | layer 每個捲動 frame `translate(−scrollX, −scrollY)` |
+
+document 座標 (X, Y) 於是永遠落在視窗的 (X − scrollX, Y − scrollY)。
+**沒有原點可以過期,因為沒有原點了。** body 的 margin、position、transform、
+smooth-scroll wrapper 一律影響不到 fixed 的 host。
+
+代價:每個捲動 frame 一次 transform 寫入(§10.2 的「捲動零開銷」在 R 段
+就已經放棄了,這裡沒有變得更貴 —— 反而少了兩次 rect 讀取)。
+留下來的哨兵檢查只負責一件事:**內容自己在動**(sticky、lazy load、插入),
+那個要重排,不是平移。
+
+## AB. L0 晚到造成的 6 秒首屏
+
+同一份 log:
+
+```
+08:27:32 l0-done {"asked":12,"failed":12,"state":"needs-gesture"}
+08:28:00 l0-done {"asked":2, "failed":0, "state":"ready"}
+首屏:6129ms
+```
+
+一開始的 12 個區塊全部 L0 失敗(語言包還沒下載),只能空等 L1 ——
+L0 打底的意義完全沒發揮到。而 L0 後來就緒了,那 12 個卻沒人回頭補。
+
+原本只有 popup 按下下載鈕才會觸發補翻(`l0-ready` 訊息)。
+現在週期性 tick 也會檢查:L0 是 ready 而且還有 `l0-failed` 的區塊沒等到 L1,
+就補翻一次。
+
+## AC. 「跑到 header」從頭到尾不是幾何問題
+
+build 14 的診斷 log 裡 **`position-drift` 是零筆** —— 疊層記錄的座標與元素
+現在的座標完全吻合 —— 而畫面上譯文明明浮在頁首上。
+
+因為那根本不是錯位:原文捲到 **fixed 頁首底下被蓋住**了,
+而疊層的 z-index 是 2147483000,畫在頁首**上面**。位置一直都對,
+只是沒有任何東西遮住它。
+
+我前面三輪(R / X / AA)全部在修「座標算錯」,而座標從來沒錯過。
+這是這整串除錯裡最貴的一次誤判:**症狀說「位置不對」,
+但唯一的證據(drift = 0)一直在說位置是對的,我沒有聽。**
+
+修法是讓疊層跟原文一起被遮:每個捲動 frame 用 `elementFromPoint`
+量出視窗上下緣被 fixed / sticky 元素佔掉多少(兩次命中測試),
+再對每個盒子套 `clip-path: inset(...)` 把被蓋住的那一段裁掉。
+純算術,不讀 layout —— `u.rect` 是快取值。
+
+疊層的 `pointer-events: none` 在這裡第二次派上用場:
+`elementFromPoint` 打不到我們自己,回來的一定是頁面的東西。
+
+## AD. build 14 我自己弄壞的兩件事
+
+**HUD 消失。** build 14 在 layer 上加了 `transform: translate(-scrollX, -scrollY)`,
+而 HUD 是 `position: fixed` 且掛在 layer 裡面 ——
+**祖先一有 transform,`position: fixed` 就退化成相對那個祖先定位**,
+於是 HUD 跟著捲動跑出畫面。HUD 與 debug 面板改成 shadow root 的直接子節點,
+與 layer 平行:layer 是 document 座標,那兩個是視窗座標,不該混在一起。
+
+**捲動抖動、原文從縫隙漏出來。** 同一個 transform:JS 在 scroll 事件的 rAF 裡
+補捲動量,而瀏覽器自己的捲動跑在合成器上,**JS 永遠慢一幀**。
+在一個以「不動版面」為唯一形式差異的專案裡,這種抖動比任何錯位都糟。
+
+所以 AA 段的方向整個倒回去:host 回到 `position: absolute`,
+疊層留在 document 座標系,**位置交還給瀏覽器,JS 完全不參與捲動**。
+AA 段擔心的原點問題用另一個方式解掉:host 掛在 `documentElement` 下,
+它的 absolute 定位基準就是初始包含塊,`left/top` 直接等於 document 座標,
+沒有原點要算。
+
+## AE. 診斷報告的表頭曾經整段是假的
+
+build 14 的 log:
+
+```
+管線:progressive(實際生效 single)   ← 事件裡 start 明明是 progressive
+區塊:總 0 · 首屏 -1ms · L0:idle      ← 事件裡 69 個單元、L0 ready、一直在翻
+```
+
+`chrome.tabs.sendMessage(tabId, …)` 會**廣播到分頁裡的每一個 frame**,誰先回誰算。
+回答的是某個 iframe 裡的實例(`effective` 還停在模組初始值 `single`、
+`units` 是空的)。加 `{ frameId: 0 }` 只問最上層。
+
+這條的教訓比它的修法重要:**診斷工具自己說謊的時候,
+它會把後面每一輪的判斷一起帶偏。** 那份 log 的表頭我看了兩輪才發現與事件矛盾。
+
+## AF. 看不見的重複 DOM
+
+卡片列上方那排、按鈕右上角那兩個,座標一直沒有漂移紀錄,
+而且同一段原文出現兩份**不同**譯文(一份 L0、一份 L1)——
+那是兩個單元:看得見的那個,和一份被 `overflow: hidden` 裁掉的重複
+(輪播的另一份、隱藏的行動版選單)。頁面把它裁掉了,
+但我們的疊層在最上層,不受任何裁切影響,於是浮在無關的位置上。
+
+修法:`elementFromPoint` 打在來源元素自己的位置上,
+打中的不是它、不是它的子孫、也不是它的祖先 → 那個元素其實看不見,
+疊層藏起來(不是刪掉 —— 它可能又出現)。
+每輪稽核最多測 80 個,只測視窗內的。
+
+options 有開關:頁面若有透明的點擊攔截層可能誤判,那時關掉。

@@ -107,6 +107,13 @@
         看起來像沒蓋乾淨。那一部分會用字型度量自動補足;這個值是再多加的固定量,
         給 text-shadow、斜體尾巴這類量不到的東西。加太多會蓋到相鄰區塊。
       </p>
+      <label class="check"><input type="checkbox" data-k="occlusionCheck" /> 只在來源元素真的看得見時才顯示疊層</label>
+      <p class="hint">
+        用 <code>elementFromPoint</code> 確認來源元素在它自己的位置上打得到。
+        擋掉被 <code>overflow: hidden</code> 裁掉的重複 DOM(輪播的另一份、
+        隱藏的行動版選單)—— 那種疊層會浮在完全無關的位置上。
+        頁面若有透明的點擊攔截層可能誤判,那時關掉。
+      </p>
       <label class="check"><input type="checkbox" data-k="hintLine" /> 顯示譯文左緣提示線</label>
       <label class="check"><input type="checkbox" data-k="forceAnnotation" /> 一律使用標註樣式</label>
       <p class="hint">

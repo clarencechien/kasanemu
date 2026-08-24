@@ -50,6 +50,8 @@ const LAYER_CSS = `
   width: var(--ksnm-w);
   /* §3.3 min-height 解掉「疊一半、原文尾巴露出來」 */
   min-height: var(--ksnm-h);
+  /* 被固定頁首 / 頁尾蓋住的部分要跟著原文一起消失,見 applyChromeClip */
+  clip-path: var(--ksnm-clip, none);
   opacity: 0;
   transition: opacity 130ms ease;
 }
@@ -87,6 +89,8 @@ const LAYER_CSS = `
   border-radius: 5px;
 }
 .layer.alt-scan .box { opacity: 1; }
+/* 來源元素其實看不見(被裁切、隱藏的重複 DOM)→ 疊層也不該出現 */
+.box.covered, .hint.covered { display: none; }
 /*
  * §4.7 提示線是唯一表明「這是譯文」的記號;hover 時保留。
  * feature.md §5.1 / D22:並且以虛實與顏色表明階層 ——
@@ -193,8 +197,7 @@ export class OverlayLayer {
   private root: ShadowRoot;
   private layer: HTMLDivElement;
   private panel: HTMLDivElement | null = null;
-  private originX = 0;
-  private originY = 0;
+
   private reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   constructor() {
@@ -221,35 +224,21 @@ export class OverlayLayer {
      * 那些都會讓 host 自己跟著跑掉。html 幾乎不會被這樣對待。
      */
     (document.documentElement ?? document.body).appendChild(this.host);
-    this.refreshOrigin();
   }
 
   /**
-   * body 可能有 margin / position / transform,host 的實際原點不一定是
-   * document (0,0)。每次重排讀一次,之後所有盒子用 document 座標減掉它。
+   * 疊層留在 **document 座標系**,由瀏覽器自己跟著頁面捲。
+   *
+   * build 14 試過另一條路:host 用 position: fixed,再由 JS 每個捲動 frame
+   * 補 translate(-scrollY)。座標是對的,但**瀏覽器的捲動跑在合成器上,
+   * JS 永遠慢一幀** —— 疊層跟著抖,原文從縫隙漏出來。
+   * 這是「不動版面」的專案裡最不能接受的一種動。
+   *
+   * 所以位置交還給瀏覽器,JS 只負責兩件它非做不可的事:
+   * 遮住被固定頁首蓋住的部分(applyChromeClip),
+   * 以及藏掉根本看不見的元素的疊層(occlusion 檢查)。
    */
-  refreshOrigin(): void {
-    const r = this.host.getBoundingClientRect();
-    this.originX = r.left + window.scrollX;
-    this.originY = r.top + window.scrollY;
-    this.layer.style.transform = '';
-  }
 
-  /**
-   * 整片平移補償。
-   *
-   * 頁面若用 transform 做平滑捲動(Webflow / Lenis 那一類),內容會相對
-   * 疊層整片移動,而盒子的 left/top 是重排當下算的 —— 於是整片疊層跑到
-   * header 上。之前這裡量的是 **host 自己**有沒有移動,但真正在動的是
-   * 「內容相對 host」,量錯了對象。
-   *
-   * 現在由呼叫端量兩個哨兵單元(頭與尾)實際位移多少:兩者一致就是整片
-   * 在動,直接平移 layer 補回去,**不重算任何盒子**。一次 transform 寫入。
-   */
-  setShift(dx: number, dy: number): void {
-    const v = Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5 ? '' : `translate(${dx}px, ${dy}px)`;
-    if (this.layer.style.transform !== v) this.layer.style.transform = v;
-  }
 
   setMode(mode: DisplayMode): void {
     this.layer.classList.toggle('mode-full', mode === 'full');
@@ -258,6 +247,23 @@ export class OverlayLayer {
 
   setOutline(on: boolean): void {
     this.layer.classList.toggle('outline', on);
+  }
+
+  /** 把盒子上下裁掉一段(px);0 / 0 表示不裁 */
+  setClip(unit: Unit, top: number, bottom: number): void {
+    const box = unit.box;
+    if (!box) return;
+    const v = top <= 0 && bottom <= 0 ? '' : `inset(${Math.max(0, top)}px 0 ${Math.max(0, bottom)}px 0)`;
+    if (box.dataset['clip'] === v) return; // 沒變就不要寫 style
+    box.dataset['clip'] = v;
+    if (v) box.style.setProperty('--ksnm-clip', v);
+    else box.style.removeProperty('--ksnm-clip');
+  }
+
+  /** 來源元素看不見時把疊層藏起來(不是刪掉 —— 它可能又出現) */
+  setCovered(unit: Unit, covered: boolean): void {
+    unit.box?.classList.toggle('covered', covered);
+    unit.hint?.classList.toggle('covered', covered);
   }
 
   setAltScan(on: boolean): void {
@@ -330,8 +336,8 @@ export class OverlayLayer {
     const by = unit.bleed?.y ?? 0;
     const [pt, pr, pb, pl] = s.padding;
     const vars: Record<string, string> = {
-      '--ksnm-x': `${unit.rect.left - this.originX - bx}px`,
-      '--ksnm-y': `${unit.rect.top - this.originY - by}px`,
+      '--ksnm-x': `${unit.rect.left - bx}px`,
+      '--ksnm-y': `${unit.rect.top - by}px`,
       '--ksnm-w': `${unit.rect.width + bx * 2}px`,
       '--ksnm-h': `${unit.rect.height + by * 2}px`,
       '--ksnm-bg': s.background ?? 'rgba(230, 241, 251, 0.94)',
@@ -369,8 +375,8 @@ export class OverlayLayer {
     h.className = `hint ${cls}`;
     const top = unit.firstRectTop;
     const height = Math.max(4, unit.rect.top + unit.rect.height - top);
-    h.style.setProperty('--ksnm-hx', `${unit.rect.left - this.originX - 8}px`);
-    h.style.setProperty('--ksnm-hy', `${top - this.originY}px`);
+    h.style.setProperty('--ksnm-hx', `${unit.rect.left - 8}px`);
+    h.style.setProperty('--ksnm-hy', `${top}px`);
     h.style.setProperty('--ksnm-hh', `${height}px`);
     h.style.setProperty('--ksnm-hint', hintColor(unit.style.color));
     h.style.setProperty('--ksnm-warn', '#c0392b');
@@ -387,7 +393,7 @@ export class OverlayLayer {
     if (!this.hud) {
       this.hud = document.createElement('div');
       this.hud.className = 'hud';
-      this.layer.appendChild(this.hud);
+      this.root.appendChild(this.hud);
     }
     const el = this.hud;
     el.className = `hud show ${level}`;
@@ -422,7 +428,7 @@ export class OverlayLayer {
     if (!this.panel) {
       this.panel = document.createElement('div');
       this.panel.className = 'panel';
-      this.layer.appendChild(this.panel);
+      this.root.appendChild(this.panel);
     }
     const cut = (s: string | undefined) => escapeHtml((s ?? '—').slice(0, 160));
     const rows = units
