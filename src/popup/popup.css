@@ -76,3 +76,5 @@ footer { display: flex; justify-content: space-between; border-top: 1px solid va
   .warn { color: #ff8a7a; }
 }
 #by-pipeline td:first-child { color: var(--dim); }
+
+.ver { color: var(--dim); font-size: 10px; margin-left: auto; font-variant-numeric: tabular-nums; }

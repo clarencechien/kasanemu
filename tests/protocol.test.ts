@@ -131,3 +131,34 @@ test('對滑的整批仍然全數丟棄,不是修復', () => {
   // detail 要能看出期待與收到,不然使用者貼 log 過來也判斷不了
   assert.match(out.failures[0]!.detail ?? '', /want .*got /);
 });
+
+/* ------------------------------- 小模型的格式容忍(id 紀律不放寬) */
+
+test('只送一筆時模型回單一物件,包成 array 收下', () => {
+  const sent = [{ id: 'u94', src: 'Mindsets matter', maxChars: 20, role: 'heading' as const }];
+  const raw = JSON.stringify({ id: 'u94', echo: 'Mindsets', t: '心態至關重要' });
+  const out = parseBatch(raw, sent, false);
+  assert.equal(out.results.length, 1);
+  assert.equal(out.results[0]!.t, '心態至關重要');
+});
+
+test('回 {results: [...]} 這種包裝也收', () => {
+  const sent = [{ id: 'u94', src: 'Mindsets matter', maxChars: 20, role: 'heading' as const }];
+  const raw = JSON.stringify({ results: [{ id: 'u94', echo: 'Mindsets', t: '心態至關重要' }] });
+  assert.equal(parseBatch(raw, sent, false).results.length, 1);
+});
+
+test('容忍格式不等於容忍對錯:包裝過的單筆一樣要通過 echo 對位', () => {
+  const sent = [{ id: 'u94', src: 'Mindsets matter', maxChars: 20, role: 'heading' as const }];
+  const raw = JSON.stringify({ id: 'u94', echo: 'Something', t: '完全不同的句子' });
+  const out = parseBatch(raw, sent, false);
+  assert.equal(out.results.length, 0);
+  assert.equal(out.stats.echoMismatch, 1);
+});
+
+test('真的回空陣列時,那一筆仍然算 missing 並標記失敗', () => {
+  const sent = [{ id: 'u94', src: 'Mindsets matter', maxChars: 20, role: 'heading' as const }];
+  const out = parseBatch('[]', sent, false);
+  assert.equal(out.stats.missing, 1);
+  assert.equal(out.failures[0]!.reason, 'missing-id');
+});

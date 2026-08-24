@@ -19,7 +19,19 @@ interface QueueItem extends UnitRequest {
   pipeline: Pipeline;
   /** feature.md §4.2 距視窗中心的距離,越小越先送 */
   priority: number;
+  /** 進佇列的時間,用來湊 batch(見 AGGREGATE_MS) */
+  at: number;
 }
+
+/**
+ * 升級是零星觸發的(停留滿 1.5 秒的區塊一個一個到期),照單全收的話
+ * 每個段落各發一次 API 請求 —— §5.4 給 free 檔的 6 塊/batch 從來沒湊滿過,
+ * 而且單筆請求更容易讓小模型回出格式不對的東西(實測 got:0 的空陣列)。
+ *
+ * 所以還沒湊滿 batch 上限時,讓最舊的項目等一下,湊多一點再送。
+ * 代價是第一批 L1 晚 600ms —— 反正 L0 已經在畫面上了。
+ */
+const AGGREGATE_MS = 600;
 
 const QUEUE_KEY = 'queue';
 const MAX_ATTEMPTS = 4; // §7.3 最多 4 次
@@ -63,7 +75,16 @@ export async function enqueue(
   for (const u of units) {
     const k = `${tabId}:${pageKey}:${u.id}`;
     if (known.has(k)) continue;
-    q.push({ ...u, tabId, pageKey, tier, pipeline, attempts: 0, priority: priorities[u.id] ?? 0 });
+    q.push({
+      ...u,
+      tabId,
+      pageKey,
+      tier,
+      pipeline,
+      attempts: 0,
+      priority: priorities[u.id] ?? 0,
+      at: Date.now(),
+    });
   }
   await saveQueue(q);
   await ensureAlarm(q.length > 0);
@@ -181,6 +202,14 @@ export async function drain(): Promise<void> {
       if (batch.length === 0) {
         q = remove(q, [head]);
         await saveQueue(q);
+        continue;
+      }
+
+      // 還沒湊滿一批,而且最舊的也還沒等夠 → 先等,不要一個區塊發一次請求
+      const oldest = Math.min(...batch.map((b) => b.at));
+      const waited = Date.now() - oldest;
+      if (batch.length < live.batchUnits && waited < AGGREGATE_MS && batch.every((b) => b.attempts === 0)) {
+        await sleep(AGGREGATE_MS - waited);
         continue;
       }
 
@@ -329,6 +358,8 @@ async function runBatch(
   const parsed = parseBatch(res.text, units, res.truncated);
   dbg('parse', parsed.stats);
   diag(parsed.failures.length > 0 ? 'warn' : 'info', 'batch-parsed', {
+    // 回 0 筆是小模型的格式問題,不看原始回應就只能猜
+    ...(parsed.stats.got === 0 ? { rawHead: res.text.slice(0, 200) } : {}),
     model: spec.modelId,
     truncated: res.truncated,
     ...parsed.stats,

@@ -57,6 +57,7 @@ export function buildReport(i: ReportInput): string {
   const lines: string[] = [];
   lines.push(`# Kasanemu 診斷 ${new Date(i.now).toISOString()}`);
   lines.push('');
+  // build number 與 sha 是判斷「這個 bug 修過了沒」的第一手資訊
   lines.push(`- 版本:${i.version}`);
   lines.push(`- 頁面:${i.url}`);
   lines.push(`- UA:${i.userAgent}`);

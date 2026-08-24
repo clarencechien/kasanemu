@@ -76,6 +76,8 @@ let enqueueTimer = 0;
 let dwellTimer = 0;
 let reprioTimer = 0;
 let motionTimer = 0;
+let scrollRaf = 0;
+let settleTimer = 0;
 /** 掃到 0 個候選時的重試次數(頁面可能還在載入、入場動畫還沒跑完) */
 let emptyScans = 0;
 let running = false;
@@ -137,6 +139,7 @@ function scan(): void {
       maxChars: 0,
       rect: { left: 0, top: 0, width: 0, height: 0 },
       bleed: { x: 0, y: 0 },
+      overflowsBox: false,
       firstRectTop: 0,
       // §3.5 元素環繞浮動圖片 → bounding box 會蓋住圖片,跳過該單元
       tier: c.geometryRisk ? 'skipped' : 'pending',
@@ -211,8 +214,16 @@ function scheduleFlush(alsoScan = false): void {
  */
 function auditPositions(): void {
   if (!layer || !running) return;
+  // 用**疊層畫在哪**來決定要驗誰,而不是來源元素現在在哪:
+  // 錯位的症狀正是「來源元素跑掉了,疊層還留在視口裡」,
+  // 只驗 inView 的來源元素會漏掉那些。
+  const near = window.innerHeight;
+  const top = window.scrollY - near;
+  const bottom = window.scrollY + near * 2;
   for (const u of units) {
-    if (!u.inView || u.tier === 'skipped') continue;
+    if (u.tier === 'skipped') continue;
+    if (!u.box && !u.inView) continue;
+    if (u.rect.top + u.rect.height < top || u.rect.top > bottom) continue;
     const r = u.el.getBoundingClientRect();
     const dx = Math.abs(r.left + window.scrollX - u.rect.left);
     const dy = Math.abs(r.top + window.scrollY - u.rect.top);
@@ -223,6 +234,29 @@ function auditPositions(): void {
       scheduleFlush();
       return;
     }
+  }
+}
+
+/**
+ * 圖片 / iframe / 影片載入完成會把後面的內容整個推走,而這件事
+ * **沒有任何一個現有的 observer 看得到**:
+ * ResizeObserver 看的是單元自己的尺寸(標題只是被推走,尺寸沒變),
+ * MutationObserver 看的是 childList / characterData(載入不改 DOM 結構)。
+ *
+ * 症狀是卡片列表的標題疊層整排停在圖片還沒載入時的位置 ——
+ * 也就是卡片頂端,差距剛好是一張圖的高度。
+ *
+ * load 事件不冒泡,所以要在 capture 階段攔。載入失敗(error)同樣會改變佈局。
+ */
+function onResourceLoad(e: Event): void {
+  const t = e.target;
+  if (
+    t instanceof HTMLImageElement ||
+    t instanceof HTMLIFrameElement ||
+    t instanceof HTMLVideoElement ||
+    t instanceof HTMLObjectElement
+  ) {
+    onMotionEnd();
   }
 }
 
@@ -265,6 +299,8 @@ function flush(): void {
     if (hasText(u)) layer.paint(u, settings);
     else layer.paintHint(u, settings);
   }
+  const overflowing = [...units].filter((u) => u.overflowsBox).length;
+  if (overflowing > 0) diag('info', 'content-overflows-box', { count: overflowing });
   if (firstPaintMs < 0 && paintable.length > 0) {
     firstPaintMs = Math.round(performance.now() - startedAt);
     dbg('first paint', firstPaintMs, 'ms', effective);
@@ -810,6 +846,20 @@ async function start(): Promise<void> {
   // 入場動畫結束 → 位置定了,重新量一次
   document.addEventListener('transitionend', onMotionEnd, true);
   document.addEventListener('animationend', onMotionEnd, true);
+  // lazy-load 的圖片載入會把後面的內容推走
+  document.addEventListener('load', onResourceLoad, true);
+  document.addEventListener('error', onResourceLoad, true);
+
+  /*
+   * 載入初期是位置最不穩的一段:圖片、字型、非同步插入的區塊都在這時候落定。
+   * 前 12 秒每 600ms 驗一次座標,之後停 —— 事件式的偵測會漏掉沒有事件的位移
+   * (例如 JS 直接改 style、或 web component 內部重排)。
+   */
+  settleTimer = window.setInterval(auditPositions, 600);
+  window.setTimeout(() => {
+    clearInterval(settleTimer);
+    settleTimer = 0;
+  }, 12_000);
   // §3.4 字型載入會改變所有 rect,完成後強制重算一次
   document.fonts.ready.then(relayout);
 
@@ -826,8 +876,31 @@ function onDocLeave(): void {
   if (left?.pendingSwap !== undefined) trySwap(left);
 }
 
+/**
+ * 捲動中的自我修正。用 rAF 節流,每次只讀兩個 rect:
+ *  1. host 的原點(頁面若用 transform 平滑捲動,原點會跑掉)
+ *  2. 一個可見單元當哨兵(內容自己在動的話,整批座標都要重算)
+ * 兩個都對得上就什麼都不做。
+ */
+function scrollSync(): void {
+  scrollRaf = 0;
+  if (!layer || !running) return;
+  const shifted = layer.syncOrigin();
+  const probe = [...units].find((u) => u.inView && u.tier !== 'skipped');
+  if (probe) {
+    const r = probe.el.getBoundingClientRect();
+    const dy = Math.abs(r.top + window.scrollY - probe.rect.top);
+    const dx = Math.abs(r.left + window.scrollX - probe.rect.left);
+    if (dx > 2 || dy > 2) {
+      diag('info', 'scroll-drift', { id: probe.id, dx, dy, hostShifted: shifted });
+      scheduleFlush();
+    }
+  }
+}
+
 function onScroll(): void {
   lastScrollAt = performance.now();
+  if (!scrollRaf) scrollRaf = requestAnimationFrame(scrollSync);
   if (reprioTimer) return;
   reprioTimer = window.setTimeout(() => {
     reprioTimer = 0;
@@ -861,8 +934,14 @@ function stop(): void {
   window.removeEventListener('pagehide', onPageHide);
   document.removeEventListener('transitionend', onMotionEnd, true);
   document.removeEventListener('animationend', onMotionEnd, true);
+  document.removeEventListener('load', onResourceLoad, true);
+  document.removeEventListener('error', onResourceLoad, true);
+  clearInterval(settleTimer);
+  settleTimer = 0;
   clearTimeout(motionTimer);
   motionTimer = 0;
+  if (scrollRaf) cancelAnimationFrame(scrollRaf);
+  scrollRaf = 0;
   emptyScans = 0;
   for (const u of units) layer?.drop(u);
   layer?.hideHud();
@@ -1073,6 +1152,8 @@ Object.assign(globalThis as Record<string, unknown>, {
     /** 為什麼這個元素沒被翻:__ksnm.explain(document.querySelector('h1')) */
     explain: (el: Element | string) =>
       explainCandidate(typeof el === 'string' ? document.querySelector(el)! : el),
+    /** 把疊層盒子的邊界畫出來:__ksnm.outline() */
+    outline: (on = true) => layer?.setOutline(on),
     rescan: () => {
       emptyScans = 0;
       scheduleFlush(true);
