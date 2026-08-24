@@ -10,7 +10,18 @@ import type {
 } from '../shared/types';
 import { setDebug, dbg } from '../shared/log';
 import { diag, setDiagScope } from '../shared/diag';
-import { explainCandidate, findCandidates } from './detect';
+import {
+  INTERACTIVE_SELECTOR,
+  explainCandidate,
+  findCandidates,
+  findLabels,
+  hasContainerChild,
+  isMeaningfulText,
+  looksLikeTargetLang,
+  normalizeText,
+  ownText,
+  setPageScript,
+} from './detect';
 import {
   assignScales,
   checkOverflow,
@@ -24,7 +35,7 @@ import {
 } from './geometry';
 import { probePackagedFonts } from './fonts';
 import { L0Engine, translatorSupported } from './l0';
-import { pageSourceLang, toTranslatorTarget } from './lang';
+import { pageSourceLang, sampleVisibleText, sniffScript, toTranslatorTarget } from './lang';
 import {
   STALL_MS,
   dwellReady,
@@ -34,10 +45,11 @@ import {
   swapAllowed,
 } from './upgrade';
 import { mask, protectedFragments } from './mask';
-import { OverlayLayer } from './overlay';
-import { probeStyle, resetHintColor } from './styleprobe';
+import { OverlayLayer, type ChipItem } from './overlay';
+import { hintColor, parseColor, probeStyle, resetHintColor } from './styleprobe';
 import { clearMeasureCache } from './measure';
 import { activeText, hasText, type Unit } from './unit';
+import { dedupeByText, labelBudget } from './annotate';
 
 setDiagScope('content');
 
@@ -107,6 +119,35 @@ let pageKey = makePageKey();
 let hovered: Unit | null = null;
 let altScan = false;
 
+/* ---------------------------------------------------------------- 加翻層 */
+/*
+ * docs/plan-annotation.md。UI 標籤不覆蓋原文,改成 hover 時在旁邊出貼片。
+ *
+ * label 單元刻意**不放進 `units`**:那個集合被 flush / 幾何 / 提示線 /
+ * 遮擋檢查等十幾條路徑吃著,每條都要加一個 kind 判斷,漏一條就是 bug。
+ * 但**要放進 `unitById`** —— L1 的結果與快取靠 id 回來,那條路必須共用,
+ * 否則等於把 §6.4 的 id 三層防線再實作一次。
+ */
+const ANNOTATION_CAP = 200;
+/** 停留這麼久才開貼片:低於這個值,滑鼠橫掃導覽列會沿路閃出一排 */
+const CHIP_OPEN_MS = 180;
+/** 移開之後延遲關,避免在相鄰項目之間移動時閃爍 */
+const CHIP_CLOSE_MS = 80;
+/** 貼片開著這麼久 → 把整組排入 L1(注意力驅動的成本控制) */
+const CHIP_L1_MS = 600;
+/** 捲動後這段時間內不開貼片 */
+const CHIP_SCROLL_QUIET_MS = 300;
+/** 一起送 L1 的「同一組」:hover 一個導覽項目,順便把整條導覽列翻掉 */
+const GROUP_SELECTOR =
+  'nav,ul,ol,menu,[role="menu"],[role="menubar"],[role="tablist"],[role="toolbar"],header,footer';
+
+let labels = new Set<Unit>();
+let labelByEl = new WeakMap<Element, Unit>();
+let chipUnit: Unit | null = null;
+let chipOpenTimer = 0;
+let chipCloseTimer = 0;
+let chipL1Timer = 0;
+
 let mo: MutationObserver | null = null;
 let ro: ResizeObserver | null = null;
 let io: IntersectionObserver | null = null;
@@ -173,6 +214,7 @@ function scan(): void {
     const unit: Unit = {
       id: `u${nextId++}`,
       el: c.el,
+      kind: 'block',
       role: c.role,
       src: c.src,
       style,
@@ -204,6 +246,7 @@ function scan(): void {
       ro?.observe(c.el);
     }
   }
+  scanLabels();
   dbg('scan', { found: found.length, total: units.size });
   diag(units.size === 0 ? 'warn' : 'info', 'scan', {
     found: found.length,
@@ -618,6 +661,12 @@ function applyResults(results: UnitResult[]): void {
   for (const r of results) {
     const u = unitById.get(r.id);
     if (!u) continue;
+    if (u.kind === 'label') {
+      // 記進 memo 並散給所有同文字的單元(rememberLabel 會避開開著的那一個)
+      rememberLabel(u.src, { l1: r.t });
+      if (chipUnit === u || altScan) renderChips();
+      continue;
+    }
     if (u.l0Text === undefined) {
       // single 模式,或 L0 失敗後才回來的 L1:沒有舊內容,直接畫
       u.l1Text = r.t;
@@ -633,6 +682,407 @@ function applyResults(results: UnitResult[]): void {
   // 有東西回來就代表管線是活的
   if (results.length > 0) lastProblem = '';
   updateHud();
+}
+
+/* ---------------------------------------------------------- 加翻層:實作 */
+
+/** 從一個元素做出 label 單元。掃描與臨時加翻共用同一條路 */
+function makeLabelUnit(el: Element, src: string, register = true): Unit {
+  const style = probeStyle(el, settings.weightOffset);
+  const unit: Unit = {
+    id: `u${nextId++}`,
+    el,
+    kind: 'label',
+    role: 'label',
+    src,
+    style,
+    geometryRisk: false,
+    annotation: false,
+    singleLine: true,
+    sizeGroup: 0,
+    scale: 1,
+    // 貼片沒有幾何上限,預算限的是簡潔,不是塞不塞得下
+    maxChars: labelBudget(src),
+    rect: { left: 0, top: 0, width: 0, height: 0 },
+    bleed: { x: 0, y: 0 },
+    overflowsBox: false,
+    firstRectTop: 0,
+    lastRectBottom: 0,
+    textHeight: 0,
+    tier: 'pending',
+    l1Queued: false,
+    lockedFontSize: 0,
+    inView: false,
+    overflowing: false,
+  };
+  if (register) labelByEl.set(el, unit);
+  labels.add(unit);
+  unitById.set(unit.id, unit);
+  // 同一段文字別的地方已經翻過了 → 立刻就有,不必再送一次
+  adoptMemo(unit);
+  return unit;
+}
+
+/**
+ * 建立 label 單元。可以重複呼叫,已建過的元素會跳過。
+ *
+ * 和 scan() 一樣是增量的 —— 頁面上的導覽列不會變,但無限捲動會帶來新的卡片,
+ * 而卡片上的 CTA 也是 label。
+ */
+function scanLabels(): void {
+  if (!settings.annotate) return;
+  if (labels.size >= ANNOTATION_CAP) return;
+  const found = findLabels(document.body, ANNOTATION_CAP, (el) => labelByEl.has(el));
+  let added = 0;
+  for (const c of found) {
+    if (labels.size >= ANNOTATION_CAP) break;
+    makeLabelUnit(c.el, c.src);
+    added++;
+  }
+  if (added > 0) dbg('scan labels', { added, total: labels.size });
+}
+
+/**
+ * 同一段文字的譯文共用一份。
+ *
+ * 上一版是在**偵測**層去重:同樣的文字只留第一個元素。那是錯的 ——
+ * 卡片牆上十二張卡都寫「詳細を見る」,十二個都要能 hover;
+ * 而「お問い合わせ」在導覽列與段落標題各出現一次,使用者指的是後者。
+ * 症狀就是回報的「只會翻一個,不會延用在其他的」。
+ *
+ * 去重要做在**翻譯**層:每個元素都有自己的單元(所以都能 hover),
+ * 但同一段文字只送一次 API,回來之後散給所有同文字的單元。
+ */
+const labelMemo = new Map<string, { l0?: string; l1?: string }>();
+/** 已經送過 L1 的文字,不重複送 */
+const labelQueuedText = new Set<string>();
+
+function adoptMemo(u: Unit): void {
+  const memo = labelMemo.get(u.src);
+  if (!memo) return;
+  if (memo.l0 !== undefined && u.l0Text === undefined) u.l0Text = memo.l0;
+  if (memo.l1 !== undefined && u.l1Text === undefined) u.l1Text = memo.l1;
+  if (u.l1Text !== undefined) u.tier = 'l1';
+  else if (u.l0Text !== undefined) u.tier = 'l0';
+}
+
+function rememberLabel(src: string, patch: { l0?: string; l1?: string }): void {
+  const memo = labelMemo.get(src) ?? {};
+  labelMemo.set(src, { ...memo, ...patch });
+  for (const u of labels) {
+    if (u.src !== src) continue;
+    // 貼片開著的那一個不在這裡換字(§4.3);由 flushLabelSwap 收尾
+    if (patch.l1 !== undefined && chipUnit === u && layer?.chipsVisible()) {
+      if (u.l1Text !== patch.l1) u.pendingSwap = patch.l1;
+      continue;
+    }
+    adoptMemo(u);
+  }
+}
+
+/**
+ * 貼片的錨點。預設是來源元素的矩形,但選取範圍沒有「一個元素」——
+ * 那時錨點要跟著 Range 走。
+ */
+const anchorOverride = new WeakMap<Unit, () => DOMRect | null>();
+
+function anchorRectOf(u: Unit): DOMRect | null {
+  const override = anchorOverride.get(u);
+  if (override) return override();
+  const r = u.el.getBoundingClientRect();
+  return r.width <= 0 && r.height <= 0 ? null : r;
+}
+
+/**
+ * 臨時加翻:指到任何**沒有被別的畫法接手**的文字,就當場翻它。
+ *
+ * 掃描出來的 label 只涵蓋互動元素,而使用者的心智模型是
+ * 「我指到什麼就翻什麼」。回報的「有些 mouse over 後也不會翻」多半落在
+ * 偵測規則的縫裡 —— 標題被十幾條規則的某一條擋掉、容器判定不算段落、
+ * 或那一塊根本不在互動元素裡。與其一條條猜,不如讓 hover 本身變成兜底。
+ *
+ * 往上找**自己就有文字**的最近祖先。上限 240 字:再長就是段落,
+ * 那是疊翻的守備範圍,塞進貼片只會變成一面牆。
+ */
+const ADHOC_MAX_CHARS = 240;
+const ADHOC_HOPS = 6;
+/**
+ * 看過但不合格的元素。mouseover 在導覽列上會反覆打到同一批元素,
+ * 沒有這個集合就會一直重跑 ownText 與樣式查詢。
+ */
+const adhocRejected = new WeakSet<Element>();
+
+function adhocLabelAt(target: EventTarget | null): Unit | null {
+  if (!settings.annotate) return null;
+  if (!(target instanceof Element)) return null;
+  let el: Element | null = target;
+  for (let i = 0; el && i < ADHOC_HOPS && el !== document.body; i++, el = el.parentElement) {
+    const known = labelByEl.get(el);
+    if (known) return known;
+    if (unitByEl.has(el)) return null; // 內文區塊有自己的畫法
+    if (adhocRejected.has(el)) continue;
+    if (labels.size >= ANNOTATION_CAP) return null;
+    // 底下還有帶文字的結構性區塊 → 這是容器,翻它等於把一整段塞進貼片
+    if (hasContainerChild(el)) {
+      adhocRejected.add(el);
+      continue;
+    }
+    const text = normalizeText(ownText(el));
+    if (
+      text.length === 0 ||
+      text.length > ADHOC_MAX_CHARS ||
+      !isMeaningfulText(text) ||
+      looksLikeTargetLang(text) ||
+      el.getClientRects().length === 0
+    ) {
+      adhocRejected.add(el);
+      continue;
+    }
+    diag('info', 'adhoc-label', { chars: text.length, tag: el.tagName });
+    return makeLabelUnit(el, text);
+  }
+  return null;
+}
+
+/* --------------------------------------------------------------- 選取加翻 */
+
+/**
+ * 選起來的文字也算「指到」。
+ *
+ * 這是兜底的兜底:hover 找的是元素,而使用者想知道的可能是一句話的一半、
+ * 或跨越好幾個元素的一段。選取是最明確的「我要這一段」的表達,
+ * 所以不必等停留 180ms,選完就出。
+ */
+const SELECTION_MIN_CHARS = 2;
+const SELECTION_DEBOUNCE_MS = 250;
+
+let selectionUnit: Unit | null = null;
+let selectionTimer = 0;
+
+function onSelectionChange(): void {
+  if (!running || !settings.annotate) return;
+  clearTimeout(selectionTimer);
+  // 拖曳選取的過程中 selectionchange 會連續觸發,等手放開再說
+  selectionTimer = window.setTimeout(applySelection, SELECTION_DEBOUNCE_MS);
+}
+
+function applySelection(): void {
+  if (!running || !layer) return;
+  const sel = document.getSelection();
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
+    if (selectionUnit && chipUnit === selectionUnit) closeChip(true);
+    selectionUnit = null;
+    return;
+  }
+  const range = sel.getRangeAt(0);
+  const text = normalizeText(sel.toString());
+  if (text.length < SELECTION_MIN_CHARS || text.length > ADHOC_MAX_CHARS) return;
+  if (!isMeaningfulText(text) || looksLikeTargetLang(text)) return;
+  const host = range.commonAncestorContainer;
+  const el = host instanceof Element ? host : host.parentElement;
+  if (!el) return;
+
+  if (selectionUnit?.src !== text) {
+    // register: false —— 不佔用 labelByEl,那個是給元素用的
+    selectionUnit = makeLabelUnit(el, text, false);
+    anchorOverride.set(selectionUnit, () => {
+      const s2 = document.getSelection();
+      if (!s2 || s2.isCollapsed || s2.rangeCount === 0) return null;
+      return s2.getRangeAt(0).getBoundingClientRect();
+    });
+    diag('info', 'selection-label', { chars: text.length });
+  }
+  openChip(selectionUnit, true);
+}
+
+/** 事件目標 → label 單元。hover 到的多半是連結裡的 span,要往上找互動元素 */
+function labelAt(target: EventTarget | null): Unit | null {
+  if (!(target instanceof Element)) return null;
+  const act = target.closest(INTERACTIVE_SELECTOR);
+  return act ? (labelByEl.get(act) ?? null) : null;
+}
+
+/**
+ * 貼片的視覺取自來源元素,讓它看起來像頁面的一部分。
+ * 取不到不透明背景時(§4.1 的 backgroundRisk)才自己挑一個 ——
+ * 依文字顏色的亮度決定深底或淺底,免得深色頁面上冒出一塊白。
+ */
+function chipStyleFor(u: Unit): ChipItem['style'] {
+  const fg = u.style.color;
+  let bg = u.style.background;
+  if (bg === null) {
+    const c = parseColor(fg);
+    const lum = c ? (c.r * 0.299 + c.g * 0.587 + c.b * 0.114) / 255 : 0;
+    bg = lum > 0.6 ? '#14181d' : '#f6f8fa';
+  }
+  const line = hintColor(fg);
+  return {
+    background: bg,
+    color: fg,
+    line,
+    bar: line,
+    // 永遠不比原文大;13px 是「讀得到但不搶戲」的上限
+    fontSizePx: Math.min(13, Math.max(11, Math.round(u.style.fontSizePx))),
+  };
+}
+
+function chipItemFor(u: Unit): ChipItem | null {
+  const r = anchorRectOf(u);
+  if (!r) return null;
+  const failed = isFailedTier(u.tier) && u.l0Text === undefined;
+  const text = failed ? u.src : (activeText(u) ?? '⋯');
+  const tone: ChipItem['tone'] = failed
+    ? 'warn'
+    : u.tier === 'l1-failed'
+      ? 'warn'
+      : u.l1Text !== undefined
+        ? 'l1'
+        : 'l0';
+  return {
+    text,
+    anchor: { left: r.left, top: r.top, width: r.width, height: r.height },
+    tone,
+    style: chipStyleFor(u),
+  };
+}
+
+/** 可見區內的 label,給 Alt 掃視用 */
+function visibleLabels(): Unit[] {
+  const out: Unit[] = [];
+  for (const u of labels) {
+    const r = anchorRectOf(u);
+    if (!r || r.width <= 0 || r.height <= 0) continue;
+    if (r.bottom < 0 || r.top > window.innerHeight) continue;
+    if (r.right < 0 || r.left > window.innerWidth) continue;
+    out.push(u);
+  }
+  return out;
+}
+
+/** 把目前該顯示的貼片畫出來(hover 一個,或 Alt 掃視一整批) */
+function renderChips(): void {
+  if (!layer || !settings.annotate) return;
+  const list = altScan ? visibleLabels() : chipUnit ? [chipUnit] : [];
+  if (list.length === 0) {
+    layer.hideChips();
+    return;
+  }
+  const items: ChipItem[] = [];
+  for (const u of list) {
+    const item = chipItemFor(u);
+    if (item) items.push(item);
+  }
+  layer.showChips(items);
+}
+
+/**
+ * feature.md §4.3 的規則在貼片上同樣成立:**開著的時候不換字**。
+ * 貼片只有幾個字、讀完不到半秒,在使用者眼皮下換掉就是那條規則講的事。
+ * 所以 L1 回來時掛在 pendingSwap,關掉才套用。
+ */
+function flushLabelSwap(u: Unit): void {
+  if (u.pendingSwap === undefined) return;
+  u.l1Text = u.pendingSwap;
+  u.pendingSwap = undefined;
+  u.tier = 'l1';
+}
+
+/** L0 翻一個標籤。和 runL0 同一套佔位符保護,但不碰幾何、不 flush */
+async function translateLabel(u: Unit): Promise<void> {
+  adoptMemo(u);
+  if (u.tier !== 'pending') return;
+  if (!usesL0(effective) || !l0) return;
+  const masked = mask(u.src, protectedFragments(u.el, settings.noTranslateTerms));
+  // 使用者正指著它 —— 優先度最高,插到所有預翻的區塊前面
+  const raw = await l0.translate(masked.text, -1);
+  if (u.tier !== 'pending') return; // 期間快取或 L1 已經回來了
+  const restored = raw === null ? null : masked.restore(raw);
+  if (restored === null) {
+    u.tier = effective === 'l0-only' ? 'failed' : 'l0-failed';
+    u.failReason = 'l0';
+  } else {
+    u.l0Text = restored;
+    u.tier = 'l0';
+    // 散給所有同文字的單元:卡片牆上的十二張卡一次到位
+    rememberLabel(u.src, { l0: restored });
+  }
+  if (chipUnit === u || altScan) renderChips();
+}
+
+/**
+ * 同一組:hover 一個導覽項目,把整條導覽列一起送 L1。
+ *
+ * 一次 batch 12 個短字串比 12 次單筆 batch 便宜得多,而且使用者滑到
+ * 第二個項目時譯文已經在了。組 = 最近的 nav / ul / [role=menu] …,
+ * 找不到就只送自己。
+ */
+function groupOf(u: Unit): Unit[] {
+  const pool: Unit[] = [u];
+  const box = u.el.closest(GROUP_SELECTOR);
+  if (box) for (const peer of labels) if (peer !== u && box.contains(peer.el)) pool.push(peer);
+  const out = dedupeByText(pool, labelQueuedText);
+  for (const p of out) labelQueuedText.add(p.src);
+  return out;
+}
+
+function armChipL1(u: Unit): void {
+  clearTimeout(chipL1Timer);
+  if (!usesL1(effective)) return;
+  chipL1Timer = window.setTimeout(() => {
+    if (chipUnit !== u || !running) return;
+    const group = groupOf(u);
+    if (group.length > 0) queueUpgrade(group);
+  }, CHIP_L1_MS);
+}
+
+function openChip(u: Unit, immediate = false): void {
+  if (!settings.annotate || !running) return;
+  // 選取是明確的「我要這一段」,不受「只在 Alt 時顯示」與捲動靜默的限制
+  if (!immediate) {
+    if (settings.annotateAltOnly && !altScan) return;
+    // 捲動中冒出貼片是噪音
+    if (performance.now() - lastScrollAt < CHIP_SCROLL_QUIET_MS) return;
+  }
+  clearTimeout(chipCloseTimer);
+  clearTimeout(chipOpenTimer);
+  if (chipUnit === u && layer?.chipsVisible()) return;
+  /*
+   * 已經有貼片開著就**立刻**換,不重新等 180ms。
+   * tooltip group 的標準行為:第一次要等,之後不用 ——
+   * 使用者已經表達過「我在看這一排」了。
+   */
+  const wait = immediate || layer?.chipsVisible() ? 0 : CHIP_OPEN_MS;
+  chipOpenTimer = window.setTimeout(() => {
+    if (!running) return;
+    const prev = chipUnit;
+    if (prev && prev !== u) flushLabelSwap(prev);
+    chipUnit = u;
+    renderChips();
+    void translateLabel(u);
+    armChipL1(u);
+  }, wait);
+}
+
+function closeChip(immediate = false): void {
+  clearTimeout(chipOpenTimer);
+  clearTimeout(chipL1Timer);
+  clearTimeout(chipCloseTimer);
+  const done = (): void => {
+    const prev = chipUnit;
+    chipUnit = null;
+    if (prev) flushLabelSwap(prev);
+    if (altScan) renderChips();
+    else layer?.hideChips();
+  };
+  if (immediate) done();
+  else chipCloseTimer = window.setTimeout(done, CHIP_CLOSE_MS);
+}
+
+/** 鍵盤使用者走 Tab 也要看得到 —— hover-only 的資訊等於不存在 */
+function onFocusIn(e: Event): void {
+  const u = labelAt(e.target);
+  if (u) openChip(u);
+  else if (chipUnit) closeChip();
 }
 
 /* ------------------------------------------------------------------ hover */
@@ -707,6 +1157,14 @@ function onMouseOver(e: Event): void {
     }
     node = node.parentNode;
   }
+  /*
+   * 加翻層:內文區塊優先(它有自己的畫法),否則試 UI 標籤,
+   * 再否則臨時加翻 —— 指到什麼就翻什麼,不讓偵測規則的縫變成「都不會翻」。
+   */
+  const label = found ? null : (labelAt(e.target) ?? adhocLabelAt(e.target));
+  if (label) openChip(label);
+  else if (chipUnit && chipUnit !== selectionUnit) closeChip();
+
   if (found === hovered) return;
   const left = hovered;
   hovered = found;
@@ -721,6 +1179,8 @@ function onKeyDown(e: KeyboardEvent): void {
   if (e.key === 'Alt' && !altScan) {
     altScan = true;
     layer?.setAltScan(true);
+    // Alt 同時是加翻層的「全部顯示」:掃視的語彙沿用同一顆鍵
+    renderChips();
   }
   if (e.altKey && e.shiftKey && (e.key === 'D' || e.key === 'd')) {
     e.preventDefault();
@@ -732,6 +1192,7 @@ function onKeyUp(e: KeyboardEvent): void {
   if (e.key === 'Alt' && altScan) {
     altScan = false;
     layer?.setAltScan(false);
+    renderChips();
   }
 }
 
@@ -739,7 +1200,9 @@ function onBlur(): void {
   if (altScan) {
     altScan = false;
     layer?.setAltScan(false);
+    renderChips();
   }
+  closeChip(true);
 }
 
 /**
@@ -819,7 +1282,13 @@ function updateHud(): void {
   }
   if (units.size === 0) {
     const retrying = emptyScans > 0 && emptyScans <= EMPTY_SCAN_RETRIES.length;
-    layer.setHud(retrying ? '疊 · 掃描中…' : '疊 · 沒找到可翻譯的區塊', retrying ? 'busy' : 'idle');
+    if (retrying) {
+      layer.setHud('疊 · 掃描中…', 'busy');
+      return;
+    }
+    // 沒有內文段落不代表沒東西可看:導覽列與按鈕仍然可以加翻
+    const tail = labels.size > 0 ? `,${labels.size} 個標籤可加翻(滑上去看)` : '';
+    layer.setHud(`疊 · 沒找到可翻譯的段落${tail}`, 'idle');
     return;
   }
   if (!settings.autoTranslate && !manualArmed) {
@@ -830,6 +1299,7 @@ function updateHud(): void {
   if (c.l0 > 0) parts.push(`L0 ${c.l0}`);
   if (c.l1 > 0) parts.push(`L1 ${c.l1}`);
   if (failed > 0) parts.push(`失敗 ${failed}`);
+  if (settings.annotate && labels.size > 0) parts.push(`標籤 ${labels.size}`);
   const heldBack = [...units].filter((u) => u.pendingSwap !== undefined).length;
   if (heldBack > 0) parts.push(`待換 ${heldBack}`);
   const busy = waiting > 0 || pending > 0;
@@ -917,9 +1387,16 @@ async function start(): Promise<void> {
   resetHintColor();
   clearMeasureCache();
 
+  // 整頁的字集要在掃描之前定案:日文 / 韓文頁面的純漢字標題不能被當成
+  // 「已經是中文」而跳過(見 detect.ts 的 setPageScript)
+  const sample = sampleVisibleText();
+  const script = sniffScript(sample);
+  setPageScript(script);
+
   // feature.md §6:不支援就退回 single 並告知,不報錯
   effective = state.pipeline;
   diag('info', 'start', {
+    script,
     pipeline: state.pipeline,
     tier: state.tier,
     mode: state.mode,
@@ -929,7 +1406,7 @@ async function start(): Promise<void> {
   if (usesL0(effective)) {
     if (translatorSupported()) {
       l0 = new L0Engine(
-        pageSourceLang(settings.l0SourceLang),
+        pageSourceLang(settings.l0SourceLang, sample),
         toTranslatorTarget(settings.targetLang),
       );
       // 語言包已在本機時這裡就會成功;需要下載時走 needs-gesture,由 popup 接手
@@ -988,6 +1465,8 @@ async function start(): Promise<void> {
 
   document.addEventListener('mouseover', onMouseOver, true);
   document.addEventListener('mouseleave', onDocLeave);
+  document.addEventListener('focusin', onFocusIn, true);
+  document.addEventListener('selectionchange', onSelectionChange);
   window.addEventListener('keydown', onKeyDown, true);
   window.addEventListener('keyup', onKeyUp, true);
   window.addEventListener('blur', onBlur);
@@ -1030,6 +1509,7 @@ function onDocLeave(): void {
   layer?.setHovered(null, units);
   if (left?.pendingSwap !== undefined) trySwap(left);
   armHoverRetry(null);
+  closeChip();
 }
 
 /**
@@ -1178,6 +1658,13 @@ function noteDrift(id: string, d: { dx: number; dy: number }): void {
 
 function onScroll(): void {
   lastScrollAt = performance.now();
+  /*
+   * 貼片是 position: fixed,不跟著頁面捲 —— 所以捲動時直接關掉。
+   * 這是**刻意**不走疊翻那套 document 座標 + 捲動自我修正:
+   * 貼片是暫態的,不需要跟著捲;不跟著捲就沒有 build 14 那種
+   * 「JS 慢合成器一幀 → 疊層抖動」的問題。
+   */
+  if (chipUnit || layer?.chipsVisible()) closeChip(true);
   if (!scrollRaf) scrollRaf = requestAnimationFrame(scrollSync);
   if (reprioTimer) return;
   reprioTimer = window.setTimeout(() => {
@@ -1204,6 +1691,8 @@ function stop(): void {
   dwellTimer = 0;
   document.removeEventListener('mouseover', onMouseOver, true);
   document.removeEventListener('mouseleave', onDocLeave);
+  document.removeEventListener('focusin', onFocusIn, true);
+  document.removeEventListener('selectionchange', onSelectionChange);
   window.removeEventListener('keydown', onKeyDown, true);
   window.removeEventListener('keyup', onKeyUp, true);
   window.removeEventListener('blur', onBlur);
@@ -1233,6 +1722,15 @@ function stop(): void {
   // 留著會讓下一次 scan() 認為整頁都已經建過單元
   unitByEl = new WeakMap<Element, Unit>();
   probed = new WeakSet<Unit>();
+  setPageScript(null);
+  clearTimeout(selectionTimer);
+  selectionTimer = 0;
+  selectionUnit = null;
+  closeChip(true);
+  labels.clear();
+  labelMemo.clear();
+  labelQueuedText.clear();
+  labelByEl = new WeakMap<Element, Unit>();
   // nextId 刻意不重置:worker 佇列裡可能還有已送出的舊 id,
   // 重新從 u1 開始會讓那些結果套到完全不同的區塊上 —— 自己製造 id 對滑。
   // §6.1 說 id 是「本頁單調遞增的穩定 id」,跨 stop/start 也維持單調。
@@ -1288,8 +1786,15 @@ chrome.runtime.onMessage.addListener((raw: ToContent, _sender, reply) => {
         // 沒有的話才是真的 failed。兩者的提示線都是警示色 —— 不可以看起來正常。
         u.tier = u.l0Text !== undefined ? 'l1-failed' : 'failed';
         u.failReason = f.reason;
+        if (u.kind === 'label') {
+          // 失敗的文字要能再送一次,否則 hover 重試對加翻層無效
+          labelQueuedText.delete(u.src);
+          renderChips();
+          continue;
+        }
         if (u.l0Text === undefined) layer?.drop(u);
       }
+      renderChips();
       scheduleFlush();
       updateHud();
       break;

@@ -1,4 +1,4 @@
-import type { UnitRole, UnitTier } from '../shared/types';
+import type { UnitKind, UnitRole, UnitTier } from '../shared/types';
 import type { ProbedStyle } from './styleprobe';
 
 export interface DocRect {
@@ -11,6 +11,12 @@ export interface DocRect {
 export interface Unit {
   id: string;
   el: Element;
+  /**
+   * 這個單元用哪一種畫法(docs/plan-annotation.md)。
+   * block = 不透明覆蓋、常駐;label = 旁邊的貼片、暫態。
+   * 兩者共用 L0 → L1 管線、快取與 id 紀律,只有渲染與觸發不同。
+   */
+  kind: UnitKind;
   role: UnitRole;
   src: string;
   style: ProbedStyle;

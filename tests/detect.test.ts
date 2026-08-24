@@ -4,6 +4,7 @@ import { JSDOM } from 'jsdom';
 import {
   MAX_UNIT_CHARS,
   findCandidates,
+  findLabels,
   isMeaningfulText,
   looksLikeTargetLang,
 } from '../src/content/detect.ts';
@@ -116,6 +117,13 @@ test('§3.2 已是中文的區塊跳過,但日文(有假名)仍然翻', () => {
   assert.equal(looksLikeTargetLang('全球資料流量約有九成九走海底電纜'), true);
   assert.equal(looksLikeTargetLang('Roughly 99 percent of traffic'), false);
   assert.equal(looksLikeTargetLang('海底ケーブルを通って世界のデータ'), false);
+  // 日文頁面的純漢字標題:逐塊看是「漢字 100%」,整頁層級知道那是日文
+  assert.equal(looksLikeTargetLang('東京都知事選挙'), true);
+  assert.equal(looksLikeTargetLang('東京都知事選挙', 'ja'), false);
+  assert.equal(looksLikeTargetLang('海底電纜與網際網路', 'ja'), false);
+  // 中文頁面(或判不出字集)時,行為不變
+  assert.equal(looksLikeTargetLang('全球資料流量約有九成九走海底電纜', 'zh'), true);
+  assert.equal(looksLikeTargetLang('Roughly 99 percent of traffic', 'ja'), false);
   const body = mount('<p>這一段已經是中文了,不用翻。</p><p>This one needs translating.</p>');
   assert.deepEqual(ids(body), ['This one needs translating.']);
 });
@@ -282,4 +290,57 @@ test('同一個容器裡還有看得見的文字時,那段照翻', () => {
   const out = ids(body);
   assert.equal(out.length, 1);
   assert.match(out[0]!, /visible paragraph/);
+});
+
+test('加翻候選:UI 標籤被收進來,而不是被丟掉', () => {
+  const body = mount(`
+    <nav>
+      <a href="/pricing">Pricing</a>
+      <a href="/docs">Documentation</a>
+      <button>Start free trial</button>
+    </nav>
+    <p>Roughly ninety nine percent of intercontinental traffic runs on undersea cables.</p>
+  `);
+  const labels = findLabels(body, 200).map((c) => c.src);
+  assert.deepEqual(labels, ['Pricing', 'Documentation', 'Start free trial']);
+  // 內文段落仍然走疊翻,不會同時變成標籤
+  assert.equal(labels.some((t) => t.startsWith('Roughly')), false);
+  for (const c of findLabels(body, 200)) assert.equal(c.role, 'label');
+});
+
+test('加翻候選:重複的文字每個都要收(卡片牆上十二張卡都要能 hover)', () => {
+  // 去重做在翻譯層(labelMemo),不在偵測層 —— 偵測層去重會讓
+  // 除了第一張以外的卡片 hover 沒反應,那正是回報的「只會翻一個」
+  const body = mount(`
+    <a href="/a">詳細を見る</a>
+    <a href="/b">詳細を見る</a>
+    <a href="/c">詳細を見る</a>
+  `);
+  assert.deepEqual(findLabels(body, 200).map((c) => c.src), [
+    '詳細を見る',
+    '詳細を見る',
+    '詳細を見る',
+  ]);
+});
+
+test('加翻候選:巢狀互動元素只取最內層', () => {
+  const body = mount('<div role="menuitem"><a href="/x">Export</a></div>');
+  assert.deepEqual(findLabels(body, 200).map((c) => c.src), ['Export']);
+});
+
+test('加翻候選:太長的連結是內容,不是標籤', () => {
+  const body = mount('<a href="/x">Why undersea cables still carry the internet</a>');
+  assert.deepEqual(findLabels(body, 200), []);
+});
+
+test('加翻候選:sr-only 的文字不算標籤', () => {
+  const body = mount('<a href="/x"><span class="u-sr-only">Open menu</span></a>');
+  srOnly(body, '.u-sr-only');
+  assert.deepEqual(findLabels(body, 200), []);
+});
+
+test('加翻候選:上限會擋住病態頁面', () => {
+  const many = Array.from({ length: 30 }, (_, i) => `<a href="/x${i}">Item ${i}</a>`).join('');
+  const body = mount(many);
+  assert.equal(findLabels(body, 8).length, 8);
 });

@@ -2,6 +2,7 @@ import type { DisplayMode, Settings } from '../shared/types';
 import { fontFaceCss, fontStack } from './fonts';
 import { hintColor } from './styleprobe';
 import { LETTER_SPACING_EM, activeText, effectiveFontSize, type Unit } from './unit';
+import { place, type ViewRect } from './annotate';
 import { hintClassFor } from './upgrade';
 
 /**
@@ -130,6 +131,67 @@ const LAYER_CSS = `
   );
 }
 /*
+ * 加翻貼片(docs/plan-annotation.md §4.3)。
+ *
+ * position: fixed,所以它是 shadow root 裡與 .layer 平行的兄弟節點,
+ * 不能待在 .layer 裡面 —— .layer 帶 clip-path,而 build 14 已經用
+ * 「HUD 在被 transform 的祖先裡就不再相對視窗定位」付過一次學費。
+ *
+ * 背景一律不透明(§2.2)。「淡」是靠小字級、低彩度、以及**只在被指名時出現**,
+ * 不是靠 alpha —— 字疊字是糊的,不是淡的。
+ */
+.chip {
+  position: fixed;
+  left: var(--ksnm-cx);
+  top: var(--ksnm-cy);
+  max-width: 22em;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 3px 9px 3px 10px;
+  border: 1px solid var(--ksnm-chip-line);
+  border-radius: 5px;
+  background: var(--ksnm-chip-bg);
+  color: var(--ksnm-chip-fg);
+  font-family: var(--ksnm-chip-ff);
+  font-size: var(--ksnm-chip-size);
+  font-weight: 400;
+  line-height: 1.45;
+  letter-spacing: ${LETTER_SPACING_EM}em;
+  text-align: left;
+  direction: ltr;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.chip.show { opacity: 1; }
+/* 左緣階層條:沿用提示線的語彙,L0 斜紋、L1 實線、失敗警示色 */
+.chip::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 3px;
+  bottom: 3px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--ksnm-chip-bar);
+}
+.chip.l0::before {
+  background: repeating-linear-gradient(
+    to bottom,
+    var(--ksnm-chip-bar) 0 3px,
+    transparent 3px 6px
+  );
+}
+.chip.warn::before { background: #c0392b; }
+/* 兩層都失敗:顯示原文,但要看得出來這是「翻不出來」而不是譯文 */
+.chip.warn { font-style: italic; }
+@media (prefers-reduced-motion: reduce) {
+  .chip { transition: none; }
+}
+/*
  * 頁內狀態列。使用者的原話:「翻譯中還是沒翻譯沒有明確的 status」。
  * 疊層本身看起來一樣,分不出「還在等」與「已經死了」,所以狀態要自己講。
  * pointer-events: none —— 與疊層同一條規則,不可攔截 hover。
@@ -193,6 +255,23 @@ const LAYER_CSS = `
   .box, .ghost { transition: none; }
 }
 `;
+
+/** 一個要畫出來的貼片 */
+export interface ChipItem {
+  text: string;
+  anchor: ViewRect;
+  tone: 'l0' | 'l1' | 'warn';
+  style: ChipStyle;
+}
+
+/** 貼片的視覺:全部取自來源元素,讓它看起來像頁面的一部分而不是外掛 UI */
+export interface ChipStyle {
+  background: string;
+  color: string;
+  line: string;
+  bar: string;
+  fontSizePx: number;
+}
 
 export class OverlayLayer {
   private host: HTMLDivElement;
@@ -391,6 +470,78 @@ export class OverlayLayer {
     h.style.setProperty('--ksnm-warn', '#c0392b');
   }
 
+  /* ------------------------------------------------------- 加翻貼片 */
+
+  /**
+   * 貼片節點池。同時通常只有一個(hover),按住 Alt 掃視時是可見區內的一整批。
+   * 每個標籤配一個常駐 DOM 是幾十個節點的浪費 —— 用完就藏起來重複使用。
+   */
+  private chips: HTMLDivElement[] = [];
+
+  /**
+   * 畫出這一批貼片,其餘的藏起來。
+   *
+   * 兩段式:先把內容放進去(還是 opacity 0)量出實際尺寸,
+   * 再交給 annotate.place() 決定位置,最後才 .show。
+   * 量之前不可能知道貼片多寬 —— 中文字數與字型都會影響。
+   *
+   * 依序放置並把已放好的矩形餵給 place(),所以一整條導覽列的貼片
+   * 會互相讓開,而不是疊在一起。
+   */
+  showChips(items: readonly ChipItem[]): void {
+    const viewport = { width: window.innerWidth, height: window.innerHeight };
+    const placed: ViewRect[] = [];
+    items.forEach((item, i) => {
+      const c = this.chipAt(i);
+      c.className = `chip ${item.tone}`;
+      c.textContent = item.text;
+      const st = item.style;
+      c.style.setProperty('--ksnm-chip-bg', st.background);
+      c.style.setProperty('--ksnm-chip-fg', st.color);
+      c.style.setProperty('--ksnm-chip-line', st.line);
+      c.style.setProperty('--ksnm-chip-bar', st.bar);
+      c.style.setProperty('--ksnm-chip-ff', fontStack(false, 'sans-serif'));
+      c.style.setProperty('--ksnm-chip-size', `${st.fontSizePx}px`);
+      // 先放到左上角量:留在上一次的位置量,貼片在視窗邊緣會被壓窄
+      c.style.setProperty('--ksnm-cx', '0px');
+      c.style.setProperty('--ksnm-cy', '0px');
+      const box = c.getBoundingClientRect();
+      const at = place(
+        { rect: item.anchor },
+        { width: box.width, height: box.height },
+        viewport,
+        'chip',
+        placed,
+      );
+      placed.push(at);
+      c.style.setProperty('--ksnm-cx', `${at.left}px`);
+      c.style.setProperty('--ksnm-cy', `${at.top}px`);
+      c.classList.add('show');
+    });
+    for (let i = items.length; i < this.chips.length; i++) {
+      this.chips[i]!.classList.remove('show');
+    }
+  }
+
+  private chipAt(i: number): HTMLDivElement {
+    let c = this.chips[i];
+    if (!c) {
+      c = document.createElement('div');
+      c.className = 'chip';
+      this.root.appendChild(c);
+      this.chips[i] = c;
+    }
+    return c;
+  }
+
+  hideChips(): void {
+    for (const c of this.chips) c.classList.remove('show');
+  }
+
+  chipsVisible(): boolean {
+    return this.chips.some((c) => c.classList.contains('show'));
+  }
+
   private hud: HTMLDivElement | null = null;
   private hudTimer = 0;
 
@@ -464,6 +615,7 @@ export class OverlayLayer {
   }
 
   destroy(): void {
+    this.chips = [];
     this.host.remove();
   }
 }

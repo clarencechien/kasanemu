@@ -351,10 +351,12 @@ footer {
   <nav class="rail" aria-label="目錄">
     <ol>
       <li><a href="#what">這是什麼</a></li>
+      <li><a href="#langs">支援的語言</a></li>
       <li><a href="#need">先確認機器</a></li>
       <li><a href="#install">安裝</a></li>
       <li><a href="#first">第一次使用</a></li>
       <li><a href="#read">怎麼讀畫面</a></li>
+      <li><a href="#chips">滑過與選取</a></li>
       <li><a href="#keys">快捷鍵</a></li>
       <li><a href="#tiers">檔位與帳單</a></li>
       <li><a href="#key">API key 與隱私</a></li>
@@ -372,7 +374,7 @@ footer {
     <h1>把譯文疊在原文上,不動網頁一根汗毛</h1>
     <p class="lede">
       Kasanemu 不重寫網頁,也不開側欄。它在頁面正上方畫一層不透明的譯文,
-      蓋住原本那段英文;滑鼠移過去,譯文讓開,原文就在原位。
+      蓋住原本那段外文;滑鼠移過去,譯文讓開,原文就在原位。
     </p>
 
     <div class="demo">
@@ -392,7 +394,7 @@ footer {
           </p>
         </div>
         <p class="demo-note">
-          上面這塊是純 CSS 的示意。真的裝起來之後,每一段英文都會這樣被蓋住,
+          上面這塊是純 CSS 的示意。真的裝起來之後,每一段外文都會這樣被蓋住,
           而且疊層完全不吃滑鼠事件 —— 網頁上的連結、按鈕照常可以按。
         </p>
       </div>
@@ -422,6 +424,41 @@ footer {
           <span class="k">為什麼要有兩層</span>
           L0 快但生硬,L1 好但要等(而且可能要錢)。先給你看得懂的東西,再默默換成更好的 ——
           比起盯著空白等 API,這樣好用得多。
+        </div>
+      </div>
+    </section>
+
+    <section id="langs" class="mark-l1">
+      <div class="eyebrow">語言</div>
+      <h2>不只英文:日文、韓文也翻</h2>
+      <div class="stack-block">
+        <p>
+          翻譯目標固定是繁體中文(可在設定改),來源語言則是<strong>看畫面上的文字自己判斷</strong>的:
+          有假名就是日文,有諺文就是韓文,整頁拉丁字母就照 <code>&lt;html lang&gt;</code> 或設定的預設值走。
+        </p>
+        <div class="tablewrap">
+          <table>
+            <thead>
+              <tr><th>來源</th><th>L0 本機層</th><th>L1 升級層</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>英文</td><td>主要測試對象</td><td>可以</td></tr>
+              <tr><td>日文</td><td>看你的 Chrome 有沒有 ja 語言包</td><td>可以</td></tr>
+              <tr><td>韓文</td><td>看你的 Chrome 有沒有 ko 語言包</td><td>可以</td></tr>
+              <tr><td>其他拉丁語系</td><td>需要在設定指定來源語言</td><td>可以</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          L1 是 LLM,給它什麼語言都翻得動。L0 是 Chrome 的內建模型,
+          <strong>該語言對沒有語言包就會整批失敗</strong> —— 那時提示線會是警示色,
+          但 L1 仍然會接手,只是第一眼要等比較久。
+        </p>
+        <div class="note warn">
+          <span class="k">日文頁面的一個細節</span>
+          日文標題常常是純漢字、一個假名都沒有(「東京都知事選挙」)。
+          單看那一塊會誤判成「已經是中文」而跳過,所以語言是<strong>整頁判一次</strong>的。
+          真的遇到日文站標題沒翻,那是 bug,請回報網址。
         </div>
       </div>
     </section>
@@ -505,7 +542,7 @@ footer {
           </li>
           <li>
             <div class="body">
-              <p class="k">回到任何英文網頁,按 <kbd>Alt</kbd> + <kbd>T</kbd></p>
+              <p class="k">回到任何外文網頁,按 <kbd>Alt</kbd> + <kbd>T</kbd></p>
               <p>或按 popup 上的「啟用」。啟用狀態是<strong>記在網域上</strong>的 —— 這個站以後自己會開,別的站不受影響。</p>
             </div>
           </li>
@@ -585,6 +622,44 @@ footer {
       </div>
     </section>
 
+    <section id="chips" class="mark-l0">
+      <div class="eyebrow">加翻</div>
+      <h2>導覽列、按鈕、選起來的字</h2>
+      <div class="stack-block">
+        <p>
+          24 字以內的按鈕、分頁、選單、連結<strong>不會被疊層蓋住</strong>。
+          理由很實際:譯文比原文短,盒子要嘛蓋掉項目之間的間隔、把整條導覽列擠歪,
+          要嘛讓原文從右邊露出來變成「聯絡業務ales」。兩種都難看。
+        </p>
+        <p>
+          所以它們走另一條路 —— <strong>滑上去停 0.2 秒,譯文出現在旁邊</strong>,
+          原文一個像素都不動。移開就消失。
+        </p>
+        <p>
+          <strong>指到什麼就翻什麼。</strong>不只按鈕和連結 —— 任何一段沒有被疊層接手的
+          文字,滑上去停一下都會出貼片。翻不到的時候還有更直接的一招:
+          <strong>把那段字選起來</strong>,譯文立刻出現,不必等停留。
+          選取可以跨越好幾個元素,所以連「半句話」都問得到。
+        </p>
+        <ul class="plain">
+          <li><strong>橫掃不會閃。</strong>要停留才出現,所以滑鼠掃過一整排導覽列不會沿路冒出貼片。</li>
+          <li><strong>選起來就翻。</strong>選取是最明確的「我要這一段」,所以不等 0.2 秒,選完就出;點一下別的地方取消選取,貼片才消失。</li>
+          <li><strong>重複的字只翻一次。</strong>卡片牆上十二張卡都寫「詳細を見る」,十二張都 hover 得到,但只送一次 API。</li>
+          <li><strong>第二個開始不用等。</strong>一旦有貼片開著,移到隔壁項目會立刻換。</li>
+          <li><strong>點得到。</strong>貼片和疊層一樣不吃滑鼠事件,就算蓋到隔壁按鈕,那顆按鈕照樣點得到。</li>
+          <li><strong>按住 <kbd>Alt</kbd> 全部顯示。</strong>和掃視疊層同一顆鍵,一眼看完整條導覽列。</li>
+          <li><strong>鍵盤也有。</strong>用 Tab 移到連結上,貼片一樣會出現。</li>
+        </ul>
+        <div class="note">
+          <span class="k">花費怎麼算</span>
+          貼片是<strong>注意力驅動</strong>的:沒停留過的標籤一毛不花。
+          停留超過 0.6 秒才會送 L1,而且是把<strong>同一組</strong>(整條導覽列)
+          一起送 —— 一次批次比十次單筆便宜,滑到第二個時譯文已經在了。
+          不想被打擾的話,設定裡可以改成「只在按住 Alt 時出現」,或整個關掉。
+        </div>
+      </div>
+    </section>
+
     <section id="keys" class="mark-l1">
       <div class="eyebrow">操作</div>
       <h2>快捷鍵</h2>
@@ -597,7 +672,7 @@ footer {
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>T</kbd></td><td>在這個網域啟用 / 關閉疊層翻譯</td></tr>
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd></td><td>切換「全開」/「點閱」</td></tr>
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd></td><td>翻譯這一頁;也用來把整頁失敗的區塊全部重試</td></tr>
-            <tr><td class="keycell">按住 <kbd>Alt</kbd></td><td>暫時切成標註樣式,掃視哪些被翻了</td></tr>
+            <tr><td class="keycell">按住 <kbd>Alt</kbd></td><td>掃視:疊層切成標註樣式,同時顯示所有 UI 標籤的譯文貼片</td></tr>
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></td><td>抽樣面板:原文 / L0 / L1 三欄並列(需先在設定開 debug mode)</td></tr>
           </tbody>
         </table>
@@ -704,10 +779,11 @@ footer {
       <div class="stack-block">
         <h3>目前確定不完美的地方</h3>
         <ul class="plain">
-          <li>很短的 UI 標籤(按鈕、分頁名稱)刻意不翻 —— 蓋壞了比沒翻更糟。</li>
+          <li>很短的 UI 標籤不用疊層蓋,改成滑過去顯示貼片(見上面「導覽列與按鈕」)。</li>
           <li>行距壓得很緊的大標,偶爾第一行頂端或 g、p 的尾巴會露出來一點。</li>
           <li>非常動態的頁面(輪播、展開動畫)在動的當下,疊層可能慢半拍才跟上。</li>
           <li>free 檔位在長頁面上會明顯排隊,那是免費層的速率限制,不是當掉。</li>
+          <li>日文與韓文是「應該會動」而不是「測過了」—— 封測的主力測試對象是英文。</li>
         </ul>
 
         <h3 style="margin-top:22px">最想收到的回饋</h3>
@@ -715,6 +791,9 @@ footer {
           <li><strong>位置類的錯</strong>:疊層蓋錯地方、蓋掉圖片、跟著捲動抖動。截圖 + log。</li>
           <li><strong>速度體感</strong>:你捲到的時候,那一段翻好了嗎?還是還在等?</li>
           <li><strong>L0 到 L1 的替換</strong>:字換掉的那一瞬間會不會打斷你閱讀?</li>
+          <li><strong>加翻貼片</strong>:0.2 秒的等待感覺對嗎?貼片出現的位置擋到你要看的東西了嗎?</li>
+          <li><strong>還有哪裡滑上去不會翻</strong>:網址 + 那段文字,這是現在最想知道的。</li>
+          <li><strong>日文 / 韓文站</strong>:有翻嗎?來源語言判對了嗎?(log 裡的 <code>sourceLang</code> 會寫)</li>
           <li><strong>哪些站完全不能用</strong>:網址就好。</li>
         </ul>
       </div>

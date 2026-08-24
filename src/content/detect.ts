@@ -48,7 +48,7 @@ export const MAX_UNIT_CHARS = 1000;
  * 卡片標題、文章裡的行內連結都是長文字,照翻;
  * 24 字以內的連結/按鈕當成 UI 元件,跳過。
  */
-const INTERACTIVE_SELECTOR =
+export const INTERACTIVE_SELECTOR =
   'a[href],button,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[role="switch"],[role="option"]';
 const UI_LABEL_MAX_CHARS = 24;
 
@@ -146,11 +146,25 @@ export function hasContainerChild(el: Element): boolean {
 }
 
 /**
+ * 整頁的字集(由 lang.ts 的 sniffScript 判定,start() 時設定一次)。
+ *
+ * 逐塊判斷「這塊是不是已經是中文」在日文頁面上會出錯:
+ * 標題常常是純漢字、一個假名都沒有(「東京都知事選挙」),
+ * 逐塊看就變成「漢字比例 100% → 已是中文 → 跳過」,
+ * 於是日文站的標題全部不翻。整頁層級知道這是日文,那一塊就該翻。
+ */
+let pageScript: 'ja' | 'ko' | 'zh' | null = null;
+
+export function setPageScript(s: 'ja' | 'ko' | 'zh' | null): void {
+  pageScript = s;
+}
+
+/**
  * §3.2 語言判定:以 Unicode script 比例判斷,不呼叫語言偵測 API。
  * 對 PRD 的一處收斂:漢字比例高但假名也出現時視為日文,仍然翻譯。
  * 純看漢字比例會讓所有日文頁面被誤判成「已是中文」。
  */
-export function looksLikeTargetLang(text: string): boolean {
+export function looksLikeTargetLang(text: string, script = pageScript): boolean {
   let han = 0;
   let kana = 0;
   let visible = 0;
@@ -162,6 +176,8 @@ export function looksLikeTargetLang(text: string): boolean {
   }
   if (visible === 0) return true;
   if (kana / visible > 0.05) return false;
+  // 整頁是日文 / 韓文時,漢字堆不是中文,是漢字詞
+  if (script === 'ja' || script === 'ko') return false;
   return han / visible > 0.3;
 }
 
@@ -302,6 +318,61 @@ function walk(el: Element, ctx: WalkCtx): boolean {
 
   ctx.out.push({ el, role: roleOf(el, cs), src: text, geometryRisk: hasFloatDescendant(el) });
   return true;
+}
+
+/**
+ * 加翻層的候選:UI 標籤、選單項目、連結(docs/plan-annotation.md §6.2)。
+ *
+ * `isUiLabel()` 從「排除條件」升級成「分類器」—— 命中的不再丟掉,
+ * 而是收進這裡,交給另一種畫法(旁邊的貼片,不覆蓋)。
+ * **判定規則一字不改**:那個 24 字門檻是在真頁面上調出來的,
+ * 不要在同一次改動裡動兩件事。
+ */
+export function findLabels(
+  root: Element,
+  cap: number,
+  seen: (el: Element) => boolean = () => false,
+): Candidate[] {
+  const out: Candidate[] = [];
+  const all = root.querySelectorAll(INTERACTIVE_SELECTOR);
+  for (const el of all) {
+    if (out.length >= cap) break;
+    /*
+     * 已經建過單元的先跳掉,再做任何 getComputedStyle。
+     * scan() 在動態頁面上跑得很勤,而這個函式對每個互動元素都要問樣式 ——
+     * 不先擋掉已知的,無限捲動的頁面會把時間全花在重算同一批導覽列上。
+     */
+    if (seen(el)) continue;
+    // 巢狀互動元素只取最內層(連結包按鈕、按鈕包連結)
+    if (el.querySelector(INTERACTIVE_SELECTOR) !== null) continue;
+    const cs = getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+    if (isScreenReaderOnly(el, cs)) continue;
+    const srOnly = new Set<Element>();
+    if (el.children.length > 0) {
+      const kids = el.querySelectorAll('*');
+      // 標籤裡不會有幾十層結構;掃到第 8 個就夠了,再多是成本不是正確性
+      for (let i = 0; i < kids.length && i < 8; i++) {
+        const kid = kids[i]!;
+        if (isScreenReaderOnly(kid, getComputedStyle(kid))) srOnly.add(kid);
+      }
+    }
+    const text = normalizeText(ownText(el, srOnly));
+    if (text.length === 0 || text.length > UI_LABEL_MAX_CHARS) continue;
+    if (!isMeaningfulText(text)) continue;
+    if (looksLikeTargetLang(text)) continue;
+    if (el.getClientRects().length === 0) continue;
+    /*
+     * **不**在這裡對重複文字去重。
+     *
+     * 上一版會只留第一個 —— 那是錯的:卡片牆上十二張卡都寫「詳細を見る」,
+     * 十二個都要能 hover;「お問い合わせ」在導覽列與段落標題各一次,
+     * 使用者指的往往是後者。去重要做在翻譯層(index.ts 的 labelMemo):
+     * 每個元素都有自己的單元,但同一段文字只送一次 API。
+     */
+    out.push({ el, role: 'label', src: text, geometryRisk: false });
+  }
+  return out;
 }
 
 export function findCandidates(root: Element, seen: (el: Element) => boolean): Candidate[] {
