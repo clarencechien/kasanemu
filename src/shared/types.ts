@@ -130,9 +130,12 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   apiKey: '',
   targetLang: 'zh-TW',
-  defaultTier: 'balanced',
-  // 預設留在 Phase 1 的行為:漸進式要自己開,才有 A/B 的意義
-  defaultPipeline: 'single',
+  // 封測預設:L0 打底 + L1 升級,檔位 free(零帳單起步)。
+  // 封測的人拿到的第一頁不該產生帳單;要更好的譯文再自己往上調。
+  defaultTier: 'free',
+  // feature.md §2.1 原本要 single 當對照組,但實測下來 progressive 明顯好用,
+  // 對照組改成「需要時自己切」。
+  defaultPipeline: 'progressive',
   l0SourceLang: 'en',
   upgradeDwellMs: 1500,
   noTranslateTerms: [],

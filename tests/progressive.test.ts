@@ -6,6 +6,7 @@ import { normalizeSourceLang, toTranslatorTarget } from '../src/content/lang.ts'
 import {
   dwellReady,
   hintClassFor,
+  hoverRetryReady,
   maxCharsAt,
   priorityOf,
   swapAllowed,
@@ -198,4 +199,21 @@ test('還沒有結果的區塊不畫提示線;關掉提示線時一律不畫', (
 test('L1 死掉時不會看起來像正常運作:l1 與 l1-failed 的樣式必須不同', () => {
   assert.notEqual(hintClassFor('l1', true), hintClassFor('l1-failed', true));
   assert.notEqual(hintClassFor('l1', true), hintClassFor('l0', true));
+});
+
+test('hover 重試:只有紅的才重排,而且有次數上限', () => {
+  const failed = { tier: 'l1-failed' as const, maxChars: 120 };
+  assert.equal(hoverRetryReady(failed, 0, 2), true);
+  assert.equal(hoverRetryReady(failed, 1, 2), true);
+  // 兩次之後就算了 —— 真正壞掉的頁面重試也救不了,別把帳單燒在同一塊上
+  assert.equal(hoverRetryReady(failed, 2, 2), false);
+  // 沒紅的不動:hover 一塊翻好的區塊不該再送一次請求
+  assert.equal(hoverRetryReady({ tier: 'l1', maxChars: 120 }, 0, 2), false);
+  assert.equal(hoverRetryReady({ tier: 'l0', maxChars: 120 }, 0, 2), false);
+  assert.equal(hoverRetryReady({ tier: 'pending', maxChars: 120 }, 0, 2), false);
+  // 連 L0 都失敗的也要能重試(語言包晚一步就緒就是這個狀態)
+  assert.equal(hoverRetryReady({ tier: 'l0-failed', maxChars: 120 }, 0, 2), true);
+  assert.equal(hoverRetryReady({ tier: 'failed', maxChars: 120 }, 0, 2), true);
+  // 塞不下的區塊本來就不翻,重試也沒意義
+  assert.equal(hoverRetryReady({ tier: 'failed', maxChars: 0 }, 0, 2), false);
 });

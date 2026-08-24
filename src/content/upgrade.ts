@@ -20,6 +20,28 @@ export function dwellReady(
   return now - u.inViewSince >= dwellMs;
 }
 
+/** 這一階是「翻不出來」的紅色狀態 */
+export function isFailedTier(tier: UnitTier): boolean {
+  return tier === 'failed' || tier === 'l1-failed' || tier === 'l0-failed';
+}
+
+/**
+ * hover 是否該把這塊重新排隊。
+ *
+ * 只有紅的才重試,而且每塊有次數上限 —— 使用者滑鼠掃過一整片失敗的區塊
+ * 不該變成一整批 L1 請求(那是要錢的)。真正壞掉的頁面重試也救不了,
+ * 兩次之後就算了,別把帳單燒在同一塊上。
+ */
+export function hoverRetryReady(
+  u: { tier: UnitTier; maxChars: number },
+  attemptsUsed: number,
+  max: number,
+): boolean {
+  if (!isFailedTier(u.tier)) return false;
+  if (u.maxChars <= 0) return false;
+  return attemptsUsed < max;
+}
+
 /** feature.md §4.2 佇列排序:距視窗中心越近越優先(數字越小越優先) */
 export function priorityOf(
   rectTop: number,

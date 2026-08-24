@@ -25,7 +25,14 @@ import {
 import { probePackagedFonts } from './fonts';
 import { L0Engine, translatorSupported } from './l0';
 import { pageSourceLang, toTranslatorTarget } from './lang';
-import { STALL_MS, dwellReady, priorityOf as priorityFor, swapAllowed } from './upgrade';
+import {
+  STALL_MS,
+  dwellReady,
+  hoverRetryReady,
+  isFailedTier,
+  priorityOf as priorityFor,
+  swapAllowed,
+} from './upgrade';
 import { mask, protectedFragments } from './mask';
 import { OverlayLayer } from './overlay';
 import { probeStyle, resetHintColor } from './styleprobe';
@@ -49,6 +56,24 @@ const EMPTY_SCAN_RETRIES = [300, 900, 2000, 4000];
  * L1 仍然嚴守「可見 + 停留 1.5 秒」(D21,那條是拿來省錢的)。
  */
 const L0_LOOKAHEAD_PX = 1500;
+
+/**
+ * 慢機器上的預翻範圍。
+ *
+ * 診斷 log(Chromebook,併發自動降到 2):`avgWaitMs` 爬到 18 秒、`queued: 30`。
+ * 預翻 1500px 在這種機器上只是把佇列塞滿 —— 排進去的多半在使用者捲到之前
+ * 就已經過期(SPA 換頁、重排)。看得見的區塊有優先度插隊所以不受害,
+ * 但那些工作本身是浪費。
+ */
+const L0_LOOKAHEAD_SLOW_PX = 400;
+/** 超過這個平均延遲就算慢機器(ms) */
+const SLOW_MACHINE_MS = 2000;
+
+function lookaheadPx(): number {
+  const t = l0?.timing();
+  if (!t || t.calls < 6) return L0_LOOKAHEAD_PX;
+  return t.avgMs > SLOW_MACHINE_MS ? L0_LOOKAHEAD_SLOW_PX : L0_LOOKAHEAD_PX;
+}
 
 const host = location.hostname;
 
@@ -364,8 +389,9 @@ async function intake(): Promise<void> {
   }
 
   // L0 免費且在本機,取材範圍可以遠大於可見區
-  const top = window.scrollY - L0_LOOKAHEAD_PX;
-  const bottom = window.scrollY + window.innerHeight + L0_LOOKAHEAD_PX;
+  const ahead = lookaheadPx();
+  const top = window.scrollY - ahead;
+  const bottom = window.scrollY + window.innerHeight + ahead;
   const fresh = [...units].filter(
     (u) =>
       u.tier === 'pending' &&
@@ -402,7 +428,7 @@ async function intake(): Promise<void> {
 
   const l0 = runL0(fresh);
   const [cacheHits] = await Promise.all([probing, l0]);
-  diag('info', 'intake', { fresh: fresh.length, cacheHits, lookahead: L0_LOOKAHEAD_PX });
+  diag('info', 'intake', { fresh: fresh.length, cacheHits, lookahead: ahead });
 }
 
 async function probeCache(list: Unit[]): Promise<Map<string, string>> {
@@ -612,6 +638,59 @@ function applyResults(results: UnitResult[]): void {
 /* ------------------------------------------------------------------ hover */
 
 /**
+ * 失敗的區塊 hover 一下就重新排隊。
+ *
+ * 紅線代表「這塊翻不出來」,而使用者發現它的時機幾乎一定是把滑鼠移過去
+ * 看原文的那一刻 —— 那時候要求他再去按一次 popup 的「翻譯」(那會把
+ * **整頁**的失敗區塊全部重來)實在太笨。停留一下就悄悄補翻這一塊。
+ *
+ * 每塊最多兩次,而且要停留 400ms:滑過去不算,免得滑鼠掃過一片紅線
+ * 就送出一堆請求(L1 是要錢的)。
+ */
+const HOVER_RETRY_DWELL_MS = 400;
+const HOVER_RETRY_MAX = 2;
+const hoverRetries = new WeakMap<Unit, number>();
+let hoverRetryTimer: number | undefined;
+
+function armHoverRetry(u: Unit | null): void {
+  if (hoverRetryTimer !== undefined) {
+    clearTimeout(hoverRetryTimer);
+    hoverRetryTimer = undefined;
+  }
+  if (!u || !running) return;
+  const used = hoverRetries.get(u) ?? 0;
+  if (!hoverRetryReady(u, used, HOVER_RETRY_MAX)) return;
+  hoverRetryTimer = window.setTimeout(() => {
+    hoverRetryTimer = undefined;
+    // 停留期間可能已經移開,或被別的路徑補翻好了
+    if (hovered !== u || !running || !isFailedTier(u.tier)) return;
+    hoverRetries.set(u, used + 1);
+    retryUnit(u);
+  }, HOVER_RETRY_DWELL_MS);
+}
+
+function retryUnit(u: Unit): void {
+  const from = u.tier;
+  u.failReason = undefined;
+  u.l1Queued = false;
+  u.upgradeQueuedAt = undefined;
+  probed.delete(u);
+  if (u.l0Text !== undefined) {
+    // L0 有譯文、掛掉的是 L1:直接重排 L1,不再等 §4.2 的停留時間 ——
+    // 使用者的滑鼠**就停在上面**,停留條件早就滿足了。
+    u.tier = 'l0';
+    if (usesL1(effective)) queueUpgrade([u]);
+  } else {
+    // 連 L0 都沒有:退回 pending,讓 intake() 照正常流程重跑一次
+    u.tier = 'pending';
+    void intake();
+  }
+  lastProblem = '';
+  diag('info', 'hover-retry', { id: u.id, from, attempt: (hoverRetries.get(u) ?? 0) });
+  scheduleFlush();
+}
+
+/**
  * §2.2 疊層 pointer-events: none,所以 hover 只能由來源元素反向驅動。
  */
 function onMouseOver(e: Event): void {
@@ -634,6 +713,7 @@ function onMouseOver(e: Event): void {
   layer.setHovered(found, units);
   // §4.3 hover 結束後才執行延後的替換
   if (left?.pendingSwap !== undefined) trySwap(left);
+  armHoverRetry(found);
 }
 
 function onKeyDown(e: KeyboardEvent): void {
@@ -762,7 +842,9 @@ function updateHud(): void {
     layer.setHud('疊 · 沒有需要翻譯的內容', 'idle');
     return;
   }
-  layer.setHud(`疊 · ${parts.join(' · ')} · 完成`, failed > 0 ? 'warn' : 'idle');
+  // 有紅的就順便講怎麼救 —— 使用者不會知道 hover 可以重試
+  const tail = failed > 0 ? ' · 滑到紅線上重試' : ' · 完成';
+  layer.setHud(`疊 · ${parts.join(' · ')}${tail}`, failed > 0 ? 'warn' : 'idle');
 }
 
 /* ------------------------------------------------------------------ 統計 */
@@ -947,6 +1029,7 @@ function onDocLeave(): void {
   hovered = null;
   layer?.setHovered(null, units);
   if (left?.pendingSwap !== undefined) trySwap(left);
+  armHoverRetry(null);
 }
 
 /**
@@ -1135,6 +1218,8 @@ function stop(): void {
   settleTimer = 0;
   clearTimeout(motionTimer);
   motionTimer = 0;
+  clearTimeout(hoverRetryTimer);
+  hoverRetryTimer = undefined;
   if (scrollRaf) cancelAnimationFrame(scrollRaf);
   scrollRaf = 0;
   emptyScans = 0;

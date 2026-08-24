@@ -81,6 +81,8 @@ async function copyStatic() {
     ['src/options/options.css', 'dist/options.css'],
     ['src/popup/popup.html', 'dist/popup.html'],
     ['src/popup/popup.css', 'dist/popup.css'],
+    // 封測手冊跟著一起打包:拿到 zip 的人解開就能先讀說明,不必另外傳一份
+    ['docs/manual.html', 'dist/manual.html'],
   ];
   for (const [from, to] of files) await cp(from, to);
   if (existsSync('assets/fonts')) {
