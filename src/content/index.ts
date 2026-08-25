@@ -1859,11 +1859,14 @@ function clippers(u: Unit): Element[] {
  * 陰影、漸層、釘住的按鈕列,量得再準也只是勉強擦邊。少蓋一點沒人會發現,
  * 多蓋一點整頁就髒了。
  *
+ * 32 還是會擦到(譯文盒子比譯文本身高 —— 它要蓋住比較長的原文),
+ * 使用者說「再多抓一倍就好,只要畫面中間有就好」。64 是那個一倍。
+ *
  * **只在真的被容器限制住時才收。** 一般頁面(視窗捲動)的底邊是視窗本身,
  * 那裡的疊層是合法的、而且下面還有內容 —— 收 32px 會在每一頁的底部
  * 切出一條看得見的線。
  */
-const CONTAINER_SAFETY_PX = 32;
+const CONTAINER_SAFETY_PX = 64;
 
 function visibleBox(u: Unit): Box {
   let top = lastTopBand;
