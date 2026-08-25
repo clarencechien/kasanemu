@@ -126,3 +126,30 @@ export function hintClassFor(tier: UnitTier, hintLineOn: boolean): string | null
 
 /** feature.md §5.2:L1 一個都沒回來且佇列非空超過 10 秒 → 明確警示 */
 export const STALL_MS = 10_000;
+
+/**
+ * 「跑完了沒」。
+ *
+ * 這一條先前是錯的:busy 的判準是「整頁還有 pending 的區塊」,
+ * 而 progressive 只翻視窗上下各 1500px —— 長文章底下永遠有一堆
+ * 還沒輪到的區塊,於是狀態列永遠停在「待翻 N」,永遠不會說完成、
+ * 也永遠不會淡出。
+ *
+ * 沒捲到的區塊**不是「在等」,是「還沒要」**。所以:
+ *  - busy:有請求在飛,或畫面上還有沒翻好的
+ *  - screen-done:這一屏好了,但頁面下面還有沒翻的(捲下去會繼續)
+ *  - all-done:整頁都處理完了
+ */
+export function translationPhase(s: {
+  /** 已送出 L1、還沒回來 */
+  waiting: number;
+  /** 在畫面上、還沒有譯文 */
+  nearPending: number;
+  /** 不在畫面上、還沒輪到 */
+  farPending: number;
+  /** L0 還有呼叫在跑或在排隊 */
+  l0Busy: boolean;
+}): 'busy' | 'screen-done' | 'all-done' {
+  if (s.waiting > 0 || s.nearPending > 0 || s.l0Busy) return 'busy';
+  return s.farPending > 0 ? 'screen-done' : 'all-done';
+}

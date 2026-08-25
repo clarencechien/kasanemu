@@ -277,6 +277,11 @@ export class L0Engine {
     if (next) next.go();
   }
 
+  /** 還有呼叫在跑或在排隊 —— 狀態列判斷「跑完了沒」要用 */
+  busy(): boolean {
+    return this.inFlight > 0 || this.queue.length > 0;
+  }
+
   /** 給診斷用:真正的呼叫延遲,以及被排隊吃掉多少 */
   timing(): {
     calls: number;

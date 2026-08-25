@@ -15,6 +15,7 @@ import {
   maxCharsAt,
   priorityOf,
   swapAllowed,
+  translationPhase,
 } from '../src/content/upgrade.ts';
 
 /* ------------------------------------------------ §3.4 佔位符保護 */
@@ -254,4 +255,22 @@ test('來源語言:字集有證據時,不採信 <html lang>', () => {
   // 沒有證據、宣告是別的拉丁語系語言時,宣告可信
   assert.equal(resolveSourceLang('fr-FR', EN, 'en'), 'fr');
   assert.equal(resolveSourceLang('', EN, 'en'), 'en');
+});
+
+test('狀態列:沒捲到的區塊不算「還在跑」', () => {
+  // 這一條先前是錯的:busy 的判準是「整頁還有 pending」,
+  // 而長文章底下永遠有沒輪到的區塊 → 永遠不說完成、永遠不淡出
+  const base = { waiting: 0, nearPending: 0, farPending: 0, l0Busy: false };
+  assert.equal(translationPhase({ ...base, farPending: 40 }), 'screen-done');
+  assert.equal(translationPhase(base), 'all-done');
+});
+
+test('狀態列:有請求在飛、或畫面上還有沒翻好的,就是還在跑', () => {
+  const base = { waiting: 0, nearPending: 0, farPending: 0, l0Busy: false };
+  assert.equal(translationPhase({ ...base, waiting: 3 }), 'busy');
+  assert.equal(translationPhase({ ...base, nearPending: 1 }), 'busy');
+  // L0 的呼叫還在排隊也算 —— 它不經過 l1Queued,單看計數看不出來
+  assert.equal(translationPhase({ ...base, l0Busy: true }), 'busy');
+  // 在跑的時候不會因為「頁面下面沒東西了」就說完成
+  assert.equal(translationPhase({ ...base, waiting: 1, farPending: 0 }), 'busy');
 });

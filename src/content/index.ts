@@ -43,6 +43,7 @@ import {
   isFailedTier,
   priorityOf as priorityFor,
   swapAllowed,
+  translationPhase,
 } from './upgrade';
 import { mask, protectedFragments } from './mask';
 import { OverlayLayer, type ChipItem } from './overlay';
@@ -1273,8 +1274,22 @@ function updateHud(): void {
   }
   const c = tierCounts();
   const failed = c.failed + c['l1-failed'];
-  const waiting = [...units].filter((u) => u.l1Queued && u.l1Text === undefined).length;
-  const pending = c.pending + c['l0-failed'];
+  let waiting = 0;
+  let nearPending = 0;
+  let farPending = 0;
+  for (const u of units) {
+    if (u.l1Queued && u.l1Text === undefined) waiting++;
+    if (u.tier !== 'pending' && u.tier !== 'l0-failed') continue;
+    if (u.maxChars <= 0) continue; // 塞不下的本來就不翻,不算「在等」
+    /*
+     * 「已經開口要了」也算在跑,即使它在畫面外:預翻範圍比視窗大,
+     * 那些請求已經在 L0 的併發池裡。只看 inView 會在送出與回來之間
+     * 閃一次「完成」。
+     */
+    const asked = u.tier === 'pending' && probed.has(u);
+    if (u.inView || asked) nearPending++;
+    else farPending++;
+  }
 
   if (lastProblem) {
     layer.setHud(`疊 · ${lastProblem}`, 'warn');
@@ -1302,9 +1317,20 @@ function updateHud(): void {
   if (settings.annotate && labels.size > 0) parts.push(`標籤 ${labels.size}`);
   const heldBack = [...units].filter((u) => u.pendingSwap !== undefined).length;
   if (heldBack > 0) parts.push(`待換 ${heldBack}`);
-  const busy = waiting > 0 || pending > 0;
-  if (busy) {
-    const tail = waiting > 0 ? `等 ${effective === 'single' ? 'L1' : '升級'} ${waiting}` : `待翻 ${pending}`;
+
+  const phase = translationPhase({
+    waiting,
+    nearPending,
+    farPending,
+    l0Busy: l0?.busy() ?? false,
+  });
+  if (phase === 'busy') {
+    const tail =
+      waiting > 0
+        ? `等 ${effective === 'single' ? 'L1' : '升級'} ${waiting}`
+        : nearPending > 0
+          ? `待翻 ${nearPending}`
+          : '翻譯中…';
     layer.setHud(`疊 · ${[...parts, tail].join(' · ')}`, 'busy');
     return;
   }
@@ -1312,8 +1338,14 @@ function updateHud(): void {
     layer.setHud('疊 · 沒有需要翻譯的內容', 'idle');
     return;
   }
+  /*
+   * 跑完了就說完了,然後讓它淡出 —— 常駐的狀態列是噪音。
+   * 「這一屏完成」不是客套話:頁面下面還有沒輪到的區塊時說「完成」是騙人的,
+   * 而使用者需要知道那是「捲下去會繼續」而不是「漏掉了」。
+   */
+  const done = phase === 'all-done' ? '完成' : '這一屏完成,捲動繼續翻';
   // 有紅的就順便講怎麼救 —— 使用者不會知道 hover 可以重試
-  const tail = failed > 0 ? ' · 滑到紅線上重試' : ' · 完成';
+  const tail = failed > 0 ? ' · 滑到紅線上重試' : ` · ${done}`;
   layer.setHud(`疊 · ${parts.join(' · ')}${tail}`, failed > 0 ? 'warn' : 'idle');
 }
 
