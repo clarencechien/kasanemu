@@ -165,7 +165,8 @@ scripts/    audit-sites · audit-coverage · probe-{detect,colors,snapshot,gemma
             fetch-fonts(subset 打包)· zip · sites.txt · fixtures/
 tests/      203 個 node:test
 docs/       lessons(通則)· deviations(逐件記錄)· acceptance(人工驗收)
-            fonts(subset 實測)· plan-annotation(加翻層規格)· manual.html(使用說明)
+            fonts(subset 實測)· plan-annotation(加翻層規格)
+            plan-glossary(詞表規格,未實作)· manual.html(使用說明)
 feature.md  漸進式翻譯的規格
 ```
 
