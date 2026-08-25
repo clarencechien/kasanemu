@@ -92,6 +92,9 @@ export function buildReport(i: ReportInput): string {
           `CPU 微基準 ${d.cpuMs}ms(越小越快)· ${d.platform}`,
       );
     }
+    if (i.stats.cacheHits !== undefined) {
+      lines.push(`- 快取:命中 ${i.stats.cacheHits} 塊 · 模式 ${i.settings.cacheMode}`);
+    }
     if (i.stats.motion) {
       const m = i.stats.motion;
       lines.push(

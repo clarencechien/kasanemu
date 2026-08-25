@@ -183,7 +183,17 @@ export const DEFAULT_SETTINGS: Settings = {
   annotate: true,
   annotateAltOnly: false,
   forceAnnotation: false,
-  cacheMode: 'session',
+  /*
+   * **預設 persistent。**
+   *
+   * 原本是 session,而 `chrome.storage.session` 在瀏覽器關掉(以及每次
+   * 重新載入擴充功能)時就清空 —— 使用者的疑問是「翻好的不是先存 local 嗎?
+   * 怎麼會真的重來重翻?」。會,但只在同一次瀏覽器工作階段內。
+   *
+   * 這個工具的重點之一就是不要重複花錢,而快取的成本只是磁碟(有 LRU 上限)。
+   * 預設值應該站在「不要再付一次錢」那邊。
+   */
+  cacheMode: 'persistent',
   persistentCacheMB: 50,
   pageTokenCap: 120_000,
   globalDailyTWD: 60,

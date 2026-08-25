@@ -95,6 +95,8 @@ export interface PageStats {
    * 要靠使用者截圖才看得見。列在報告裡就不必再猜。
    */
   unparsedColors?: string[];
+  /** 這一頁有幾塊直接命中快取,沒有再打一次 API */
+  cacheHits?: number;
   /** 捲動時的疊層策略與它的判斷依據(見 content/motion.ts) */
   motion?: {
     stability: string;

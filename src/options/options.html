@@ -166,11 +166,21 @@
       <h2>快取</h2>
       <label>模式
         <select data-k="cacheMode">
-          <option value="session">session(預設)</option>
-          <option value="persistent">persistent(IndexedDB)</option>
+          <option value="persistent">persistent:存在磁碟,關掉瀏覽器也還在(預設)</option>
+          <option value="session">session:只留在這次瀏覽器工作階段</option>
           <option value="off">off(除錯用)</option>
         </select>
       </label>
+      <p class="hint">
+        快取的 key 是<strong>原文 + 目標語言 + 模型 ID + 長度分桶</strong>,不綁網域 ——
+        所以同一句話在不同頁面上也會命中(導覽列、頁尾、重複的標題命中率特別高)。
+        換檔位等於換模型 ID,那是另一份譯文,不會互相污染。
+        <br />
+        <code>persistent</code> 存在 IndexedDB,關掉瀏覽器、重開機都還在,超過下面的
+        上限才依最久沒用到的順序清掉。<code>session</code> 只留在記憶體與
+        <code>chrome.storage.session</code>,瀏覽器一關就沒了 ——
+        <strong>重新載入擴充功能也會清空</strong>,所以封測期間換 build 之後第一次翻一定是全新的。
+      </p>
       <label>persistent LRU 上限(MB)
         <input type="number" data-k="persistentCacheMB" data-num="1" min="1" />
       </label>

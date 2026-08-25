@@ -727,3 +727,46 @@ test('清單的長度證據看項目本身,不是只看裡面的連結', () => {
     assert.ok(texts.includes(want), `子連結 ${want} 該翻,實得 ${JSON.stringify(texts)}`);
   }
 });
+
+/* -------- 走捷徑的路徑要自己補上主路徑的每一道關卡 -------- */
+
+test('容器自己那行字的承載元素也要遵守排除清單', () => {
+  /*
+   * ClickHouse 的頂部導覽是 <div><button>Products</button>…</div>。
+   * <button> 在排除清單上,walk() 早就跳過了 —— captureInlineText
+   * 不能從父層把它撿回來。
+   */
+  const root = mount('<div><button>Products</button><p>Some actual paragraph text here.</p></div>');
+  const texts = findCandidates(root, () => false).map((c) => c.src);
+  assert.deepEqual(texts, ['Some actual paragraph text here.']);
+});
+
+test('外殼角色的承載元素同樣不撿', () => {
+  const root = mount(
+    '<div><span role="toolbar">Share</span><p>Some actual paragraph text here.</p></div>',
+  );
+  const texts = findCandidates(root, () => false).map((c) => c.src);
+  assert.deepEqual(texts, ['Some actual paragraph text here.']);
+});
+
+test('「裡面是目次就當內容」的例外不給頁首 —— mega menu 幾乎一定有長項目', () => {
+  const megaMenu = `<ul>
+    <li><a href="#1">Cloud — run ClickHouse without operating it yourself</a></li>
+    <li><a href="#2">Docs</a></li>
+    <li><a href="#3">Pricing</a></li>
+  </ul>`;
+  // 頁首:永遠是外殼
+  assert.deepEqual(findCandidates(mount(`<header>${megaMenu}</header>`), () => false), []);
+  assert.deepEqual(findCandidates(mount(`<footer>${megaMenu}</footer>`), () => false), []);
+  // 導覽 / 側欄:目次會出現在這裡,照翻
+  const inNav = findCandidates(mount(`<nav>${megaMenu}</nav>`), () => false).map((c) => c.src);
+  assert.ok(inNav.includes('Docs'), `實得 ${JSON.stringify(inNav)}`);
+  const inAside = findCandidates(mount(`<aside>${megaMenu}</aside>`), () => false).map((c) => c.src);
+  assert.ok(inAside.includes('Pricing'));
+});
+
+test('頁首裡的標籤仍然滑得到 —— 不畫疊層不等於整棵消失', () => {
+  const root = mount('<header><nav><a href="#1">Products</a><a href="#2">Pricing</a></nav></header>');
+  assert.deepEqual(findCandidates(root, () => false), []);
+  assert.deepEqual(findLabels(root, 50).map((c) => c.src), ['Products', 'Pricing']);
+});

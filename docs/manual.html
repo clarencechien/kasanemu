@@ -779,6 +779,25 @@ footer {
           <p>這是最需要回報的類型。請截圖 + 匯出 log,並且說一下當下在做什麼(剛捲動?剛展開選單?)。</p>
         </div>
         <div class="card">
+          <span class="k">同一頁重開,會不會再花一次錢?</span>
+          <p>
+            不會。譯文快取<strong>預設存在磁碟上</strong>(IndexedDB),關掉瀏覽器、重開機都還在,
+            key 是「原文 + 目標語言 + 模型 ID + 長度」而且<strong>不綁網域</strong> ——
+            同一句話在別的頁面上也會命中。診斷 log 有一行「快取:命中 N 塊」可以看。
+            <br />
+            例外是<strong>換 build</strong>:重新載入擴充功能會把記憶體與 session 的部分清掉,
+            所以封測期間每換一版,第一次翻都是全新的。
+          </p>
+        </div>
+        <div class="card">
+          <span class="k">狀態列不見了,是不是死掉了?</span>
+          <p>
+            說完就淡出是刻意的 —— 常駐的狀態列是噪音。<strong>但有失敗的時候它不會淡出</strong>,
+            會一直留著直到那幾塊被重試成功。所以:狀態列不在 = 沒有待辦,不是當掉。
+            想確認的話打開 popup,那裡永遠看得到這一頁的即時統計。
+          </p>
+        </div>
+        <div class="card">
           <span class="k">捲動時譯文一直閃</span>
           <p>
             Gmail 這種頁面的捲動發生在<strong>內層容器</strong>裡,疊層畫在頁面座標上不會跟著動,

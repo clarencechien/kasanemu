@@ -668,11 +668,20 @@ export class OverlayLayer {
     el.className = `hud show ${level}`;
     el.textContent = text;
     clearTimeout(this.hudTimer);
-    if (level === 'busy') return;
-    this.hudTimer = window.setTimeout(
-      () => el.classList.remove('show'),
-      level === 'warn' ? 8000 : 3200,
-    );
+    /*
+     * **淡出的是資訊,留下的是待辦。**
+     *
+     * 「完成」是講完就沒事了,該淡出 —— 常駐的狀態列是噪音。
+     * 但「有 15 塊失敗,滑上去可以重試」是還沒解決的事,它一淡出,
+     * 畫面上就沒有任何東西告訴使用者發生過什麼,也沒有東西告訴他
+     * 怎麼救。使用者的原話是「HUD 不見了 是不是死掉了」。
+     *
+     * 所以 warn 不自動淡出。它會在最後一塊被重試成功時自己變成
+     * idle 然後淡出 —— 自己會清乾淨的東西才有資格常駐。
+     * (按住 Alt 收起整層時它一樣會不見;完全不想要就在設定關掉狀態列。)
+     */
+    if (level === 'busy' || level === 'warn') return;
+    this.hudTimer = window.setTimeout(() => el.classList.remove('show'), 3200);
   }
 
   hideHud(): void {

@@ -563,8 +563,19 @@ function hasFloatDescendant(el: Element): boolean {
  * 目次有(「Count aggregations in ClickHouse and Elasticsearch」49 字),
  * Gmail 左欄沒有(每一項都 ≤24 字)。**同一個證據,同一個結論。**
  */
+/**
+ * 「裡面是目次就當內容」這個例外只給**導覽型**的地標。
+ *
+ * 站台頁首不是目次,永遠不是。而它的 mega menu 裡幾乎一定有一項長到
+ * 超過 24 字(產品說明),於是 hasContentList() 一律成立 ——
+ * 整個 sticky 頁首被當成內容,長出六個內文單元。
+ * 例外要窄:目次會出現在 <nav> / <aside>,不會出現在 <header> / <footer>。
+ */
+const TOC_HOSTS = 'nav,aside,[role="navigation"],[role="complementary"]';
+
 function isAppChrome(el: Element): boolean {
   if (!CHROME_TAGS.has(el.tagName) && !el.matches(CHROME_SELECTOR)) return false;
+  if (!el.matches(TOC_HOSTS)) return true;
   return !hasContentList(el);
 }
 
@@ -745,6 +756,17 @@ function captureInlineText(el: Element, ctx: WalkCtx, pinned: boolean): boolean 
      * 用「有沒有容器子孫」判斷比繼續往 CONTAINER_TAGS 塞標籤可靠。
      */
     if (kid.querySelector(CONTAINER_TAGS)) continue;
+    /*
+     * 承載元素也要走一次排除清單。
+     *
+     * 這一步漏掉的代價是**把已經擋掉的東西救回來**:ClickHouse 的頂部
+     * 導覽是 `<div><button>Products</button>…</div>`,`<button>` 在
+     * EXCLUDE_TAGS 裡、walk() 早就跳過了,但 captureInlineText 直接
+     * 從父層撿走它 —— 站台導覽因此變成六個內文單元。
+     * 走捷徑的路徑要自己補上主路徑的每一道關卡。
+     */
+    if (EXCLUDE_TAGS.has(kid.tagName)) continue;
+    if (kid.matches(EXCLUDE_SELECTOR) || kid.matches(CHROME_SELECTOR)) continue;
     if (normalizeText(ownText(kid, ctx.srOnly)) !== text) continue;
     if (ctx.made.has(kid) || ctx.seen(kid)) return true;
     const kcs = getComputedStyle(kid);

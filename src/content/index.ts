@@ -241,6 +241,8 @@ let firstPaintMs = -1;
 /** 機器畫像,start() 時量一次(微基準要跑幾毫秒,不要每次都跑) */
 let device: DeviceProfile | null = null;
 /** feature.md §4.3 距上次捲動 < 400ms 的區塊延後替換 */
+/** 這一頁有幾塊是從快取直接拿到的(沒有再花一次 API) */
+let cacheHitsTotal = 0;
 let lastScrollAt = 0;
 /** document 自己不捲(Gmail / Slack 這種應用程式外殼)—— start() 時量一次 */
 let appShellPage = false;
@@ -461,6 +463,8 @@ function auditPositions(full = true): void {
   const bottom = window.scrollY + near * 2;
   for (const u of units) {
     if (u.tier === 'skipped') continue;
+    // 釘住的單元隨捲動移動是**正常的**,不是壞掉的證據(見 scrollSync)
+    if (u.pinned === true) continue;
     if (!u.box && !u.inView) continue;
     if (u.rect.top + u.rect.height < top || u.rect.top > bottom) continue;
     // 用同一個公式算「現在應該蓋哪裡」,否則取過 max 的高度會永遠對不上
@@ -737,6 +741,7 @@ async function intake(): Promise<void> {
 
   const l0Run = runL0(fresh);
   const [cacheHits] = await Promise.all([probing, l0Run]);
+  cacheHitsTotal += cacheHits;
   diag('info', 'intake', { fresh: fresh.length, cacheHits, lookahead: ahead });
 }
 
@@ -1680,8 +1685,15 @@ function updateHud(): void {
    * 而使用者需要知道那是「捲下去會繼續」而不是「漏掉了」。
    */
   const done = phase === 'all-done' ? '完成' : '這一屏完成,捲動繼續翻';
-  // 有紅的就順便講怎麼救 —— 使用者不會知道 hover 可以重試
-  const tail = failed > 0 ? ' · 滑到紅線上重試' : ` · ${done}`;
+  /*
+   * **有失敗也要說「完成」。**
+   *
+   * 原本有紅的時候只講「滑到紅線上重試」,把「跑完了」整個吞掉 ——
+   * 於是使用者看到的是一條警示狀態列,幾秒後消失,而且從頭到尾
+   * 沒人告訴他整頁其實翻完了。他的結論是「文章翻不完,HUD 不見了,
+   * 是不是死掉了」。**沒說完成,就等於說了沒完成。**
+   */
+  const tail = failed > 0 ? ` · ${done}(滑到紅線上重試)` : ` · ${done}`;
   layer.setHud(`疊 · ${parts.join(' · ')}${tail}`, failed > 0 ? 'warn' : 'idle');
 }
 
@@ -1734,6 +1746,7 @@ function pageStats(): PageStats {
     device: device ?? undefined,
     l0Timing: l0?.timing(),
     unparsedColors: unparsedColors(),
+    cacheHits: cacheHitsTotal,
     motion: {
       stability: settings.stability,
       guard: guarding(),
@@ -2231,7 +2244,21 @@ function scrollSync(): void {
   // 這裡只處理「被固定頁首蓋住的那一段要跟著消失」。
   applyChromeClip();
   // 再看內容自己有沒有移動(sticky、lazy load、內容插入)
-  const probe = [...units].find((u) => u.box && u.inView && u.tier !== 'skipped');
+  /*
+   * 哨兵**不能是釘住的單元**。
+   *
+   * sticky / fixed 的元素在 document 座標裡本來就會隨捲動移動,移動量
+   * 正好是捲動距離 —— 拿它當「內容有沒有自己在動」的哨兵,等於每一幀
+   * 都判定「漂移了」,然後每一幀重量 373 個單元。診斷 log 裡
+   * `scroll-drift {"dy":5884}` 那種數字不是漂移,是捲動距離本身。
+   *
+   * 這是 build 47 讓 sticky 子樹產生單元之後才出現的:u1 變成
+   * `<header class="sticky top-0">` 裡的按鈕,而它永遠在視窗裡。
+   * **放寬了誰能成為單元,就要重新檢查誰在拿單元當量尺。**
+   */
+  const probe = [...units].find(
+    (u) => u.box && u.inView && u.tier !== 'skipped' && u.pinned !== true,
+  );
   if (!probe) return;
   const d = driftOf(probe);
   const off = Math.max(Math.abs(d.dx), Math.abs(d.dy));
@@ -2427,6 +2454,7 @@ function stop(): void {
   pinnedCount = 0;
   appShellPage = false;
   sawInnerScroll = false;
+  cacheHitsTotal = 0;
   document.removeEventListener('mouseover', onMouseOver, true);
   document.removeEventListener('mouseleave', onDocLeave);
   document.removeEventListener('focusin', onFocusIn, true);
