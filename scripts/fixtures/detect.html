@@ -4,7 +4,12 @@
   .imgwrap img, .shot { width: 400px; height: 200px; background: #444; }
   .inline-img { width: 40px; height: 40px; background: #444; vertical-align: middle; }
   nav.pinned { position: sticky; top: 0; }
-</style></head><body>
+</style>
+<!-- 快照的路徑是 childNode 索引,而刪掉 script 會讓後面的索引整個位移。
+     fixture 一定要裝著會弄壞它的東西,不然驗收全綠也沒有意義。 -->
+<script>window.__before_head = 1;</script>
+</head><body>
+<script>window.__first_in_body = 1;</script>
 <article>
   <!-- 文章目次:巢狀,長短混雜 -->
   <ul id="toc">
@@ -72,6 +77,8 @@
   <li><a href="#b">Count aggregations in ClickHouse and Elasticsearch</a></li>
   <li><a href="#c">Benchmark results</a></li>
 </ul></nav>
+
+<script>window.__between_sections = 1;</script>
 
 <!-- 真的選單:每一項都短,維持外殼待遇 -->
 <nav id="menu"><ul>

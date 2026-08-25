@@ -194,7 +194,11 @@ export class L0Engine {
   }
 
   /** 一區塊一次呼叫,無 batch、無 id 對位問題(§3.3) */
-  async translate(text: string, priority: number | (() => number) = 0): Promise<string | null> {
+  async translate(
+    text: string,
+    priority: number | (() => number) = 0,
+    stillWanted?: () => boolean,
+  ): Promise<string | null> {
     const hit = this.cache.get(text);
     if (hit !== undefined) return hit;
     if (!(await this.ensure())) return null;
@@ -202,6 +206,11 @@ export class L0Engine {
     if (!instance) return null;
     const queuedAt = performance.now();
     await this.pool.acquire(priority);
+    // 排了很久才輪到,期間可能已經不需要了(L1 先回來了)—— 讓出槽位
+    if (stillWanted && !stillWanted()) {
+      this.pool.release();
+      return null;
+    }
     const startedAt = performance.now();
     this.waitMsTotal += startedAt - queuedAt;
     try {

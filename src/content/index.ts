@@ -790,7 +790,14 @@ async function runL0(list: Unit[]): Promise<void> {
       // 距視窗中心越近越先翻 —— 捲到新一屏時會插隊到預翻的遠處區塊前面
       // 優先度傳 thunk,不傳數字 —— 佇列在出隊時才問「現在離視窗多遠」。
       // 傳數字的話,捲動之前入隊的區塊會帶著過期的順序卡在佇列深處(見 l0.ts slot())
-      const raw = await engine.translate(masked.text, () => Math.round(priorityOf(u)));
+      /*
+       * 第二個參數是**輪到它時**才問的「還要嗎」。
+       *
+       * 慢機器上 L0 佇列可以排到一兩百個,而那段時間裡 L1 會陸續把它們
+       * 升級掉 —— 輪到的時候譯文早就在畫面上了,再翻一次是純粹的浪費。
+       * 入隊時的 `u.l1Text !== undefined` 只擋得住入隊那一刻的狀況。
+       */
+      const raw = await engine.translate(masked.text, () => Math.round(priorityOf(u)), () => u.l1Text === undefined);
       if (raw === null) {
         u.tier = effective === 'l0-only' ? 'failed' : 'l0-failed';
         u.failReason = 'l0';
@@ -1711,12 +1718,7 @@ function updateHud(): void {
   const heldBack = [...units].filter((u) => u.pendingSwap !== undefined).length;
   if (heldBack > 0) parts.push(`待換 ${heldBack}`);
 
-  const phase = translationPhase({
-    waiting,
-    nearPending,
-    farPending,
-    l0Busy: l0?.busy() ?? false,
-  });
+  const phase = translationPhase({ waiting, nearPending, farPending });
   if (phase === 'busy') {
     const tail =
       waiting > 0

@@ -1,4 +1,11 @@
-import { activeText, type Unit } from './unit';
+import type { Unit } from './unit';
+
+/*
+ * 只有 type import —— 和 cover.ts 同一條規矩:這個檔案要能在 node 的
+ * 測試裡直接載入,而值的 import 會拖進一整條相依鏈。
+ * `activeText()` 只是一個 `??`,抄過來比拖進來便宜。
+ */
+const activeText = (u: Unit): string | undefined => u.l1Text ?? u.l0Text;
 
 /**
  * 把「疊好的樣子」存成一個 HTML 檔。
@@ -126,10 +133,17 @@ export function buildSnapshot(opts: {
   const clone = live.cloneNode(true) as HTMLElement;
   const doc = document;
 
-  // 頁面自己的腳本、我們自己的疊層宿主,都不該進到快照裡
-  for (const el of Array.from(clone.querySelectorAll('script'))) el.remove();
-  clone.querySelector(`#${opts.hostId}`)?.remove();
-
+  /*
+   * **先套用,再刪東西。**
+   *
+   * 反過來做會全軍覆沒:路徑是 childNode 的索引,而刪掉一個 `<script>`
+   * 會讓它後面所有兄弟節點的索引往前移一格。一般網頁的 `<head>` 與
+   * `<body>` 裡到處都是 script,於是幾乎每一條路徑都指到別的節點,
+   * `nodeType !== 1` 就被跳過 —— 匯出的檔案裡一個譯文都沒有。
+   *
+   * 而我當初的 fixture **一個 `<script>` 都沒有**,所以驗收全綠。
+   * 這是這次真正的教訓:fixture 要裝著會弄壞它的東西。
+   */
   let applied = 0;
   for (const p of plan) {
     const node = resolvePath(p.path, clone);
@@ -147,6 +161,10 @@ export function buildSnapshot(opts: {
     }
     applied++;
   }
+
+  // 套用完了才動樹:頁面自己的腳本、我們自己的疊層宿主都不該進到快照裡
+  for (const el of Array.from(clone.querySelectorAll('script'))) el.remove();
+  clone.querySelector(`#${opts.hostId}`)?.remove();
 
   const head = clone.querySelector('head') ?? clone.insertBefore(doc.createElement('head'), clone.firstChild);
   /*

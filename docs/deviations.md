@@ -2476,3 +2476,68 @@ const failed = c.failed + c['l1-failed'];
 「L1 失敗也算失敗」也說得過去。**留下待辦要留對東西** ——
 現在分開數:`失敗 N`(沒有東西可看,warn、常駐)與
 `未升級 N`(有 L0 譯文,info、會淡出)。
+
+## CM. fixture 要裝著會弄壞它的東西
+
+「匯出疊好的沒東西」。匯出的檔案裡 `class="ksnm"` 出現 **0 次** ——
+一段譯文都沒套上。
+
+```ts
+const clone = live.cloneNode(true);
+for (const el of clone.querySelectorAll('script')) el.remove();   // ← 先刪
+clone.querySelector(`#${hostId}`)?.remove();
+for (const p of plan) { ... }                                      // ← 才套用
+```
+
+路徑是 **childNode 的索引**,而刪掉一個 `<script>` 會讓它後面所有兄弟節點
+往前移一格。一般網頁的 `<head>` 與 `<body>` 裡到處都是 script,
+於是幾乎每一條路徑都指到別的節點,`nodeType !== 1` 就被跳過。
+順序反過來就好:**先套用,再刪東西**。
+
+真正該檢討的不是這個順序,是**驗收為什麼全綠**:
+`scripts/fixtures/detect.html` 一個 `<script>` 都沒有,
+而我拿來手動驗的 MHTML 也剛好不含 script(Chrome 存 MHTML 時不保留)。
+兩份「真實頁面」都缺了那個唯一會弄壞它的東西。
+
+fixture 裡現在有三個 `<script>`(head 一個、body 開頭一個、中段一個),
+而且我把修正暫時退回去確認過:probe 立刻報
+
+```
+不合格:
+  只套用 0/27 段
+  平常看不到譯文
+  滑過去看不到原文
+```
+
+**一個抓不到已知 bug 的驗收,和沒有驗收是同一件事。**
+寫完守衛就把它弄壞一次,是唯一能確定它有在守的方法。
+
+### CM-1. `# fail` 被我自己的 `tail -4` 蓋掉了
+
+順帶發現 `tests/snapshot.test.ts` 從加進去那天起就是**整個檔案載入失敗**
+(它從 `./unit` 做了值的 import,而 node 的型別剝離解析不了無副檔名的路徑)。
+四個測試一次都沒跑過,而我每次只看 `npm test | tail -4` ——
+那四行剛好把 `# fail 1` 切掉了。
+
+改成只 type import(和 cover.ts 同一條規矩),並且以後看 `# pass` / `# fail`。
+
+## CN. 「也沒有顯示完成」:問錯對象的那一句
+
+`translationPhase()` 多問了一句「L0 池裡還有沒有東西在跑」:
+
+```ts
+if (s.waiting > 0 || s.nearPending > 0 || s.l0Busy) return 'busy';
+```
+
+預翻會把遠處的區塊丟進 L0 佇列,而那些區塊往往在輪到之前就被 L1 升級掉了 ——
+呼叫還在排隊,但**沒有任何單元在等它**。stratechery 那一頁 79 塊全部翻完
+(待翻 0),狀態列卻一直停在「翻譯中…」。
+
+而且那一句是多餘的:真的在等 L0 的區塊本來就會被算進 `nearPending`
+(intake 在送出前就標記了 probed)。**拿掉之後沒有少掉任何資訊。**
+
+判斷「跑完了沒」要看**單元**,不看引擎。引擎忙不忙是它自己的事。
+
+順手把浪費也堵掉:`L0Engine.translate()` 多收一個「輪到它時才問」的
+`stillWanted`,排隊期間被 L1 搶先升級的區塊輪到時直接讓出槽位。
+慢機器上佇列可以排到一兩百個,這一筆不小。
