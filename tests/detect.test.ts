@@ -894,3 +894,21 @@ test('已經有主人的文字不再收一次 —— <a> 包 <h3> 只出一個�
   assert.equal(got[0]!.el.tagName, 'H3');
   assert.equal(got[0]!.range, undefined);
 });
+
+test('掃過的元素不會每一輪重新產生 range 候選', () => {
+  /*
+   * 這一條沒有的話,scan 會永遠回報 found > 0,掃描間隔就一直停在最短的
+   * 400ms —— 每 0.4 秒對整棵樹跑一次 getComputedStyle。單元不會重複
+   * (index.ts 會濾掉),但頁面會慢得像卡住。
+   */
+  const root = mount(
+    '<div><div><p>A table lives here.</p></div>' +
+      'ClickHouse requires 12 times less disk space than Elasticsearch to store the data.' +
+      '</div>',
+  );
+  const seen = new Set<Element>();
+  const first = findCandidates(root, (el) => seen.has(el));
+  assert.ok(first.some((c) => c.range !== undefined), '第一輪要收到鬆散文字');
+  for (const c of first) seen.add(c.el);
+  assert.deepEqual(findCandidates(root, (el) => seen.has(el)), [], '第二輪不該再找到任何東西');
+});

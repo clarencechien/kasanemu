@@ -859,6 +859,19 @@ export function inlineRuns(el: Element): Array<{ range: Range; nodes: Node[] }> 
  * 「這個元素做過了沒」不能再假設一對一(見 index.ts 的 unitByEl)。
  */
 function captureRuns(el: Element, ctx: WalkCtx, pinned: boolean): boolean {
+  /*
+   * **上一輪就做過了就別再做。**
+   *
+   * 元素錨點那條路徑在 `walk()` 裡有 `ctx.seen(el)` 擋著,而這條捷徑漏了 ——
+   * 於是每一次 scan 都重新產生同一批 range 候選。它們在 index.ts 會被
+   * 「這個元素上一輪就有單元」濾掉,所以不會變成重複的疊層,
+   * **但 scan 永遠回報 found > 0**,於是掃描間隔一直停在最短的 400ms,
+   * 每 0.4 秒對整棵樹跑一次 getComputedStyle。診斷 log 裡那排
+   * `scan {"found":9}` 就是這樣來的,而使用者感覺到的是「卡住了」。
+   *
+   * 這是 §CF「走捷徑的路徑要自己補上主路徑的每一道關卡」的第二次。
+   */
+  if (ctx.seen(el)) return true;
   const cs = getComputedStyle(el);
   let made = false;
   for (const { range, nodes } of inlineRuns(el)) {

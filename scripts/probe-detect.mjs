@@ -64,7 +64,10 @@ const got = await page.evaluate(() => {
     return false;
   };
   const labels = D.findLabels(document.body, 200, covered);
+  // 掃描必須收斂:第二輪找不到東西,否則 scan 會永遠停在最短間隔
+  const again = D.findCandidates(document.body, (el) => seen.has(el)).length;
   return {
+    rescan: again,
     blocks: blocks.map((c) => ({
       src: c.src, tag: c.el.tagName, media: !!c.mediaSplit, pinned: c.pinned === true,
       ranged: !!c.range,
@@ -136,6 +139,11 @@ for (const frag of ['ClickHouse requires 12 times', 'When the data set is pre-ag
 // 圖片夾在中間:切成前後兩段
 for (const frag of ['Runtimes of running the query', 'As discussed, ESQL currently']) {
   needBlock(frag, '圖片夾在段落中間');
+}
+
+// 掃描要收斂 —— 不收斂的話頁面會慢得像卡住
+if (got.rescan > 0) {
+  problems.push(`第二輪掃描還找到 ${got.rescan} 個候選 —— scan 會永遠停在最短間隔`);
 }
 
 // 底線:任何單元的矩形都不可以壓到圖片上

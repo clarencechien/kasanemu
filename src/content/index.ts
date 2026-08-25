@@ -1649,7 +1649,19 @@ function updateHud(): void {
     return;
   }
   const c = tierCounts();
-  const failed = c.failed + c['l1-failed'];
+  /*
+   * **分開數「壞掉」與「沒升級」。**
+   *
+   * `l1-failed` 的區塊有 L0 譯文在畫面上 —— 使用者讀得懂,只是品質停在 L0。
+   * 把它算成「失敗」會讓狀態列變成警示級,而警示級是不自動淡出的(§CF-3),
+   * 於是免費檔位偶爾吐一次空回應,畫面上就掛著一條永遠不會消失的紅色橫幅。
+   * 使用者的結論是「一直卡在 missing-id,不會再翻了」——
+   * 其實那一頁 328 塊裡有 326 塊翻完了。
+   *
+   * 真正還沒有東西可看的只有 `failed`。留下待辦要留對東西。
+   */
+  const hard = c.failed;
+  const soft = c['l1-failed'];
   let waiting = 0;
   let nearPending = 0;
   let farPending = 0;
@@ -1693,7 +1705,8 @@ function updateHud(): void {
   const parts: string[] = [];
   if (c.l0 > 0) parts.push(`L0 ${c.l0}`);
   if (c.l1 > 0) parts.push(`L1 ${c.l1}`);
-  if (failed > 0) parts.push(`失敗 ${failed}`);
+  if (hard > 0) parts.push(`失敗 ${hard}`);
+  if (soft > 0) parts.push(`未升級 ${soft}`);
   if (settings.annotate && labels.size > 0) parts.push(`標籤 ${labels.size}`);
   const heldBack = [...units].filter((u) => u.pendingSwap !== undefined).length;
   if (heldBack > 0) parts.push(`待換 ${heldBack}`);
@@ -1732,8 +1745,8 @@ function updateHud(): void {
    * 沒人告訴他整頁其實翻完了。他的結論是「文章翻不完,HUD 不見了,
    * 是不是死掉了」。**沒說完成,就等於說了沒完成。**
    */
-  const tail = failed > 0 ? ` · ${done}(滑到紅線上重試)` : ` · ${done}`;
-  layer.setHud(`疊 · ${parts.join(' · ')}${tail}`, failed > 0 ? 'warn' : 'idle');
+  const tail = hard > 0 ? ` · ${done}(滑到紅線上重試)` : ` · ${done}`;
+  layer.setHud(`疊 · ${parts.join(' · ')}${tail}`, hard > 0 ? 'warn' : 'idle');
 }
 
 /* ------------------------------------------------------------------ 統計 */
