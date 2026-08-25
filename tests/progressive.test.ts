@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import { hasPua, mask, protectedFragments } from '../src/content/mask.ts';
+import { cpuBenchmark } from '../src/content/device.ts';
 import {
   normalizeSourceLang,
   resolveSourceLang,
@@ -273,4 +274,13 @@ test('狀態列:有請求在飛、或畫面上還有沒翻好的,就是還在跑
   assert.equal(translationPhase({ ...base, l0Busy: true }), 'busy');
   // 在跑的時候不會因為「頁面下面沒東西了」就說完成
   assert.equal(translationPhase({ ...base, waiting: 1, farPending: 0 }), 'busy');
+});
+
+test('CPU 微基準:固定工作量、量時間', () => {
+  // 反過來(固定時間、數圈數)會被時脈調節騙:前幾毫秒 CPU 還在低頻,
+  // 量到的是升頻曲線不是效能
+  const small = cpuBenchmark(10_000);
+  const big = cpuBenchmark(2_000_000);
+  assert.ok(small >= 0, '回傳毫秒數');
+  assert.ok(big >= small, '工作量大的不會比較快');
 });

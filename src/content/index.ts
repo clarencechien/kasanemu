@@ -36,6 +36,7 @@ import {
   unlockScales,
 } from './geometry';
 import { clipInsets, type Box } from './cover';
+import { deviceProfile, type DeviceProfile } from './device';
 import { probePackagedFonts } from './fonts';
 import { L0Engine, translatorSupported } from './l0';
 import { pageSourceLang, sampleVisibleText, sniffScript, toTranslatorTarget } from './lang';
@@ -199,6 +200,8 @@ let pendingScan = false;
 /** feature.md §2.2 首屏疊層出現時間 */
 let startedAt = 0;
 let firstPaintMs = -1;
+/** 機器畫像,start() 時量一次(微基準要跑幾毫秒,不要每次都跑) */
+let device: DeviceProfile | null = null;
 /** feature.md §4.3 距上次捲動 < 400ms 的區塊延後替換 */
 let lastScrollAt = 0;
 /** feature.md §2.2「L0 讀完就沒再看 L1」的比例 */
@@ -1579,6 +1582,8 @@ function pageStats(): PageStats {
       progress: l0?.progress ?? 0,
       detail: l0?.detail ?? '',
     },
+    device: device ?? undefined,
+    l0Timing: l0?.timing(),
     swapsOffscreen,
     swapsTotal,
   };
@@ -1605,6 +1610,10 @@ async function start(): Promise<void> {
 
   // 整頁的字集要在掃描之前定案:日文 / 韓文頁面的純漢字標題不能被當成
   // 「已經是中文」而跳過(見 detect.ts 的 setPageScript)
+  if (!device) {
+    device = deviceProfile();
+    diag('info', 'device', device);
+  }
   const sample = sampleVisibleText();
   const script = sniffScript(sample);
   setPageScript(script);

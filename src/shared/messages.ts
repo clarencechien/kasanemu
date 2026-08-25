@@ -82,6 +82,13 @@ export interface PageStats {
     progress: number;
     detail: string;
   };
+  /**
+   * 機器畫像。同樣是「Intel 12 代 U」,Chromebook 與 Win11 筆電的
+   * L0 速度可以差好幾倍 —— 要比較就要有可比的數字,不能比型號。
+   */
+  device?: { threads: number; memoryGB: number; cpuMs: number; platform: string };
+  /** L0 呼叫的實測延遲(不含排隊),診斷用 */
+  l0Timing?: { calls: number; avgMs: number; maxMs: number; avgWaitMs: number; concurrency: number };
   /** feature.md §2.2「L0 讀完就沒再看 L1」:替換時該區塊已離開可見區的次數 */
   swapsOffscreen: number;
   swapsTotal: number;
