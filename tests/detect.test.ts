@@ -515,3 +515,47 @@ test('Gmail 的「Labels」:inline 的 role=heading,祖先也不能撿走它的�
   `);
   assert.deepEqual(ids(body), ['Drone delivery is scaling rapidly in the United States this year.']);
 });
+
+test('隱形的注入元素不該讓段落被當成容器,文字也不該外洩給祖先', () => {
+  // Gmail 在每個含圖片的 <p> 裡塞一個下載按鈕(用 DOM API 塞的,所以
+  // <div> 真的在 <p> 裡面),裡面唯一的文字是 aria-hidden 的 tooltip
+  // 「Download」—— 於是那個 <p> 被當成容器,整段圖表註解從來沒被翻過
+  const body = mount('<p id="fig"></p>');
+  const doc = body.ownerDocument;
+  const p = body.querySelector('#fig')!;
+  const btn = doc.createElement('div');
+  btn.className = 'a6S';
+  const tip = doc.createElement('div');
+  tip.setAttribute('role', 'tooltip');
+  tip.setAttribute('aria-hidden', 'true');
+  tip.textContent = 'Download';
+  btn.appendChild(tip);
+  p.appendChild(btn);
+  const note = doc.createElement('span');
+  note.textContent =
+    'Note: Cost decline percentages are rounded to the nearest 5%. Source: ARK Investment Management LLC.';
+  p.appendChild(note);
+
+  assert.deepEqual(ids(body), [
+    'Note: Cost decline percentages are rounded to the nearest 5%. Source: ARK Investment Management LLC.',
+  ]);
+});
+
+test('圖文混排的段落不建立單元 —— 蓋下去會把圖蓋掉', () => {
+  const body = mount(`
+    <p id="fig"><img id="chart" /><span>Note: cost decline percentages are rounded to the nearest 5%.</span></p>
+    <p>Drone delivery is scaling rapidly in the United States this year.</p>
+  `);
+  // jsdom 沒有 layout,手動給圖表一個面積
+  const chart = body.querySelector('#chart')!;
+  chart.getBoundingClientRect = () =>
+    ({ width: 450, height: 300 }) as unknown as DOMRect;
+  assert.deepEqual(ids(body), ['Drone delivery is scaling rapidly in the United States this year.']);
+});
+
+test('行內小圖示不算圖文混排', () => {
+  const body = mount('<p id="p"><img id="icon" />Drone delivery is scaling rapidly in the US.</p>');
+  const icon = body.querySelector('#icon')!;
+  icon.getBoundingClientRect = () => ({ width: 14, height: 14 }) as unknown as DOMRect;
+  assert.deepEqual(ids(body), ['Drone delivery is scaling rapidly in the US.']);
+});

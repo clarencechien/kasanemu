@@ -156,7 +156,10 @@ const LAYER_CSS = `
   position: fixed;
   left: var(--ksnm-cx);
   top: var(--ksnm-cy);
-  max-width: 22em;
+  /* 選取一整段註解時會有十行左右,窄一點的欄位會變成很高的柱子 */
+  max-width: 26em;
+  max-height: 60vh;
+  overflow: hidden;
   box-sizing: border-box;
   margin: 0;
   padding: 3px 9px 3px 10px;

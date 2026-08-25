@@ -198,6 +198,13 @@ export function ownText(el: Element, skip?: ReadonlySet<Element>): string {
     if (NON_TEXT_TAGS.has(kid.tagName)) continue;
     // 螢幕閱讀器標籤的文字不算數:視覺上不存在的字不該讓祖先變成翻譯單元
     if (skip?.has(kid)) continue;
+    /*
+     * 排除清單的文字也不算數。少了這一條,Gmail 塞在段落裡的下載按鈕
+     * (唯一的文字是 `<div role="tooltip" aria-hidden="true">Download</div>`)
+     * 會讓它的父層變成一個內容是「Download」的翻譯單元。
+     * 這是 sr-only 那個坑的第四次:**認出來還不夠,祖先也要扣掉。**
+     */
+    if (kid.matches(EXCLUDE_SELECTOR)) continue;
     out += ownText(kid, skip);
   }
   return out;
@@ -207,10 +214,41 @@ export function ownText(el: Element, skip?: ReadonlySet<Element>): string {
  * 底下還有帶文字的結構性 block → 這是容器,不是段落。
  * 只在準備建立單元時才呼叫,所以不會對整頁跑一遍。
  */
+/**
+ * 這個元素在畫面上真的有文字嗎(扣掉排除清單與 aria-hidden 的子樹)。
+ *
+ * `textContent` 會把不該算的東西一起吃進來。實例:Gmail 在每個含圖片的
+ * `<p>` 裡塞一個下載按鈕 `<div class="a6S">`,裡面唯一的文字是
+ * `<div role="tooltip" aria-hidden="true">Download</div>` ——
+ * 於是 `hasContainerChild()` 判定那個 `<p>` 是「容器」,整段圖表註解就
+ * 從來沒被翻過。回報的那段 Note 就是這樣消失的。
+ */
 export function hasContainerChild(el: Element): boolean {
   for (const kid of Array.from(el.querySelectorAll(CONTAINER_TAGS))) {
     if (EXCLUDE_TAGS.has(kid.tagName)) continue;
-    if ((kid.textContent ?? '').trim().length > 0) return true;
+    if (kid.matches(EXCLUDE_SELECTOR)) continue;
+    if (ownText(kid).trim().length > 0) return true;
+  }
+  return false;
+}
+
+/**
+ * 底下有夠大的圖片 / 影片 —— 這是圖文混排的容器,不是段落。
+ *
+ * §3.5 已經處理過浮動圖片(bounding box 會蓋住它),但**不浮動的**圖片
+ * 一樣會被蓋掉:ARK 電子報的 `<p><img 圖表><span>Note: …</span></p>`
+ * 一旦被當成單元,不透明的疊層就把整張圖表蓋掉了。
+ *
+ * 門檻取 20×20:行內的小圖示不算,真的圖表才算。
+ */
+const MEDIA_TAGS = 'img,video,canvas,svg,picture,iframe';
+const MEDIA_MIN_AREA = 400;
+
+export function hasMediaChild(el: Element): boolean {
+  const kids = el.querySelectorAll(MEDIA_TAGS);
+  for (let i = 0; i < kids.length && i < 12; i++) {
+    const r = kids[i]!.getBoundingClientRect();
+    if (r.width * r.height >= MEDIA_MIN_AREA) return true;
   }
   return false;
 }
@@ -440,6 +478,8 @@ function walk(el: Element, ctx: WalkCtx): boolean {
   if (!blockish) return false;
   // 子孫沒產生單元不代表可以退而求其次把容器整個吃下來
   if (hasContainerChild(el)) return false;
+  // 圖文混排:蓋下去會把圖一起蓋掉(§3.5 的非浮動版本)
+  if (hasMediaChild(el)) return false;
 
   const text = normalizeText(ownText(el, ctx.srOnly));
   if (!isMeaningfulText(text)) return false;

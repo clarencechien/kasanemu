@@ -1686,3 +1686,53 @@ BM 之後捲動不再滑動(log 裡 `position-drift` 從一秒兩三筆掉到
 
 `checkOcclusion()` 的「整個落在裁切框外就藏起來」保留 ——
 現在多半是冗餘的,但它另外還擋掉輪播的重複 DOM,那不是裁切問題。
+
+## BO. 三件事,其中兩件是同一個上限
+
+### 「選了也沒有翻」
+
+功能有實作(§AZ),但 hover 與選取**兩條路共用同一個 240 字上限**,
+而回報的那段 Note 是 400 字 —— 兩條路都在同一個地方被靜靜擋掉。
+使用者看到的是「這功能沒做」。
+
+上限提到 500(26em 寬、13px 的貼片大約十行,可以讀),
+而且**被擋掉要留下痕跡**:`selection-skipped` 會寫 why 與字數。
+靜靜地什麼都不做是這一輪最貴的錯 —— 它讓一個能用的功能看起來不存在。
+
+### 那段 Note 為什麼從來沒被翻過
+
+Gmail 在每個含圖片的 `<p>` 裡塞一個下載按鈕:
+
+```html
+<p><img 圖表><div class="a6S">…<div role="tooltip" aria-hidden="true">Download</div></div><span>Note: …</span></p>
+```
+
+`hasContainerChild()` 用 `textContent` 判斷「這個 block 子孫有沒有文字」,
+而 `textContent` 把 aria-hidden 的 tooltip 一起吃進來 →
+判定那個 `<p>` 是容器 → 整段註解不建立單元。
+
+更糟的是 `ownText()` **也**沒有扣掉排除清單,所以 `div.a6S` 自己變成一個
+內容是「Download」的翻譯單元。
+
+**這是 sr-only 那個坑的第四次**(stretched link、`<span hidden>`、
+inline `role="heading"`、現在是 aria-hidden 的 tooltip),而每一次的教訓
+都一樣:**認出來還不夠,祖先也要扣掉。** 這次直接修在 `ownText()` 裡,
+`hasContainerChild()` 改用它 —— 一個來源,不再各自實作一次。
+
+### 圖文混排
+
+修好上面之後那個 `<p>` 會變成單元 —— 而它的 bounding box 包含整張圖表,
+不透明的疊層會把圖蓋掉。§3.5 只處理了**浮動**圖片,不浮動的一樣會被蓋。
+
+新增 `hasMediaChild()`:底下有面積 ≥ 20×20 的 img / video / canvas / svg
+就不建立單元。行內小圖示不受影響。那段 Note 因此改由 hover / 選取取得 ——
+這正是加翻層存在的理由。
+
+### 下面超出的部分
+
+`chromeBand()` 只在**畫面正中央**取一次樣。而 Gmail 的 Reply / Forward 列
+只佔左半邊,正中央那一點打到的是它右邊的空白 → 量到 0 → 不裁。
+
+改成取樣 25% / 50% / 75% 三個 x,取最大的帶。
+同時 `clip-to-container` 的診斷多印 `noClipper` ——
+如果那個數字很大,代表我根本沒找到捲動容器,而不是「裁了但不夠」。

@@ -962,7 +962,16 @@ function anchorRectOf(u: Unit): DOMRect | null {
  * 往上找**自己就有文字**的最近祖先。上限 240 字:再長就是段落,
  * 那是疊翻的守備範圍,塞進貼片只會變成一面牆。
  */
-const ADHOC_MAX_CHARS = 240;
+/**
+ * 臨時加翻 / 選取加翻的長度上限。
+ *
+ * 原本是 240,而回報的那段 Note 是 400 字 —— **hover 與選取兩條路都在
+ * 同一個上限上被靜靜擋掉**,於是看起來像「選了也沒有翻」。
+ *
+ * 500 字在 26em 寬、13px 的貼片裡大約十行,對「我想知道這段在寫什麼」
+ * 來說是可以讀的;再長就真的是一面牆,那是疊翻的守備範圍。
+ */
+const ADHOC_MAX_CHARS = 500;
 const ADHOC_HOPS = 6;
 /**
  * 看過但不合格的元素。mouseover 在導覽列上會反覆打到同一批元素,
@@ -1039,8 +1048,21 @@ function applySelection(): void {
   }
   const range = sel.getRangeAt(0);
   const text = normalizeText(sel.toString());
-  if (text.length < SELECTION_MIN_CHARS || text.length > ADHOC_MAX_CHARS) return;
-  if (!isMeaningfulText(text) || looksLikeTargetLang(text)) return;
+  // 被擋掉要留下痕跡:靜靜地什麼都不做,使用者只會覺得「這功能沒做」
+  const why =
+    text.length < SELECTION_MIN_CHARS
+      ? 'too-short'
+      : text.length > ADHOC_MAX_CHARS
+        ? 'too-long'
+        : !isMeaningfulText(text)
+          ? 'not-text'
+          : looksLikeTargetLang(text)
+            ? 'already-target'
+            : null;
+  if (why) {
+    diag('info', 'selection-skipped', { why, chars: text.length });
+    return;
+  }
   const host = range.commonAncestorContainer;
   const el = host instanceof Element ? host : host.parentElement;
   if (!el) return;
@@ -1762,18 +1784,29 @@ function onDocLeave(): void {
  * elementFromPoint 打不到我們自己,回來的一定是頁面的東西。
  */
 function chromeBand(y: number, top: boolean): number {
-  const x = Math.round(window.innerWidth / 2);
-  const hit = document.elementFromPoint(x, y);
-  for (let el: Element | null = hit; el && el !== document.body; el = el.parentElement) {
-    const cs = getComputedStyle(el);
-    if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
-    // 透明的覆蓋層不會擋住文字,不要當成頁首
-    if (Number(cs.opacity) === 0 || cs.visibility === 'hidden') continue;
-    const r = el.getBoundingClientRect();
-    const band = top ? r.bottom : window.innerHeight - r.top;
-    return Math.max(0, Math.min(band, window.innerHeight / 2));
+  /*
+   * 取樣三個 x,取最大的帶。
+   *
+   * 原本只在正中央取一次 —— 而 Gmail 的 Reply / Forward 列只佔左半邊,
+   * 正中央那一點打到的是它右邊的空白。回報的「下面超出的部分」
+   * 就是這樣漏掉的:整條列明明釘在那裡,我們卻量到 0。
+   */
+  let band = 0;
+  for (const ratio of [0.25, 0.5, 0.75]) {
+    const x = Math.round(window.innerWidth * ratio);
+    const hit = document.elementFromPoint(x, y);
+    for (let el: Element | null = hit; el && el !== document.body; el = el.parentElement) {
+      const cs = getComputedStyle(el);
+      if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
+      // 透明的覆蓋層不會擋住文字,不要當成頁首
+      if (Number(cs.opacity) === 0 || cs.visibility === 'hidden') continue;
+      const r = el.getBoundingClientRect();
+      const b = top ? r.bottom : window.innerHeight - r.top;
+      if (b > band) band = b;
+      break;
+    }
   }
-  return 0;
+  return Math.max(0, Math.min(band, window.innerHeight / 2));
 }
 
 /**
@@ -1861,7 +1894,10 @@ function applyChromeClip(): void {
   }
   if (clipped !== lastClippedCount) {
     lastClippedCount = clipped;
-    diag('info', 'clip-to-container', { clipped, total: units.size });
+    let noClipper = 0;
+    for (const u of units) if (u.box && clippers(u).length === 0) noClipper++;
+    // noClipper 大 = 我根本沒找到那個捲動容器,而不是「裁了但不夠」
+    diag('info', 'clip-to-container', { clipped, noClipper, total: units.size });
   }
 }
 
