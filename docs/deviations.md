@@ -1258,3 +1258,52 @@ content script 不重載,於是上一頁按下的 `manualArmed` 一路帶到新�
 
 換頁時一併清掉:上一頁的貼片、label 單元與譯文 memo、`lastProblem`、
 首屏計時。那些都是「這一頁」的狀態。
+
+## BC. 收折的 `<details>` 會爆版,分享按鈕不該被翻
+
+同一份回報的兩件事,成因完全不同。
+
+### 收折的 `<details>`
+
+`<details>` 展開 / 收折**只是屬性變動**,而 MutationObserver 只看
+`childList` 與 `characterData` —— 完全打不到。於是使用者收折一個問答,
+底下所有內容整片上移,疊層留在舊座標,答案的譯文疊到別人的標題上。
+「原本收折的沒展開就會爆掉」就是這個。
+
+兩層修法:
+
+1. `toggle` 事件(capture — 它不冒泡)→ `relayout()` + 重掃。
+   不只是 flush:收合元件展開時可能有內容**第一次**被算進版面,
+   那些要重新掃描才會變成單元。
+2. **來源元素沒有繪製面積就不畫**,寫在 flush 的寫入階段。
+   這一條不受 `occlusionCheck` 開關控制、也不受可見區與 80 筆上限限制 ——
+   那個檢查是啟發式的「有沒有被祖先裁掉」,這一條是
+   「原文根本不存在於版面上」。收折的問答、隱藏的分頁都靠它兜底。
+
+### 分享按鈕
+
+`isUiLabel()` 用 `textContent` 量長度,但無障礙寫法會把長標籤藏起來:
+
+```html
+<a><span hidden>Share on Facebook (Opens in new window)</span><span>Facebook</span></a>
+```
+
+`textContent` 是 47 字 → 超過 24 → **不算 UI 標籤** → 變成內文單元 →
+疊層把「分享至 Facebo…」蓋在分享列上。而畫面上其實只有「Facebook」8 個字。
+
+**長度要量看得見的文字。** `isUiLabel()` 改吃 `walk()` 沿路收集的 srOnly 集合;
+同時 `walk()` 遇到 `isInvisible` 的元素now也登記進那個集合 ——
+先前只是 `return false`,於是 `display:none` 的文字仍然算進祖先的長度。
+(sr-only 早就這樣處理了,`display:none` 漏了,理由一模一樣。)
+
+改完之後整條分享列自動變成 UI 標籤(`isUiLabel` 的第二個分支:
+文字全部來自互動子孫),不再有疊層。
+
+另外加了兩件事:
+
+- 排除清單多收 `.robots-nocontent`(搜尋引擎的「這不是內容」標準訊號,
+  回報的 DOM 裡就有)與幾個公認的分享外掛前綴。刻意**不用**
+  `[class*="share"]` 那種寬鬆比對 —— 會誤傷 `.shared-post`。
+- **排除清單先前只有內文單元遵守**,加翻層與臨時加翻完全沒看它 ——
+  於是 `.notranslate` / `translate="no"` 裡的連結照樣 hover 得到譯文。
+  三條路徑現在都檢查 `closest(EXCLUDE_SELECTOR)`。

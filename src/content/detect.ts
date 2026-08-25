@@ -13,8 +13,21 @@ const EXCLUDE_TAGS = new Set([
   'IFRAME', 'CANVAS', 'TEMPLATE', 'INPUT', 'OPTION', 'VIDEO', 'AUDIO', 'MATH',
 ]);
 
-const EXCLUDE_SELECTOR =
-  '[aria-hidden="true"],[contenteditable],[contenteditable=""],[translate="no"],.notranslate';
+/**
+ * 排除的子樹。
+ *
+ * 前半是標準訊號(`aria-hidden`、`translate="no"`、`.notranslate`、
+ * 以及搜尋引擎的 `robots-nocontent`)—— 頁面自己說了「這不是內容」。
+ *
+ * 後半是**以類別名稱猜**的分享 widget,和這個檔案其他規則的風格不同,
+ * 所以刻意列窄:只收公認的外掛前綴,不用 `[class*="share"]` 那種
+ * 會誤傷 `.shared-post` 的寬鬆比對。使用者的原話是
+ * 「分享到 facebook 什麼的,這種就不用翻了」。
+ */
+export const EXCLUDE_SELECTOR =
+  '[aria-hidden="true"],[contenteditable],[contenteditable=""],[translate="no"],.notranslate,' +
+  '.robots-nocontent,[class*="sharedaddy"],[class*="sd-sharing"],[class*="social-share"],' +
+  '[class*="share-buttons"],[class*="addtoany"]';
 
 const BLOCKISH_DISPLAY = new Set(['block', 'flex', 'grid', 'list-item', 'flow-root', 'table-cell', 'table-caption']);
 
@@ -52,19 +65,36 @@ export const INTERACTIVE_SELECTOR =
   'a[href],button,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[role="switch"],[role="option"]';
 const UI_LABEL_MAX_CHARS = 24;
 
-export function isUiLabel(el: Element): boolean {
+/**
+ * 長度要量**看得見的文字**,不是 textContent。
+ *
+ * 分享按鈕的無障礙寫法是把長標籤藏在 `<span hidden>` 裡:
+ *
+ *   <a><span hidden>Share on Facebook (Opens in new window)</span><span>Facebook</span></a>
+ *
+ * textContent 是 47 字 → 超過 24 → 不算 UI 標籤 → 變成內文單元 →
+ * 疊層把「分享至 Facebo…」蓋在分享列上。而畫面上其實只有「Facebook」8 個字。
+ *
+ * `skip` 是 walk() 沿路收集的 sr-only 元素;沒有傳的話退回 textContent,
+ * 行為與舊版相同。
+ */
+function visibleTextOf(el: Element, skip?: ReadonlySet<Element>): string {
+  return normalizeText(skip ? ownText(el, skip) : (el.textContent ?? ''));
+}
+
+export function isUiLabel(el: Element, skip?: ReadonlySet<Element>): boolean {
   const act = el.closest(INTERACTIVE_SELECTOR);
-  if (act) return normalizeText(act.textContent ?? '').length <= UI_LABEL_MAX_CHARS;
+  if (act) return visibleTextOf(act, skip).length <= UI_LABEL_MAX_CHARS;
   /*
    * 自己不是互動元素,但文字**全部**來自互動子孫 —— 那是按鈕列 / 連結列,
    * 不是段落。段落裡夾一個行內連結不會命中:那時連結外面還有文字。
    */
   const actives = el.querySelectorAll(INTERACTIVE_SELECTOR);
   if (actives.length === 0) return false;
-  const total = normalizeText(el.textContent ?? '');
+  const total = visibleTextOf(el, skip);
   if (total.length > UI_LABEL_MAX_CHARS * actives.length) return false;
   let inside = 0;
-  for (const a of actives) inside += normalizeText(a.textContent ?? '').length;
+  for (const a of actives) inside += visibleTextOf(a, skip).length;
   return inside >= total.length - 2;
 }
 
@@ -280,7 +310,16 @@ function walk(el: Element, ctx: WalkCtx): boolean {
   if (!(el.textContent ?? '').trim()) return false;
 
   const cs = getComputedStyle(el);
-  if (isInvisible(cs)) return false;
+  if (isInvisible(cs)) {
+    /*
+     * 看不見的文字**祖先也不能繼承**,理由和 sr-only 完全一樣。
+     * 只是 return false 的話,分享按鈕的 `<span hidden>Share on Facebook
+     * (Opens in new window)</span>` 仍然算進 <a> 的長度,把它從 UI 標籤
+     * 推成內文單元 —— 畫面上明明只有「Facebook」8 個字。
+     */
+    ctx.srOnly.add(el);
+    return false;
+  }
   // §3.5 sticky / fixed 元素捲動時疊層會脫位,跳過該元素及其子樹
   if (cs.position === 'sticky' || cs.position === 'fixed') return false;
   /*
@@ -308,8 +347,8 @@ function walk(el: Element, ctx: WalkCtx): boolean {
 
   const text = normalizeText(ownText(el, ctx.srOnly));
   if (!isMeaningfulText(text)) return false;
-  // 互動元素裡的短文字是 UI 標籤,不是內容
-  if (isUiLabel(el)) return false;
+  // 互動元素裡的短文字是 UI 標籤,不是內容(長度只算看得見的字)
+  if (isUiLabel(el, ctx.srOnly)) return false;
   // 最後一道防線:段落不會有一千字
   if (text.length > MAX_UNIT_CHARS) return false;
   if (looksLikeTargetLang(text)) return false;
@@ -343,6 +382,9 @@ export function findLabels(
      * 不先擋掉已知的,無限捲動的頁面會把時間全花在重算同一批導覽列上。
      */
     if (seen(el)) continue;
+    // 排除清單對加翻層同樣有效 —— 先前只有內文單元遵守它,
+    // 於是 .notranslate / translate="no" 裡的連結照樣被翻
+    if (el.closest(EXCLUDE_SELECTOR)) continue;
     // 巢狀互動元素只取最內層(連結包按鈕、按鈕包連結)
     if (el.querySelector(INTERACTIVE_SELECTOR) !== null) continue;
     const cs = getComputedStyle(el);
@@ -354,7 +396,9 @@ export function findLabels(
       // 標籤裡不會有幾十層結構;掃到第 8 個就夠了,再多是成本不是正確性
       for (let i = 0; i < kids.length && i < 8; i++) {
         const kid = kids[i]!;
-        if (isScreenReaderOnly(kid, getComputedStyle(kid))) srOnly.add(kid);
+        const kcs = getComputedStyle(kid);
+        // display:none / hidden 的無障礙標籤與 sr-only 同一類:看不見就不算
+        if (isInvisible(kcs) || isScreenReaderOnly(kid, kcs)) srOnly.add(kid);
       }
     }
     const text = normalizeText(ownText(el, srOnly));

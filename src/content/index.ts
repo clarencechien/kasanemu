@@ -11,6 +11,7 @@ import type {
 import { setDebug, dbg } from '../shared/log';
 import { diag, setDiagScope } from '../shared/diag';
 import {
+  EXCLUDE_SELECTOR,
   INTERACTIVE_SELECTOR,
   explainCandidate,
   findCandidates,
@@ -410,6 +411,17 @@ function onMotionEnd(): void {
 }
 
 /** feature.md §4.4 規則 3:只有這些事件才解鎖字級重算 */
+/**
+ * 收合元件切換 → 版面整片位移,而且可能有新內容第一次被算進版面。
+ * 所以是 relayout(重新量)+ 重掃,不是只有 flush。
+ */
+function onDisclosureToggle(): void {
+  if (!running) return;
+  diag('info', 'disclosure-toggle', {});
+  relayout();
+  scheduleFlush(true);
+}
+
 function relayout(): void {
   unlockScales(units);
   clearMeasureCache();
@@ -439,6 +451,15 @@ function flush(): void {
   for (const u of units) {
     if (hasText(u)) layer.paint(u, settings);
     else layer.paintHint(u, settings);
+    /*
+     * 來源元素現在沒有繪製面積(display:none、收折的 <details>、
+     * 隱藏的分頁)→ 疊層必須跟著消失。
+     *
+     * 這一條**不受 occlusionCheck 開關控制**,也不受可見區與 80 筆上限限制:
+     * 那個檢查是啟發式的「有沒有被祖先裁掉」,這一條是「原文根本不存在於版面上」。
+     * 沒有這條的話,收折起來的問答會把譯文留在原地,疊到別人身上。
+     */
+    layer.setCovered(u, u.rect.width < 1 || u.rect.height < 1);
   }
   const overflowing = [...units].filter((u) => u.overflowsBox).length;
   if (overflowing !== lastOverflowCount) {
@@ -869,6 +890,11 @@ function adhocLabelAt(target: EventTarget | null): Unit | null {
     if (unitByEl.has(el)) return null; // 內文區塊有自己的畫法
     if (adhocRejected.has(el)) continue;
     if (labels.size >= ANNOTATION_CAP) return null;
+    // 排除清單(.notranslate、分享 widget…)對臨時加翻同樣有效
+    if (el.closest(EXCLUDE_SELECTOR)) {
+      adhocRejected.add(el);
+      continue;
+    }
     // 底下還有帶文字的結構性區塊 → 這是容器,翻它等於把一整段塞進貼片
     if (hasContainerChild(el)) {
       adhocRejected.add(el);
@@ -1550,6 +1576,17 @@ async function start(): Promise<void> {
   // 上一頁 / 下一頁與 hash 路由不一定改動 DOM,MutationObserver 打不到
   window.addEventListener('popstate', onRouteChange);
   window.addEventListener('hashchange', onRouteChange);
+  /*
+   * <details> 展開 / 收折。
+   *
+   * 這是回報的「原本收折的沒展開就會爆掉」的元兇:切換 open 只是**屬性**
+   * 變動,而 MutationObserver 只看 childList 與 characterData ——
+   * 完全打不到。於是內容整片上移或下移,疊層留在舊座標,
+   * 答案的譯文疊到問題的標題上。
+   *
+   * toggle 不冒泡,但 capture 階段抓得到。
+   */
+  document.addEventListener('toggle', onDisclosureToggle, true);
   // 入場動畫結束 → 位置定了,重新量一次
   document.addEventListener('transitionend', onMotionEnd, true);
   document.addEventListener('animationend', onMotionEnd, true);
@@ -1776,6 +1813,7 @@ function stop(): void {
   window.removeEventListener('pagehide', onPageHide);
   window.removeEventListener('popstate', onRouteChange);
   window.removeEventListener('hashchange', onRouteChange);
+  document.removeEventListener('toggle', onDisclosureToggle, true);
   document.removeEventListener('transitionend', onMotionEnd, true);
   document.removeEventListener('animationend', onMotionEnd, true);
   document.removeEventListener('load', onResourceLoad, true);
