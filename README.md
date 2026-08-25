@@ -6,6 +6,7 @@
 Phase 1(`kasanemuphase1prd.md` v1.0)+ 漸進式翻譯(`feature.md` v1.0)+
 加翻層(`docs/plan-annotation.md`)。**0.1.0 文字階段收關。**
 
+- 每一版做了什麼:[`CHANGELOG.md`](CHANGELOG.md)
 - 走過的每一個坑與它的理由:[`docs/deviations.md`](docs/deviations.md)(111 節)
 - 從那些坑裡歸納出來的通則:[`docs/lessons.md`](docs/lessons.md) ← **先讀這個**
 
