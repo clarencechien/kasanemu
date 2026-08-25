@@ -35,7 +35,7 @@ import {
   measureUnit,
   unlockScales,
 } from './geometry';
-import { clipInsets, type Box } from './cover';
+import { clipInsets, scrolls, type Box } from './cover';
 import { deviceProfile, type DeviceProfile } from './device';
 import { probePackagedFonts } from './fonts';
 import { L0Engine, translatorSupported } from './l0';
@@ -328,6 +328,7 @@ function scan(): void {
       src: c.src,
       style,
       geometryRisk: c.geometryRisk,
+      ...(c.mediaSplit ? { mediaSplit: c.mediaSplit } : {}),
       /*
        * §4.1 原本是「取不到不透明實色 → 降級為標註樣式」。
        * 改成只有使用者明確要求時才用標註樣式 —— 背景取不到的情況現在由
@@ -976,7 +977,12 @@ function makeLabelUnit(el: Element, src: string, register = true): Unit {
 function scanLabels(): void {
   if (!settings.annotate) return;
   if (labels.size >= ANNOTATION_CAP) return;
-  const found = findLabels(document.body, ANNOTATION_CAP, (el) => labelByEl.has(el));
+  const found = findLabels(
+    document.body,
+    ANNOTATION_CAP,
+    // 已經有內文疊層的元素不要再做一份貼片(captureInlineText 會把 <a> 收成內文)
+    (el) => labelByEl.has(el) || unitByEl.has(el),
+  );
   let added = 0;
   for (const c of found) {
     if (labels.size >= ANNOTATION_CAP) break;
@@ -1993,7 +1999,7 @@ function visibleBox(u: Unit): Box {
   let left = 0;
   let right = window.innerWidth;
   let bottom = window.innerHeight - lastBottomBand;
-  let bounded = false;
+  let limiter: Element | null = null;
   for (const p of clippers(u)) {
     const r = p.getBoundingClientRect();
     if (r.width < 1 && r.height < 1) continue; // 祖先自己沒被畫出來,交給別的檢查處理
@@ -2002,10 +2008,15 @@ function visibleBox(u: Unit): Box {
     if (r.right < right) right = r.right;
     if (r.bottom < bottom) {
       bottom = r.bottom;
-      bounded = true;
+      limiter = p;
     }
   }
-  if (bounded) bottom -= CONTAINER_SAFETY_PX;
+  /*
+   * 餘裕只留給**真的會捲**的容器。裁切用的 overflow:hidden 內容一格都不會動,
+   * 留 72px 只是把最後兩行的疊層白白切掉(見 cover.ts 的 scrolls())。
+   * 只問限制底邊的那一個,不是每一層 —— 一個 frame 一次屬性讀取。
+   */
+  if (limiter && scrolls(limiter)) bottom -= CONTAINER_SAFETY_PX;
   return { top, right, bottom, left };
 }
 

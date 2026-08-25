@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { clipInsets, coverRect } from '../src/content/cover.ts';
+import { clipInsets, coverRect, scrolls } from '../src/content/cover.ts';
 import type { Unit } from '../src/content/unit.ts';
 
 /**
@@ -106,4 +106,87 @@ test('裁切:完全在可見範圍內就不裁', () => {
   const rect = { top: 200, right: 700, bottom: 260, left: 300 };
   const vis = { top: 100, right: 900, bottom: 800, left: 0 };
   assert.deepEqual(clipInsets(rect, vis), { top: 0, right: 0, bottom: 0, left: 0 });
+});
+
+/*
+ * 段落裡自己佔一行的圖片。ClickHouse 的部落格每張圖都寫在段落裡:
+ *   <p>文字…<span class="flex"><img></span></p>
+ * 舊版整段不翻;現在疊層在圖片的邊界收住。
+ */
+function withMedia(
+  rect: { left: number; top: number; width: number; height: number },
+  media: { top: number; height: number },
+  scrollHeight = rect.height,
+): Unit {
+  const u = fakeUnit({ rects: 1, rect, scrollWidth: rect.width, scrollHeight });
+  (u as { mediaSplit?: Element }).mediaSplit = {
+    getBoundingClientRect: () => ({ top: media.top, height: media.height, width: rect.width }),
+  } as unknown as Element;
+  return u;
+}
+
+test('圖片在段落下半部 —— 疊層蓋到圖片上緣為止', () => {
+  // 段落 100→400,文字 100→160,圖片 160→400
+  const { rect, overflows } = coverRect(
+    withMedia({ left: 40, top: 100, width: 600, height: 300 }, { top: 160, height: 240 }),
+  );
+  assert.equal(rect.top, 1300, 'top 不動');
+  assert.equal(rect.height, 60, '只蓋文字那一段');
+  assert.equal(overflows, false, '裁過就不算溢出');
+});
+
+test('圖片在段落上半部 —— 疊層從圖片下緣開始', () => {
+  const { rect } = coverRect(
+    withMedia({ left: 40, top: 100, width: 600, height: 300 }, { top: 100, height: 240 }),
+  );
+  assert.equal(rect.top, 1540, '從圖片下緣算起');
+  assert.equal(rect.height, 60);
+});
+
+test('裁過就不再拿 scrollHeight 撐開 —— 那個高度含圖片', () => {
+  const { rect } = coverRect(
+    withMedia({ left: 40, top: 100, width: 600, height: 300 }, { top: 160, height: 240 }, 320),
+  );
+  assert.equal(rect.height, 60, '撐開的話會把圖片又蓋回去');
+});
+
+test('沒有 mediaSplit 的單元行為完全不變', () => {
+  const { rect } = coverRect(
+    fakeUnit({
+      rects: 1,
+      rect: { left: 0, top: 0, width: 300, height: 50 },
+      scrollWidth: 300,
+      scrollHeight: 50,
+    }),
+  );
+  assert.equal(rect.height, 50);
+});
+
+/*
+ * overflow:hidden 有兩種用途,對疊層的意義相反。
+ * ClickHouse 的 blockquote 用它讓左側 ::before 的色條不超出圓角 ——
+ * 內容一格都不會動,卻被當成捲動窗格留了 72px 餘裕,
+ * 引文最後兩行的疊層被切掉、原文露出來,看起來像「翻了沒蓋完全」。
+ */
+test('只有內容真的超出可視區的容器才算會捲', () => {
+  // ClickHouse 的 blockquote:裁切用,不捲
+  assert.equal(
+    scrolls({ scrollHeight: 167, clientHeight: 167, scrollWidth: 600, clientWidth: 600 }),
+    false,
+  );
+  // Gmail 的郵件窗格:真的捲
+  assert.equal(
+    scrolls({ scrollHeight: 4200, clientHeight: 700, scrollWidth: 900, clientWidth: 900 }),
+    true,
+  );
+  // 橫向捲也算
+  assert.equal(
+    scrolls({ scrollHeight: 200, clientHeight: 200, scrollWidth: 1400, clientWidth: 600 }),
+    true,
+  );
+  // 次像素誤差不算
+  assert.equal(
+    scrolls({ scrollHeight: 167.5, clientHeight: 167, scrollWidth: 600, clientWidth: 600 }),
+    false,
+  );
 });

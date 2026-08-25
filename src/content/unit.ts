@@ -22,6 +22,11 @@ export interface Unit {
   style: ProbedStyle;
   /** §3.5 bounding box 會蓋住浮動圖片 → 跳過該單元 */
   geometryRisk: boolean;
+  /**
+   * 段落裡自己佔一行的圖片。疊層要在這裡收住,不要蓋過去
+   * (detect.ts 的 mediaSplitOf)。
+   */
+  mediaSplit?: Element;
   /** §4.6 標註樣式 (背景取色失敗或使用者指定) */
   annotation: boolean;
   /** §4.4 單行元素:不加入字級分組,允許橫向溢出 (D15) */

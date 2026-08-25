@@ -607,3 +607,48 @@ test('兩項的清單不算清單 —— 樣本太小,不足以推翻長度門�
   );
   assert.deepEqual(findLabels(root, 50).map((c) => c.src), ['Docs']);
 });
+
+/* -------- 目次:巢狀清單與「容器自己還帶著一行字」 -------- */
+
+const NESTED_TOC = `<article><ul>
+  <li><a href="#a">Introduction</a></li>
+  <li><a href="#b">Count aggregations in ClickHouse and Elasticsearch</a></li>
+  <li><a href="#c">Benchmark results</a>
+    <ul>
+      <li><a href="#c1">Summary</a></li>
+      <li><a href="#c2">Storage size</a></li>
+      <li><a href="#c3">Aggregation performance</a></li>
+    </ul>
+  </li>
+  <li><a href="#d">Summary</a></li>
+</ul></article>`;
+
+test('子清單跟著整棵樹判定,不會自己那一層全是短的就變成選單', () => {
+  const root = mount(NESTED_TOC);
+  const texts = findCandidates(root, () => false).map((c) => c.src);
+  for (const want of ['Summary', 'Storage size', 'Aggregation performance']) {
+    assert.ok(texts.includes(want), `子項 ${want} 該進內文層,實得 ${JSON.stringify(texts)}`);
+  }
+});
+
+test('清單項目自己那一行也要翻,即使它底下還包著子清單', () => {
+  const root = mount(NESTED_TOC);
+  const found = findCandidates(root, () => false);
+  const hit = found.find((c) => c.src === 'Benchmark results');
+  assert.ok(hit, `「Benchmark results」不能整行消失,實得 ${JSON.stringify(found.map((c) => c.src))}`);
+  assert.equal(hit.el.tagName, 'A', '單元要落在 <a> 上,不是 <li> —— <li> 的盒子蓋住整份子清單');
+});
+
+test('承載元素本身還有容器子孫就不收 —— 免得跟子孫的單元疊兩層', () => {
+  // <a><h3>…</h3></a>:<h3> 已經是單元了
+  const root = mount('<a href="/post"><h3>Bringing the capabilities of Claude to defenders</h3></a>');
+  const found = findCandidates(root, () => false);
+  assert.equal(found.length, 1);
+  assert.equal(found[0]!.el.tagName, 'H3');
+});
+
+test('表格不會因為 tbody / tr 不在容器清單裡就被收成一個大單元', () => {
+  const root = mount('<table><tr><th>Tier</th><td>Balanced</td></tr></table>');
+  const texts = findCandidates(root, () => false).map((c) => c.src);
+  assert.deepEqual(texts, ['Tier', 'Balanced']);
+});

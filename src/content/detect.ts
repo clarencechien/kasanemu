@@ -127,15 +127,31 @@ const LIST_TAGS = new Set(['UL', 'OL']);
  */
 function inContentList(act: Element, skip?: ReadonlySet<Element>): boolean {
   const item = act.closest('li');
-  const list = item?.parentElement;
-  if (!item || !list || !LIST_TAGS.has(list.tagName)) return false;
-  const items = list.children;
+  const parent = item?.parentElement;
+  if (!item || !parent || !LIST_TAGS.has(parent.tagName)) return false;
+  let list: Element = parent;
+  /*
+   * 巢狀清單要看**整棵樹**,不是自己那一層。
+   *
+   * 目次的子清單常常每一項都短(Summary / Storage size / Aggregation
+   * performance),只看自己那一層就會判定成選單 —— 於是同一份目次
+   * 上半部翻了、縮排進去的三項沒翻。它們是同一份目次的一部分,
+   * 判斷也該是同一個。
+   */
+  for (
+    let up = list.parentElement?.closest('ul,ol');
+    up;
+    up = up.parentElement?.closest('ul,ol')
+  ) {
+    list = up;
+  }
+  const items = list.querySelectorAll('li');
   if (items.length < 3) return false;
   for (const li of items) {
-    if (li === item || li.tagName !== 'LI') continue;
-    const sibling = li.querySelector(INTERACTIVE_SELECTOR);
-    if (!sibling) continue;
-    if (visibleTextOf(sibling, skip).length > UI_LABEL_MAX_CHARS) return true;
+    if (li === item) continue;
+    for (const sibling of li.querySelectorAll(INTERACTIVE_SELECTOR)) {
+      if (visibleTextOf(sibling, skip).length > UI_LABEL_MAX_CHARS) return true;
+    }
   }
   return false;
 }
@@ -204,6 +220,8 @@ export interface Candidate {
   src: string;
   /** 來源元素含浮動子孫,bounding box 會蓋住圖片 (§3.5) */
   geometryRisk: boolean;
+  /** 自己佔一行的媒體子節點 —— 疊層要在這裡收住(見 mediaSplitOf) */
+  mediaSplit?: Element;
 }
 
 const HAN = /\p{Script=Han}/u;
@@ -289,6 +307,68 @@ export function hasMediaChild(el: Element): boolean {
     if (r.width * r.height >= MEDIA_MIN_AREA) return true;
   }
   return false;
+}
+
+/**
+ * 帶著大圖、但圖片**自己佔一整行**的子節點。
+ *
+ * ClickHouse 的部落格每張圖都寫在段落裡:
+ *
+ *   <p>文字…<span class="relative flex w-full"><img …></span></p>
+ *
+ * `hasMediaChild()` 看到 <img> 就整段放棄,於是圖多的文章一半不翻 ——
+ * 使用者的原話是「看起來文字跟著圖的 就不會翻」。可是這種版面上
+ * 文字與圖片是**上下分開**的,疊層只要蓋到圖片之前就好。
+ *
+ * 三個條件缺一不可,少一個就會蓋到圖:
+ *  1. 只有一處媒體(兩處以上表示文字被切成好幾段,單一矩形蓋不住)
+ *  2. 它在第一個或最後一個(夾在中間同樣把文字切成兩段)
+ *  3. 它自己佔一行(真正的行內圖片就在文字行裡,一定會被蓋到)
+ */
+export function mediaSplitOf(el: Element): Element | null {
+  const kids = Array.from(el.children);
+  if (kids.length === 0) return null;
+  let holder: Element | null = null;
+  for (const kid of kids) {
+    const hasMedia =
+      kid.matches(MEDIA_TAGS) ||
+      [...kid.querySelectorAll(MEDIA_TAGS)].some((m) => {
+        const r = m.getBoundingClientRect();
+        return r.width * r.height >= MEDIA_MIN_AREA;
+      });
+    if (!hasMedia) continue;
+    if (holder) return null;
+    holder = kid;
+  }
+  if (!holder) return null;
+  if (holder !== kids[0] && holder !== kids[kids.length - 1]) return null;
+  if (!BLOCKISH_DISPLAY.has(getComputedStyle(holder).display)) return null;
+  return holder;
+}
+
+/**
+ * el 自己的文字,**不含區塊子節點的**。
+ *
+ * `ownText()` 會一路遞迴下去,所以 `<li><a>標題</a><ul>…</ul></li>`
+ * 拿到的是標題加上整份子清單。要判斷「這個容器自己還帶著一段文字嗎」,
+ * 就得先把歸屬於子區塊的部分扣掉。
+ */
+function inlineOwnText(el: Element, skip?: ReadonlySet<Element>): string {
+  let out = '';
+  for (const node of Array.from(el.childNodes)) {
+    if (node.nodeType === 3 /* TEXT_NODE */) {
+      out += node.nodeValue ?? '';
+      continue;
+    }
+    if (node.nodeType !== 1 /* ELEMENT_NODE */) continue;
+    const kid = node as Element;
+    if (NON_TEXT_TAGS.has(kid.tagName)) continue;
+    if (skip?.has(kid)) continue;
+    if (kid.matches(EXCLUDE_SELECTOR)) continue;
+    if (kid.matches(CONTAINER_TAGS)) continue;
+    out += ownText(kid, skip);
+  }
+  return out;
 }
 
 /**
@@ -440,6 +520,8 @@ interface WalkCtx {
   srOnly: Set<Element>;
   seen: (el: Element) => boolean;
   out: Candidate[];
+  /** 這一趟已經建過單元的元素 —— seen() 只知道**上一趟**的結果 */
+  made: Set<Element>;
   root: Element;
 }
 
@@ -510,16 +592,26 @@ function walk(el: Element, ctx: WalkCtx): boolean {
   for (const child of Array.from(el.children)) {
     if (walk(child, ctx)) produced = true;
   }
-  if (produced) return true;
+  // 子孫產生了單元,但自己還帶著一段沒人認領的文字 —— 見 captureInlineText
+  if (produced) {
+    captureInlineText(el, ctx);
+    return true;
+  }
 
   const blockish = BLOCK_TAGS.has(el.tagName) || BLOCKISH_DISPLAY.has(cs.display);
   if (!blockish) return false;
   // 子孫沒產生單元不代表可以退而求其次把容器整個吃下來
-  if (hasContainerChild(el)) return false;
-  // 圖文混排:蓋下去會把圖一起蓋掉(§3.5 的非浮動版本)
-  if (hasMediaChild(el)) return false;
+  if (hasContainerChild(el)) return captureInlineText(el, ctx);
+  /*
+   * 圖文混排:蓋下去會把圖一起蓋掉(§3.5 的非浮動版本)。
+   * 但圖片自己佔一行的話,文字與圖片是上下分開的 —— 那種不必放棄,
+   * 記下界線,疊層蓋到那裡為止(見 mediaSplitOf)。
+   */
+  const split = mediaSplitOf(el);
+  if (!split && hasMediaChild(el)) return false;
+  const skip = split ? new Set([...ctx.srOnly, split]) : ctx.srOnly;
 
-  const text = normalizeText(ownText(el, ctx.srOnly));
+  const text = normalizeText(ownText(el, skip));
   if (!isMeaningfulText(text)) return false;
   // 互動元素裡的短文字是 UI 標籤,不是內容(長度只算看得見的字)
   if (isUiLabel(el, ctx.srOnly)) return false;
@@ -529,8 +621,59 @@ function walk(el: Element, ctx: WalkCtx): boolean {
   if (ctx.seen(el)) return true; // 已建立過單元,視為已命中,不重複
   if (el.getClientRects().length === 0) return false;
 
-  ctx.out.push({ el, role: roleOf(el, cs), src: text, geometryRisk: hasFloatDescendant(el) });
+  ctx.out.push({
+    el,
+    role: roleOf(el, cs),
+    src: text,
+    geometryRisk: hasFloatDescendant(el),
+    ...(split ? { mediaSplit: split } : {}),
+  });
+  ctx.made.add(el);
   return true;
+}
+
+/**
+ * 容器自己帶著一段文字,而那段文字整段裝在一個行內元素裡 —— 拿那個元素當單元。
+ *
+ * 目次的巢狀項目就是這個形狀:
+ *
+ *   <li><a>Benchmark results</a><ul><li><a>Summary</a></li>…</ul></li>
+ *
+ * 拿 <li> 當單元不行:它的 bounding box 蓋住整個子清單。可是不做任何事
+ * 也不對 —— 舊版就是這樣,「Benchmark results」那一行**不產生任何單元**,
+ * 既不是內文也不是貼片,滑上去也沒反應。使用者看到的是目次翻一半。
+ *
+ * <a> 的幾何剛剛好,語意也對。條件很緊:整段文字要恰好等於某一個
+ * 非區塊子元素的文字,有一點對不上就不做 —— 寧可少翻一行,
+ * 不要蓋錯地方。
+ */
+function captureInlineText(el: Element, ctx: WalkCtx): boolean {
+  const text = normalizeText(inlineOwnText(el, ctx.srOnly));
+  if (!isMeaningfulText(text) || text.length > MAX_UNIT_CHARS) return false;
+  if (looksLikeTargetLang(text)) return false;
+  for (const kid of Array.from(el.children)) {
+    if (kid.matches(CONTAINER_TAGS)) continue;
+    /*
+     * 承載元素必須自己就是**葉子**。
+     *
+     * `<a><h3>卡片標題</h3></a>` 的 <h3> 已經是單元了,再拿 <a> 收一次
+     * 就是兩層疊層疊在一起;`<tbody>` / `<tr>` 也一樣 —— 它們不在
+     * CONTAINER_TAGS 裡(那是「像段落的容器」的清單),但底下有 <td>。
+     * 用「有沒有容器子孫」判斷比繼續往 CONTAINER_TAGS 塞標籤可靠。
+     */
+    if (kid.querySelector(CONTAINER_TAGS)) continue;
+    if (normalizeText(ownText(kid, ctx.srOnly)) !== text) continue;
+    if (ctx.made.has(kid) || ctx.seen(kid)) return true;
+    const kcs = getComputedStyle(kid);
+    if (isInvisible(kcs) || kcs.position === 'sticky' || kcs.position === 'fixed') return false;
+    if (isScreenReaderOnly(kid, kcs) || isUiLabel(kid, ctx.srOnly)) return false;
+    if (hasMediaChild(kid)) return false;
+    if (kid.getClientRects().length === 0) return false;
+    ctx.out.push({ el: kid, role: roleOf(kid, kcs), src: text, geometryRisk: false });
+    ctx.made.add(kid);
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -541,6 +684,15 @@ function walk(el: Element, ctx: WalkCtx): boolean {
  * **判定規則一字不改**:那個 24 字門檻是在真頁面上調出來的,
  * 不要在同一次改動裡動兩件事。
  */
+/** 祖先裡有 sticky / fixed —— §3.5 的內文層整棵跳過,只剩加翻層 */
+function inPinnedSubtree(el: Element): boolean {
+  for (let n: Element | null = el; n && n !== document.body; n = n.parentElement) {
+    const p = getComputedStyle(n).position;
+    if (p === 'sticky' || p === 'fixed') return true;
+  }
+  return false;
+}
+
 export function findLabels(
   root: Element,
   cap: number,
@@ -577,9 +729,16 @@ export function findLabels(
     }
     const text = normalizeText(ownText(el, srOnly));
     if (text.length === 0 || text.length > UI_LABEL_MAX_CHARS) continue;
-    // 內容清單裡的短連結交給內文層畫常駐疊層,不要在這裡收成貼片 ——
-    // 否則同一份目次會一半貼片一半疊層(見 inContentList)
-    if (inContentList(el, srOnly)) continue;
+    /*
+     * 內容清單裡的短連結交給內文層畫常駐疊層,不要在這裡收成貼片 ——
+     * 否則同一份目次會一半貼片一半疊層(見 inContentList)。
+     *
+     * **除非它根本不可能有內文疊層。** sticky / fixed 的子樹在 §3.5
+     * 是整棵跳過的(捲動時疊層會脫位),右側那份浮動目次就是這樣。
+     * 少了這個例外,它會從「滑上去看得到」變成「什麼都沒有」——
+     * 讓路給一個永遠不會來的東西,比原本更糟。
+     */
+    if (inContentList(el, srOnly) && !inPinnedSubtree(el)) continue;
     if (!isMeaningfulText(text)) continue;
     if (looksLikeTargetLang(text)) continue;
     if (el.getClientRects().length === 0) continue;
@@ -598,7 +757,7 @@ export function findLabels(
 
 export function findCandidates(root: Element, seen: (el: Element) => boolean): Candidate[] {
   const out: Candidate[] = [];
-  walk(root, { seen, out, root, srOnly: new Set<Element>() });
+  walk(root, { seen, out, root, srOnly: new Set<Element>(), made: new Set<Element>() });
   return out;
 }
 
