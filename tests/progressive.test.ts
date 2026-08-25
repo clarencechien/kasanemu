@@ -15,6 +15,7 @@ import {
   hoverRetryReady,
   maxCharsAt,
   priorityOf,
+  stuckPlan,
   swapAllowed,
   translationPhase,
 } from '../src/content/upgrade.ts';
@@ -290,4 +291,19 @@ test('CPU 微基準:固定工作量、量時間', () => {
   const big = cpuBenchmark(2_000_000);
   assert.ok(small >= 0, '回傳毫秒數');
   assert.ok(big >= small, '工作量大的不會比較快');
+});
+
+test('看門狗:排進 L1 佇列卻沒有回音的區塊,重排一次,再卡就標失敗', () => {
+  const t0 = 1_000_000;
+  const queued = { l1Queued: true, upgradeQueuedAt: t0 } as const;
+  // 還在合理等待範圍內:不要動它,取消不會退錢
+  assert.equal(stuckPlan(queued, t0 + 10_000), 'ok');
+  assert.equal(stuckPlan(queued, t0 + 60_000), 'requeue');
+  // 已經重排過一次還是沒回音 —— 給它一個出口,別永遠等下去
+  assert.equal(stuckPlan({ ...queued, l1Retries: 1 }, t0 + 60_000), 'give-up');
+  // 譯文已經回來了就不是卡住,不管旗標有沒有被清乾淨
+  assert.equal(stuckPlan({ ...queued, l1Text: '譯文' }, t0 + 60_000), 'ok');
+  // 沒排過隊的不歸看門狗管
+  assert.equal(stuckPlan({ l1Queued: false, upgradeQueuedAt: t0 }, t0 + 60_000), 'ok');
+  assert.equal(stuckPlan({ l1Queued: true }, t0 + 60_000), 'ok');
 });

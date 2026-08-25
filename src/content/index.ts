@@ -11,7 +11,7 @@ import type {
 import { setDebug, dbg } from '../shared/log';
 import { diag, setDiagScope } from '../shared/diag';
 import {
-  EXCLUDE_SELECTOR,
+  inExcluded,
   INTERACTIVE_SELECTOR,
   explainCandidate,
   findCandidates,
@@ -47,6 +47,7 @@ import {
   hoverRetryReady,
   isFailedTier,
   priorityOf as priorityFor,
+  stuckPlan,
   swapAllowed,
   translationPhase,
 } from './upgrade';
@@ -233,6 +234,7 @@ let lastOverflowCount = -1;
 let lastHiddenCount = -1;
 /** 被容器裁到的疊層數 */
 let lastClippedCount = -1;
+let lastNoClipper = -1;
 let lastShiftBucket = '';
 let lastTopBand = -1;
 let lastBottomBand = -1;
@@ -317,9 +319,32 @@ function onRouteChange(): void {
   updateHud();
 }
 
-function send(msg: ToWorker): void {
-  chrome.runtime.sendMessage(msg).catch(() => {
-    /* service worker 正在回收,下一次動作會重試 */
+/**
+ * 送給 worker 的訊息。**會重試。**
+ *
+ * 原本這裡是 `.catch(() => {})`,註解寫「service worker 正在回收,
+ * 下一次動作會重試」—— 那句話對 `enqueue` 是假的:**沒有下一次動作**。
+ * `queueUpgrade` 送出的當下就把區塊標成 `l1Queued = true`,
+ * 訊息掉了就沒有人會再送一次,那一塊從此停在 L0。
+ *
+ * 而 MV3 的 service worker 閒置 30 秒就會被回收,回收與喚醒之間
+ * `chrome.runtime.sendMessage` 會直接 reject(「Could not establish
+ * connection」)—— 這不是罕見狀況,是**每一頁安靜幾十秒之後的常態**。
+ *
+ * 重試是安全的:`enqueue` 在 worker 端以 id 去重、`reprioritize`
+ * 與 `drop-page` 本來就是冪等的。三次都失敗才記一筆 error,
+ * 因為那時候看門狗會接手,但總要有人說出「訊息根本沒送出去」。
+ */
+function send(msg: ToWorker, left = 3): void {
+  chrome.runtime.sendMessage(msg).catch((e: unknown) => {
+    if (left > 1) {
+      window.setTimeout(() => send(msg, left - 1), (4 - left) * 300);
+      return;
+    }
+    diag('error', 'send-failed', {
+      kind: msg.type,
+      err: String((e as Error)?.message ?? e),
+    });
   });
 }
 
@@ -884,13 +909,103 @@ function queueUpgrade(list: Unit[]): void {
 }
 
 /**
+ * §4.2 佇列看門狗:排進去的區塊不准無聲無息地留在那裡。
+ *
+ * 使用者的原話:「都顯示完成 或是已經在佇列裡 但沒有變 L1
+ * 有打到 TPM Ratelimit 之類的嗎」—— 送來的 log 裡**沒有** 429、
+ * 沒有 notice、沒有 fuse-blocked,連一行都沒有說明那五塊去了哪裡。
+ *
+ * 從送出到收到中間有好幾個安靜的斷點:worker 的 post() 把
+ * `chrome.tabs.sendMessage` 的錯誤整個吞掉(而那時佇列已經清了)、
+ * pageKey 對不上的結果直接 return、service worker 被回收後
+ * alarm 沒接回來。一個一個追太慢,而且下一個斷點還是會有。
+ *
+ * 所以這一版換個方向:**讓「卡住」這個狀態不存在。**
+ * 超過 STUCK_L1_MS 沒有回音就重排一次 —— worker 的 enqueue 會去重,
+ * 所以還躺在佇列裡的只是被順手踢一下 drain,不會重複計費;
+ * 再卡就標成失敗,提示線轉警示色、hover 可以重試。
+ * 有出口總比永遠等下去好。上限一次,不做無人看管的重試迴圈。
+ */
+let sweeping = false;
+
+async function sweepStuckL1(now: number): Promise<void> {
+  if (!usesL1(effective) || sweeping) return;
+  /*
+   * **先問 worker「這幾筆還在不在你手上」。**
+   *
+   * 上一份 log 抓到看門狗做多了:那一塊「卡了 45 秒」的同一秒,
+   * worker 的佇列深度是 16 —— 它一直好好地排在隊伍裡,只是前面還有
+   * 十幾塊。重排是個 no-op(worker 端以 id 去重),卻白白花掉一次
+   * 重試預算,下一次真的掉了就直接被判失敗。
+   *
+   * 在佇列裡 = 塞車,碼表歸零繼續等;不在 = 真的不見了,才重排。
+   */
+  const overdue = [...units].filter((u) => stuckPlan(u, now) !== 'ok');
+  if (overdue.length === 0) return;
+  sweeping = true;
+  let held: Set<string>;
+  try {
+    const r = await ask<{ has?: string[] }>({
+      type: 'page-status',
+      pageKey,
+      ids: overdue.map((u) => u.id),
+    });
+    held = new Set(r?.has ?? []);
+  } finally {
+    sweeping = false;
+  }
+  const waiting = overdue.filter((u) => held.has(u.id));
+  for (const u of waiting) u.l1CheckedAt = Date.now();
+  if (waiting.length > 0) {
+    diag('info', 'l1-waiting', { units: waiting.length, oldestMs: Math.round(now - Math.min(...waiting.map((u) => u.upgradeQueuedAt ?? now))) });
+  }
+  const requeue: Unit[] = [];
+  let gaveUp = 0;
+  let oldest = 0;
+  for (const u of overdue) {
+    const plan = stuckPlan(u, now);
+    if (plan === 'ok' || held.has(u.id)) continue;
+    oldest = Math.max(oldest, now - (u.upgradeQueuedAt ?? now));
+    u.l1Queued = false;
+    u.upgradeQueuedAt = undefined;
+    if (plan === 'give-up') {
+      gaveUp++;
+      // §5.1 有 L0 可讀就停在 L0 並標記,沒有的話才是真的失敗
+      u.tier = u.l0Text !== undefined ? 'l1-failed' : 'failed';
+      u.failReason = 'stuck';
+      if (u.kind === 'label') labelQueuedText.delete(u.src);
+      else if (u.l0Text === undefined) layer?.drop(u);
+      continue;
+    }
+    u.l1Retries = (u.l1Retries ?? 0) + 1;
+    requeue.push(u);
+  }
+  const stuck = requeue.length + gaveUp;
+  if (stuck === 0) return;
+  diag('warn', 'l1-stuck', {
+    stuck,
+    requeued: requeue.length,
+    gaveUp,
+    oldestMs: Math.round(oldest),
+  });
+  if (requeue.length > 0) queueUpgrade(requeue);
+  if (gaveUp > 0) {
+    renderChips();
+    scheduleFlush();
+  }
+  updateHud();
+}
+
+/**
  * feature.md §4.2 / D21:可見且**停留超過 1.5 秒**才排入 L1。
  * 純粹滑過去的區塊留在 L0,不花錢 —— 這一條直接對治
  * 「有 L0 打底反而燒更多」。
  */
 function dwellTick(): void {
-  if (!running || effective !== 'progressive') return;
+  if (!running) return;
   const now = Date.now();
+  void sweepStuckL1(now);
+  if (effective !== 'progressive') return;
   const due = [...units].filter(
     (u) => dwellReady(u, now, settings.upgradeDwellMs, effective) && !hiddenByDisclosure(u.el),
   );
@@ -1142,7 +1257,7 @@ function adhocLabelAt(target: EventTarget | null): Unit | null {
     if (adhocRejected.has(el)) continue;
     if (labels.size >= ANNOTATION_CAP) return null;
     // 排除清單(.notranslate、分享 widget…)對臨時加翻同樣有效
-    if (el.closest(EXCLUDE_SELECTOR)) {
+    if (inExcluded(el)) {
       adhocRejected.add(el);
       continue;
     }
@@ -1461,6 +1576,7 @@ function retryUnit(u: Unit): void {
   u.failReason = undefined;
   u.l1Queued = false;
   u.upgradeQueuedAt = undefined;
+  u.l1Retries = 0; // 使用者親手指定的重試,重試預算歸零
   probed.delete(u);
   if (u.l0Text !== undefined) {
     // L0 有譯文、掛掉的是 L1:直接重排 L1,不再等 §4.2 的停留時間 ——
@@ -1833,9 +1949,26 @@ function pageStats(): PageStats {
       innerScroll: sawInnerScroll,
       pinned: pinnedCount,
     },
+    l1Queue: l1QueueView(),
+    pageKey,
     swapsOffscreen,
     swapsTotal,
   };
+}
+
+/** 內容腳本認為還在 L1 佇列裡的區塊 —— 拿去和 worker 的數字對 */
+function l1QueueView(): { queued: number; oldestMs: number; retried: number } {
+  const now = Date.now();
+  let queued = 0;
+  let oldest = 0;
+  let retried = 0;
+  for (const u of units) {
+    if (u.l1Retries) retried++;
+    if (!u.l1Queued || u.l1Text !== undefined) continue;
+    queued++;
+    oldest = Math.max(oldest, now - (u.upgradeQueuedAt ?? now));
+  }
+  return { queued, oldestMs: Math.round(oldest), retried };
 }
 
 /* ------------------------------------------------------------ 生命週期 */
@@ -2221,8 +2354,21 @@ function applyChromeClip(): void {
     lastClippedCount = clipped;
     let noClipper = 0;
     for (const u of units) if (u.box && clippers(u).length === 0) noClipper++;
-    // noClipper 大 = 我根本沒找到那個捲動容器,而不是「裁了但不夠」
-    diag('info', 'clip-to-container', { clipped, noClipper, total: units.size });
+    /*
+     * **只有 noClipper 變了才寫進診斷 log。**
+     *
+     * `clipped` 每次 flush 都在 2↔12 之間跳(捲一下就變),於是這一則
+     * 在上一份 log 的 300 格環狀緩衝裡佔掉了 250 格 —— 使用者問
+     * 「為什麼還有 L0」,而唯一能回答的那幾行早就被自己的雜訊擠掉了。
+     *
+     * 真正的訊號是 noClipper:大 = 我根本沒找到那個捲動容器。
+     * clipped 的抖動留給 dbg,devtools 開著才看得到。
+     */
+    dbg('clip-to-container', clipped, noClipper, units.size);
+    if (noClipper !== lastNoClipper) {
+      lastNoClipper = noClipper;
+      diag('info', 'clip-to-container', { clipped, noClipper, total: units.size });
+    }
   }
 }
 
@@ -2631,19 +2777,36 @@ async function applyDomainState(next: DomainState): Promise<void> {
 
 /* ------------------------------------------------------------ 訊息接收 */
 
+/** worker 送來的是上一頁(或另一個 pageKey)的東西 —— 丟掉,但要看得見 */
+function stale(kind: string, from: string, n: number): void {
+  diag('warn', 'stale-message', { kind, n, from: from.slice(-24), now: pageKey.slice(-24) });
+}
+
 chrome.runtime.onMessage.addListener((raw: ToContent, _sender, reply) => {
   if (!raw || typeof raw !== 'object') return;
   switch (raw.type) {
     case 'results': {
-      if (raw.pageKey !== pageKey) return;
+      // pageKey 對不上就丟掉是對的(那是上一頁的譯文),但**丟掉要留下痕跡** ——
+      // 上一輪查「排進去卻沒有回音」時,這裡的沉默 return 是嫌疑人之一,
+      // 而 log 裡看不出來到底有沒有走到這條路。
+      if (raw.pageKey !== pageKey) return stale(raw.type, raw.pageKey, raw.results.length);
       applyResults(raw.results);
       break;
     }
     case 'failures': {
-      if (raw.pageKey !== pageKey) return;
+      if (raw.pageKey !== pageKey) return stale(raw.type, raw.pageKey, raw.failures.length);
       for (const f of raw.failures) {
         const u = unitById.get(f.id);
         if (!u) continue;
+        /*
+         * **有譯文就不是失敗。**
+         *
+         * results 與 failures 是兩則訊息,results 先到 —— 所以一則遲到的
+         * 失敗可以把一塊已經翻好的字降級成紅色。worker 那一側已經不會再送
+         * 這種東西了(protocol.ts 把有結果的 id 濾掉),但這條不變式便宜,
+         * 而且它防的是「未來某條路徑又送了一次」。
+         */
+        if (u.l1Text !== undefined) continue;
         // feature.md §5.1:有 L0 可讀就停在 L0 並標記(l1-failed),
         // 沒有的話才是真的 failed。兩者的提示線都是警示色 —— 不可以看起來正常。
         u.tier = u.l0Text !== undefined ? 'l1-failed' : 'failed';
@@ -2749,6 +2912,23 @@ async function translatePage(): Promise<void> {
    * 這個動作本來就叫「翻譯這一頁」,而且是使用者親手按的 ——
    * 讓它把工作做完是最不意外的行為,也不需要新的按鈕或快捷鍵。
    */
+  /*
+   * **卡住的也算「還沒排」。**
+   *
+   * 「都顯示完成 或是已經在佇列裡 但沒有變 L1」—— 上一版按下去只會回報
+   * `alreadyQueued:5`,因為那五塊的 `l1Queued` 是 true。可是它們四十五秒
+   * 前就排進去了,而且一則回音都沒有。使用者親手按的動作不該被一個
+   * 早就過期的旗標擋下來。
+   */
+  const now = Date.now();
+  let unstuck = 0;
+  for (const u of units) {
+    if (stuckPlan(u, now) === 'ok') continue;
+    u.l1Queued = false;
+    u.upgradeQueuedAt = undefined;
+    u.l1Retries = 0;
+    unstuck++;
+  }
   const l0Units = [...units].filter((u) => u.tier === 'l0');
   const stillL0 = l0Units.filter((u) => !u.l1Queued);
   /*
@@ -2777,13 +2957,33 @@ async function translatePage(): Promise<void> {
     alreadyQueued: l0Units.length - stillL0.length,
     noRoom: stillL0.length - ready.length,
     retried: retryCount,
+    unstuck,
   });
   if (ready.length > 0) {
     ready.sort((a, b) => priorityOf(a) - priorityOf(b));
     queueUpgrade(ready);
   } else if (retryCount === 0) {
-    // 按了就要有回音 —— 沒事可做也是一種回音
-    lastProblem = l0Units.length > 0 ? '這幾塊已經在升級佇列裡了' : '沒有可以再升級的區塊';
+    /*
+     * 按了就要有回音 —— 而「已經在佇列裡」這句話還不夠。
+     *
+     * 使用者的原話是「看起來要多按幾次才行」:他按下去,狀態列說
+     * 「已經在佇列裡了」,畫面沒有任何變化,於是再按一次。那句話
+     * 沒有說錯,但它沒有回答**還要等多久**,所以看起來像沒反應。
+     *
+     * 去問 worker 佇列現在多深,把數字說出來:排隊和當機是兩件事,
+     * 使用者看得出差別就不會一直按。
+     */
+    const depth = await ask<{ page?: number; total?: number }>({
+      type: 'page-status',
+      pageKey,
+    });
+    const ahead = depth?.total ?? 0;
+    lastProblem =
+      l0Units.length > 0
+        ? ahead > 0
+          ? `這 ${l0Units.length} 塊在佇列裡,前面還有 ${ahead} 塊`
+          : `這 ${l0Units.length} 塊已經送出去了,等回應`
+        : '沒有可以再升級的區塊';
     window.setTimeout(() => {
       if (lastProblem !== '') lastProblem = '';
       updateHud();

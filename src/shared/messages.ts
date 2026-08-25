@@ -38,7 +38,11 @@ export type ToWorker =
   | { type: 'clear-cache' }
   | { type: 'export-cache' }
   | { type: 'import-cache'; dump: unknown }
-  | { type: 'page-status'; pageKey: string };
+  /**
+   * worker 佇列的現況。`ids` 給的話,回傳其中哪幾筆還在佇列裡 ——
+   * 看門狗要靠它分辨「塞在後面」和「真的不見了」。
+   */
+  | { type: 'page-status'; pageKey: string; ids?: string[] };
 
 /** worker → content,以及 popup → content */
 export type ToContent =
@@ -108,6 +112,14 @@ export interface PageStats {
     innerScroll: boolean;
     pinned: number;
   };
+  /**
+   * 內容腳本這一側看到的 L1 佇列。
+   * 要和 worker 的 `page-status` 擺在一起看 —— 兩個數字對不起來,
+   * 就表示訊息掉在中間;分開看,兩邊都像正常的。
+   */
+  l1Queue?: { queued: number; oldestMs: number; retried: number };
+  /** 這一頁在 worker 佇列裡的鍵 —— popup 要拿它去問對面的深度 */
+  pageKey?: string;
   /** feature.md §2.2「L0 讀完就沒再看 L1」:替換時該區塊已離開可見區的次數 */
   swapsOffscreen: number;
   swapsTotal: number;

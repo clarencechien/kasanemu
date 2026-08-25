@@ -15,7 +15,15 @@ chrome.storage.session
   .setAccessLevel?.({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' })
   .catch((e: unknown) => warn('storage.session accessLevel 設定失敗,content 的 log 會缺', e));
 import { listModels } from './gemini';
-import { cacheProbe, drain, dropPage, dropTab, enqueue, reprioritize } from './scheduler';
+import {
+  cacheProbe,
+  drain,
+  dropPage,
+  dropTab,
+  enqueue,
+  queueStatus,
+  reprioritize,
+} from './scheduler';
 import { totals } from './budget';
 import * as cache from './cache';
 
@@ -93,6 +101,10 @@ chrome.runtime.onMessage.addListener((raw: ToWorker, sender, reply) => {
         case 'drop-page': {
           if (tabId >= 0) await dropPage(tabId, raw.pageKey);
           reply({ ok: true });
+          break;
+        }
+        case 'page-status': {
+          reply(await queueStatus(raw.pageKey, raw.ids));
           break;
         }
         case 'get-spend': {

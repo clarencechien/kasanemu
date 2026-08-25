@@ -2602,3 +2602,227 @@ log 裡有十幾筆 `disclosure-toggle`)。停留門檻不理會收折的內容�
 
 加一條:**收到第二個鍵就把它放回去**。hold 的意圖只有在 Alt 單獨按住時才成立,
 Alt 加上別的鍵是和弦,不是「我想看原文」。
+
+## CQ. 「排進佇列了,但沒有變 L1」—— 不追斷點,拆掉「卡住」這個狀態
+
+使用者:「這是什麼昇級 bug,都顯示完成 或是已經在佇列裡 但沒有變 L1,
+有打到 TPM Ratelimit 之類的嗎?」
+
+先回答問題:**沒有。** 那份 log 裡沒有 429、沒有 `fuse-blocked`、沒有任何 notice。
+五塊 `l1Queued === true` 的區塊按了五次「翻譯這一頁」,五次都回報
+`{"alreadyQueued":5,"upgrading":0}` —— 它們既沒有收到譯文,也沒有收到失敗。
+**一個沒有出口的狀態。**
+
+### CQ-1. 安靜的斷點不只一個,而且下一個還會有
+
+從 `enqueue` 到區塊變 L1,中間至少有三處會無聲吞掉東西:
+
+| 位置 | 原本的行為 |
+| --- | --- |
+| `scheduler.ts` `post()` | `chrome.tabs.sendMessage(...).catch(() => {})` —— 而 `runBatch` 結尾**已經把佇列清掉了**,譯文就這樣不見了 |
+| `index.ts` 訊息接收 | `if (raw.pageKey !== pageKey) return;` —— 對不上就丟,不留痕跡 |
+| service worker 回收 | alarm 沒接回來的話,佇列裡的東西沒有人會再碰 |
+
+我可以一個一個去追。但這是這個專案第五次遇到同一個形狀的問題:
+**兩條路徑對同一件事各有一份判斷,其中一份出錯時沒有人會發現。**
+追完這三個,第四個還是會有。
+
+### CQ-2. 讓「卡住」變成一個會自己結束的狀態
+
+改成看門狗:`dwellTick`(每 300ms)掃一次,排進去超過 **45 秒**還沒有回音的區塊
+—— worker 的 alarm 是 30 秒,45 秒足以讓一次正常的回收 + 重排跑完,
+超過就不是慢,是斷了 —— 就
+
+1. **重排一次**。worker 的 `enqueue` 本來就會去重,所以還躺在佇列裡的
+   只是被順手踢一下 `drain()`,不會重複計費;
+   而如果丟的是**投遞**那一段,譯文早就進了快取,重排會直接快取命中,
+   一毛錢都不用再花。
+2. 再卡就**標成失敗**:有 L0 就是 `l1-failed`(提示線警示色、hover 可重試),
+   沒有就是 `failed`。
+
+上限一次。無人看管的重試迴圈會安靜地一直花錢 —— 這條線和 hover 重試同一個道理。
+
+判斷本身抽成 `upgrade.ts` 的 `stuckPlan()`,純函式、有測試。
+`index.ts` 裡不留第二份 —— §CL、§BR 已經教過兩次了。
+
+### CQ-3. 順手把三個沉默補上
+
+看門狗讓症狀消失,但**下一次還是要知道是誰扣著**:
+
+- `post-failed`:譯文送不到 tab 時寫一則 warn(原本是空的 catch)
+- `stale-message`:pageKey 對不上而丟掉的結果,寫下丟了幾筆、丟給誰
+- `queue-remains` / `enqueued`:worker 佇列的深度從 `dbg` 升成 `diag`,
+  這樣匯出的 log 裡兩側的數字可以對起來 —— 內容腳本說「在佇列裡」,
+  worker 說「佇列是空的」,那就是投遞掉的。
+
+「翻譯這一頁」也一併認得卡住:那五塊的 `l1Queued` 旗標早就過期了,
+使用者親手按的動作不該被它擋下來(`unstuck` 進 diag)。
+
+## CR. 診斷工具自己在說謊
+
+使用者:「清了 cache 再翻一次,還是有 L0,只是換不同點了。」
+
+我打開那份 log,看到五次 `queue-l1` 只有兩次配得到 worker 的 `enqueued`,
+差點就把它當成「訊息掉了」的鐵證寫進修正裡。**那個推論是錯的。**
+
+### CR-1. 兩個 realm 共用一個環狀緩衝
+
+`diag()` 的 flush 是「讀 → 合併 → 寫」,而 content script 與 service worker
+是兩個不同的 JS realm,寫同一個 `chrome.storage.session` 的 key:
+
+```
+content: get(diag) → [A,B]        worker: get(diag) → [A,B]
+content: set([A,B,C,D])
+                                  worker: set([A,B,X])     ← C、D 沒了
+```
+
+同一個 context 裡也會自己蓋自己(700ms 的 debounce 一多就重疊)。
+**匯出的 log 少了什麼,和發生了什麼完全沒有關係。**
+
+修法:每個 scope 一把鑰匙(`diag:content` / `diag:worker` / `diag:popup`),
+讀的時候合併排序;同一個 context 裡的 flush 串成 promise chain。
+兩邊各自 300 則,不再互相擠掉對方。
+
+### CR-2. 自己的雜訊把自己的訊號擠掉
+
+`clip-to-container` 佔掉了那份 log 300 格裡的 250 格。它的守門條件是
+「`clipped` 變了才寫」,而 `clipped` 每次 flush 都在 2↔12 之間跳 ——
+等於沒有守門。使用者問「為什麼還有 L0」,能回答的那幾行早就被擠掉了。
+
+真正的訊號是 `noClipper`(大 = 根本沒找到捲動容器),它是穩定的。
+改成只有 `noClipper` 變了才進 log,`clipped` 的抖動降級給 `dbg`。
+
+**日誌的容量是有限的,寫進去的每一則都在擠掉別的東西。**
+
+### CR-3. 兩側的佇列並排
+
+`page-status` 這條訊息在協定裡宣告了很久,從來沒有人實作它。現在實作了:
+worker 回報佇列深度,報告把它和內容腳本這一側並排:
+
+```
+- L1 佇列:頁面認為 5 塊在排隊(最舊 132s)· worker 佇列本頁 0 / 全部 0
+  - **兩側對不起來:訊息掉在中間,或譯文送回來時掉了**
+```
+
+一個數字看不出東西,兩個數字擺在一起才有對帳的可能。
+
+## CS. `send()` 的註解是假的
+
+```ts
+chrome.runtime.sendMessage(msg).catch(() => {
+  /* service worker 正在回收,下一次動作會重試 */
+});
+```
+
+對 `enqueue` 來說**沒有下一次動作**:`queueUpgrade()` 送出的當下就把區塊
+標成 `l1Queued = true`,訊息掉了就沒有人會再送一次,那一塊從此停在 L0。
+
+而 MV3 的 service worker 閒置 30 秒就回收,回收與喚醒之間
+`chrome.runtime.sendMessage` 會直接 reject —— 這不是罕見狀況,
+是**每一頁安靜幾十秒之後的常態**。§CQ 的看門狗會在 45 秒後接手,
+但那是止血,不是修好。
+
+現在重試三次(300 / 600ms),三次都失敗才記一筆 `send-failed`。
+重試是安全的:`enqueue` 在 worker 端以 id 去重,`reprioritize` 與
+`drop-page` 本來就冪等。
+
+## CT. 缺句補一次
+
+`5 個區塊未通過 id 紀律檢查 (missing-id)` —— 那五塊當場變成 `l1-failed`,
+唯一的出路是使用者自己滑上去重試。於是每一頁都剩下幾塊沒升級,
+而且每次剩的都不一樣:「還是有 L0,只是換不同點了」。
+
+缺的那幾筆原封不動丟回同一個佇列,由排程器和別的區塊重新湊批。
+這**不是** §5.4 說的「縮小 chunk 再戰追缺句」:沒有切小、沒有改協定,
+和「整批回 0 筆就重送」同一個道理。`attempts` 卡上限,只補一次。
+
+對滑(`echo-swap`)不在此列 —— 那是整批不可信,重送也還是不可信。
+
+## CU. `aria-hidden` 不等於看不見
+
+使用者:「像這個標題沒翻……這看起來是有點搞笑。」
+
+```html
+<h1 aria-label="Anthropic's approach to teaching and learning AI">
+  <span class="word" aria-hidden="true">Anthropic's</span>
+  <span class="word" aria-hidden="true">approach</span> …
+```
+
+這是逐字進場動畫的標準寫法:整句話放進 `aria-label` 給螢幕閱讀器,
+畫面上真正看得到的每一個字標成 `aria-hidden`,免得讀兩次。
+而 `EXCLUDE_SELECTOR` 的第一項就是 `[aria-hidden="true"]` ——
+於是**整頁最大的那行字,因為對螢幕閱讀器隱藏,所以對眼睛也不翻了。**
+
+`aria-hidden` 的定義是「對輔助技術隱藏」,Kasanemu 疊的是**眼睛看到的東西**。
+兩者不只是不同,常常剛好相反。真正的「看不見」由 CSS 回答,
+而那個判斷本來就有(`isInvisible` / sr-only / `getClientRects`)。
+
+新規則:`aria-hidden="true"` **而且畫面上沒有繪製面積**才排除。
+Gmail 那個 `<div role="tooltip" aria-hidden="true">Download</div>` 是
+display:none 的,照樣擋得住 —— 原本要擋的那一半一個都沒放掉。
+
+fixture 兩個方向都放了(§CM):看得見的逐字標題要翻成**一塊**,
+display:none 的提示框不能翻。把規則改回舊版,probe 立刻報
+`aria-hidden 逐字標題:整行沒翻`。
+
+## CV. 一塊翻好的字被降級成紅色
+
+使用者:「看起來要多按幾次才行。」
+
+log 終於問得出東西了(§CR 之後),而它一次就指到了:
+
+```
+09:25:25 ! batch-parsed {"dupe":1,"failures":["u31 duplicate-id"],"got":5,"kept":4}
+09:28:09 ! batch-parsed {"dupe":1,"failures":["u36 duplicate-id"],"got":7,"kept":6}
+09:28:32 ! batch-parsed {"dupe":1,"failures":["u50 duplicate-id"],"got":6,"kept":5}
+```
+
+三次 `duplicate-id`,三塊區塊。而 `duplicate-id` 記在**第二次**出現的
+那一筆上 —— 第一次早就進了 `results`。也就是說**那三塊翻好了**,
+只是模型多回了一份。
+
+而 results 與 failures 是兩則訊息,results 先到:
+
+```
+post(results)   → u31 拿到譯文,tier = 'l1'
+post(failures)  → u31 reason=duplicate-id,tier = 'l1-failed'   ← 冤枉
+```
+
+於是提示線變紅,而唯一的出路是使用者滑上去、或者按「翻譯這一頁」。
+`translate-page {"retried":2}` 就是這麼來的 ——「要多按幾次」不是錯覺,
+**是每一次 duplicate-id 都製造一塊需要手動救援的區塊。**
+
+修法在兩層:
+- `parseBatch` 把已經有結果的 id 從 failures 裡濾掉。重覆的 id 仍然
+  留在 `stats.dupe`(協定紀律的訊號該看見),但它不是「這塊沒翻到」。
+- 內容腳本加一條不變式:**`l1Text` 已經有值的區塊永遠不接受失敗標記**。
+  worker 那側已經不會再送了,但這條便宜,而且它防的是下一條路徑。
+
+## CW. 等在後面不是卡住
+
+同一份 log 也抓到 §CQ 的看門狗做多了:
+
+```
+09:28:47 ! l1-stuck {"oldestMs":45754,"requeued":1,"stuck":1}
+09:28:47   enqueued {"asked":1,"queue":16}      ← worker 佇列裡有 16 塊
+```
+
+那一塊「卡了 45 秒」的同一秒,worker 的佇列深度是 16 —— 它一直好好地
+排在隊伍裡,只是前面還有十幾塊(那一輪 L1 佇列一度到 46)。重排是個
+no-op(worker 端以 id 去重),卻白白花掉那一塊唯一的重試預算:
+**下一次它真的掉了,看門狗會直接判它失敗。**
+
+看門狗不必猜:§CR-3 剛做的 `page-status` 現在可以帶 `ids` 回答
+「這幾筆還在不在你手上」。逾時之後先問一次 ——
+
+- 在佇列裡 → 塞車,碼表歸零(`l1CheckedAt`)繼續等
+- 不在 → 真的不見了,才重排
+
+同一份 log 的第二次就是真的:`enqueued {"asked":1,"queue":1}`
+(佇列本來是空的),重排之後 2 秒就回來了。**兩種情況長得一模一樣,
+差別只有問一句話。**
+
+順帶把按鈕的回音也講清楚:原本說「這幾塊已經在升級佇列裡了」,
+沒說錯,但沒有回答**還要等多久**,所以看起來像沒反應。
+改成「這 2 塊在佇列裡,前面還有 14 塊」—— 排隊和當機是兩件事,
+使用者看得出差別就不會一直按。

@@ -57,8 +57,21 @@ function post(tabId: number, msg: ToContent): void {
       lastNotice: { level: msg.level, text: msg.text, at: Date.now() },
     });
   }
-  chrome.tabs.sendMessage(tabId, msg).catch(() => {
-    /* tab 已關或還沒注入,忽略 */
+  chrome.tabs.sendMessage(tabId, msg).catch((e: unknown) => {
+    /*
+     * tab 已關或還沒注入是正常的,但**譯文送不到就是譯文不見了** ——
+     * 佇列在 runBatch 結尾就清掉了,沒有人會再送一次。
+     * 使用者那五塊「排進去卻沒變 L1」的嫌疑人就在這裡,
+     * 而上一版這個 catch 是空的,log 裡一行都沒有。
+     */
+    if (msg.type === 'results' || msg.type === 'failures') {
+      diag('warn', 'post-failed', {
+        kind: msg.type,
+        tabId,
+        n: msg.type === 'results' ? msg.results.length : msg.failures.length,
+        err: String((e as Error)?.message ?? e).slice(0, 80),
+      });
+    }
   });
 }
 
@@ -87,6 +100,7 @@ export async function enqueue(
     });
   }
   await saveQueue(q);
+  diag('info', 'enqueued', { asked: units.length, queue: q.length, tier, pipeline });
   await ensureAlarm(q.length > 0);
   void drain();
 }
@@ -129,6 +143,37 @@ export async function cacheProbe(
     if (hit !== null) hits.push({ id: u.id, t: hit });
   }
   return { hits };
+}
+
+/**
+ * 佇列現在有什麼。**這是「到底是誰扣著」唯一能對起來的數字。**
+ *
+ * 內容腳本說「這五塊在佇列裡」,worker 說「佇列是空的」——
+ * 兩句話擺在一起才看得出訊息掉在中間;分開看,兩邊都像正常的。
+ * 協定裡本來就有 `page-status` 這條訊息,只是從來沒有人實作它。
+ */
+export async function queueStatus(
+  pageKey?: string,
+  ids?: string[],
+): Promise<{
+  total: number;
+  page: number;
+  oldestMs: number;
+  draining: boolean;
+  /** 問到的 id 裡,還在佇列裡的那幾筆 */
+  has: string[];
+}> {
+  const q = await loadQueue();
+  const mine = pageKey === undefined ? q : q.filter((i) => i.pageKey === pageKey);
+  const now = Date.now();
+  const held = new Set(mine.map((i) => i.id));
+  return {
+    total: q.length,
+    page: mine.length,
+    oldestMs: mine.length > 0 ? now - Math.min(...mine.map((i) => i.at)) : 0,
+    draining,
+    has: (ids ?? []).filter((id) => held.has(id)),
+  };
 }
 
 export async function dropPage(tabId: number, pageKey: string): Promise<void> {
@@ -275,7 +320,9 @@ export async function drain(): Promise<void> {
     draining = false;
     const q = await loadQueue();
     await ensureAlarm(q.length > 0);
-    if (q.length > 0) dbg('queue still has', q.length);
+    // 佇列還有東西 = 東西還在 worker 這一側。內容腳本那邊看到的「卡住」
+    // 到底是誰扣著,只有把兩邊的數字都寫進 log 才分得出來。
+    if (q.length > 0) diag('info', 'queue-remains', { n: q.length });
   }
 }
 
@@ -394,10 +441,37 @@ async function runBatch(
     return;
   }
 
-  if (parsed.failures.length > 0) {
+  /*
+   * **缺句補一次。**
+   *
+   * 使用者的原話:「清了 cache 再翻一次,還是有 L0,只是換不同點了」。
+   * 上一份 log 裡就一則 `5 個區塊未通過 id 紀律檢查 (missing-id)` ——
+   * 那五塊當場變成 `l1-failed`,而它們的唯一出路是使用者自己滑上去重試。
+   * 於是每一頁都會剩下幾塊沒升級,而且每次剩的都不一樣。
+   *
+   * 這**不是** §5.4 說的「縮小 chunk 再戰追缺句」:沒有切小、沒有改協定,
+   * 缺的那幾筆原封不動丟回同一個佇列,由排程器和別的區塊重新湊批 ——
+   * 和上面那個「整批回 0 筆就重送」同一個道理,屬於 §7.3 的重試範疇。
+   * `attempts` 卡住上限:只補一次,不做無人看管的重試迴圈。
+   *
+   * 對滑(`echo-swap`)不在此列 —— 那是整批不可信,重送也還是不可信。
+   */
+  const retryIds = new Set(
+    parsed.failures.filter((f) => f.reason === 'missing-id').map((f) => f.id),
+  );
+  const retryItems = parsed.stats.swapped
+    ? []
+    : batch.filter((b) => retryIds.has(b.id) && b.attempts === 0);
+  const retrySet = new Set(retryItems.map((b) => b.id));
+  const hardFailures = parsed.failures.filter((f) => !retrySet.has(f.id));
+  if (retryItems.length > 0) {
+    diag('warn', 'missing-id-retry', { units: retryItems.length, model: spec.modelId });
+  }
+
+  if (hardFailures.length > 0) {
     // §6.5 丟棄或失敗的區塊必須明確標示,不得沉默略過
-    post(tabId, { type: 'failures', pageKey, failures: parsed.failures });
-    const kinds = new Set(parsed.failures.map((f) => f.reason));
+    post(tabId, { type: 'failures', pageKey, failures: hardFailures });
+    const kinds = new Set(hardFailures.map((f) => f.reason));
     if (parsed.stats.swapped) {
       // 這是 §5.5 等級的事:這個模型在這個 batch 大小下會對錯句
       post(tabId, {
@@ -405,21 +479,24 @@ async function runBatch(
         pageKey,
         level: 'error',
         text:
-          `偵測到 batch 內 id 對滑,${parsed.failures.length} 筆整批丟棄。` +
+          `偵測到 batch 內 id 對滑,${hardFailures.length} 筆整批丟棄。` +
           `${spec.modelId} 在 ${batch.length} 筆的 batch 下把譯文對錯了句 —— ` +
           `換檔位,或把該檔的 batch 調小`,
       });
     } else {
-      const first = parsed.failures.find((f) => f.detail)?.detail;
+      const first = hardFailures.find((f) => f.detail)?.detail;
       post(tabId, {
         type: 'notice',
         pageKey,
         level: 'warn',
         text:
-          `${parsed.failures.length} 個區塊未通過 id 紀律檢查 (${[...kinds].join(', ')})` +
+          `${hardFailures.length} 個區塊未通過 id 紀律檢查 (${[...kinds].join(', ')})` +
           (first ? ` — ${first}` : ''),
       });
     }
   }
-  await saveQueue(remove(await loadQueue(), batch));
+  const left = remove(await loadQueue(), batch);
+  await saveQueue(
+    retryItems.length > 0 ? [...retryItems.map((b) => ({ ...b, attempts: 1 })), ...left] : left,
+  );
 }

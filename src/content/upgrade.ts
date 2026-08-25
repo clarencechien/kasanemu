@@ -20,6 +20,52 @@ export function dwellReady(
   return now - u.inViewSince >= dwellMs;
 }
 
+/**
+ * §4.2 佇列看門狗的門檻。worker 的 alarm 是 30 秒,所以 45 秒足以
+ * 讓一次正常的回收 + 重新排程跑完 —— 超過就不是慢,是真的斷了。
+ */
+export const STUCK_L1_MS = 45_000;
+
+/**
+ * 排進 L1 佇列之後石沉大海的區塊該怎麼辦。
+ *
+ * 使用者的原話:「都顯示完成 或是已經在佇列裡 但沒有變 L1」。
+ * 送出到收到之間有好幾個安靜的斷點(worker 吞掉 sendMessage 的錯誤、
+ * pageKey 對不上直接丟、service worker 被回收),與其一個一個追,
+ * 不如讓「卡住」這個狀態沒有出口地存在變成不可能:
+ * 重排一次,再卡就標成失敗,讓提示線變警示色、hover 可以重試。
+ *
+ * 上限一次。無人看管的重試迴圈會安靜地一直花錢。
+ */
+export function stuckPlan(
+  u: {
+    l1Queued: boolean;
+    l1Text?: string;
+    upgradeQueuedAt?: number;
+    l1Retries?: number;
+    /** 上一次確認過「它還在 worker 佇列裡」的時間 */
+    l1CheckedAt?: number;
+  },
+  now: number,
+  thresholdMs = STUCK_L1_MS,
+): 'ok' | 'requeue' | 'give-up' {
+  if (!u.l1Queued || u.l1Text !== undefined || u.upgradeQueuedAt === undefined) return 'ok';
+  /*
+   * **等在後面不是卡住。**
+   *
+   * 上一份 log 抓到看門狗做多了:09:28:47 那一塊「卡了 45 秒」,
+   * 可是同一秒 worker 的佇列深度是 16 —— 它一直好好地排在隊伍裡,
+   * 只是前面還有十幾塊。重排完全沒有意義(worker 端以 id 去重,
+   * 所以那次 enqueue 是個 no-op),還會浪費一次重試預算。
+   *
+   * 所以逾時之後先去問 worker「這個 id 還在不在你手上」,
+   * 在就把碼表歸零(`l1CheckedAt`)繼續等 —— 那是塞車,不是失蹤。
+   */
+  const since = Math.max(u.upgradeQueuedAt, u.l1CheckedAt ?? 0);
+  if (now - since <= thresholdMs) return 'ok';
+  return (u.l1Retries ?? 0) >= 1 ? 'give-up' : 'requeue';
+}
+
 /** 這一階是「翻不出來」的紅色狀態 */
 export function isFailedTier(tier: UnitTier): boolean {
   return tier === 'failed' || tier === 'l1-failed' || tier === 'l0-failed';

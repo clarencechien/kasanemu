@@ -65,6 +65,25 @@ test('§6.4 第一層:重複 id 只取第一筆,多出來的 id 直接丟', () =
   );
   assert.equal(out.stats.dupe, 1);
   assert.equal(out.stats.unknown, 1);
+  /*
+   * 而且 **u1 不算失敗** —— 它的譯文就在 results 裡。
+   *
+   * 上一版把 duplicate-id 當成 failure 送出去,而 failures 在 results
+   * 之後才到,於是一塊翻得好好的字被降級成 l1-failed:提示線變紅,
+   * 要使用者滑上去重試。使用者的原話是「看起來要多按幾次才行」。
+   */
+  assert.deepEqual(out.failures, []);
+});
+
+test('拿到譯文的 id 不會同時出現在 failures 裡', () => {
+  const raw = JSON.stringify([
+    { id: 'u1', echo: 'Roughly ', t: '甲' },
+    { id: 'u1', echo: '對不上的 echo', t: '乙' },
+    { id: 'u2', echo: 'Getting ', t: '入門' },
+  ]);
+  const out = parseBatch(raw, sent, false);
+  assert.equal(out.results.length, 2);
+  assert.deepEqual(out.failures, []);
 });
 
 test('缺 id 一律標記,不靜默略過 (§6.5)', () => {

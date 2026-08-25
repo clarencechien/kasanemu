@@ -129,6 +129,21 @@ for (const frag of ['ClickHouse SQL query', 'Elasticsearch ESQL query']) {
   needBlock(frag, '長項目底下的短連結');
 }
 
+/*
+ * aria-hidden 的逐字動畫標題:整句話要翻,而且是**一個**單元。
+ * 使用者的話:「這看起來是有點搞笑」—— 整頁最大的那行字因為對
+ * 螢幕閱讀器隱藏,所以對眼睛也不翻了。
+ */
+{
+  const hero = got.blocks.filter((b) => b.src.includes('approach to teaching'));
+  if (hero.length === 0) problems.push('aria-hidden 逐字標題:整行沒翻');
+  else if (hero.length > 1) problems.push(`aria-hidden 逐字標題:切成了 ${hero.length} 塊,應該只有 1 塊`);
+  else if (hero[0].tag !== 'H1') problems.push(`aria-hidden 逐字標題:單元落在 ${hero[0].tag},應該是 H1`);
+}
+// 反面:aria-hidden 而且 display:none 的提示框,照舊擋得住
+noBlock('Download this file', 'aria-hidden 且看不見的提示框');
+needBlock('Download the dataset', 'aria-hidden 提示框的外層段落');
+
 // 沒有元素包著的鬆散文字要換錨點(Range),而且一段一個
 for (const frag of ['ClickHouse requires 12 times', 'When the data set is pre-aggregated']) {
   needBlock(frag, '鬆散文字');

@@ -246,7 +246,21 @@ export function parseBatch(raw: string, sent: UnitRequest[], truncated: boolean)
     }
     return { results: [], failures, stats: { ...stats, kept: 0, swapped: true } };
   }
-  return { results, failures, stats };
+  /*
+   * **已經拿到譯文的區塊不是失敗的區塊。**
+   *
+   * `duplicate-id` 記在**第二次**出現的那一筆上,而第一次早就進了
+   * `results` —— 也就是說那一塊翻好了,只是模型多回了一份。
+   * 上一版照樣把它當成 failure 送給內容腳本,而 failures 在 results
+   * 之後才到,於是**一塊翻得好好的字被降級成 l1-failed**(提示線變紅、
+   * 要使用者滑上去重試)。使用者的原話是「看起來要多按幾次才行」;
+   * 那份 log 裡三次 duplicate-id,就是三塊被冤枉的區塊。
+   *
+   * 重覆的 id 仍然記在 `stats.dupe` 裡 —— 那是協定紀律的訊號,
+   * 該看見;但它不是「這塊沒翻到」。
+   */
+  const done = new Set(results.map((r) => r.id));
+  return { results, failures: failures.filter((f) => !done.has(f.id)), stats };
 }
 
 /**

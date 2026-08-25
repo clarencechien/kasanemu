@@ -2,7 +2,7 @@ import type { PageStats, ToContent, ToWorker } from '../shared/messages';
 import { TIERS, type Tier } from '../shared/models';
 import type { DomainState, Pipeline, PipelineSpend, Settings, SpendDay } from '../shared/types';
 import { clearDiag, readDiag, setDiagScope } from '../shared/diag';
-import { buildReport } from '../shared/report';
+import { buildReport, type ReportInput } from '../shared/report';
 import { L0Engine, translatorSupported } from '../content/l0';
 import { toTranslatorTarget } from '../content/lang';
 
@@ -233,6 +233,19 @@ async function downloadL0(): Promise<void> {
  * 一鍵匯出可以直接貼出來的診斷報告。
  * API key 只留長度與前後兩碼;原文與譯文一律截斷到 60 字。
  */
+/** worker 那一側的佇列深度。問不到就是 null —— 報告會把它寫成「問不到」 */
+async function askWorkerQueue(): Promise<ReportInput['workerQueue']> {
+  try {
+    const r = await chrome.runtime.sendMessage({
+      type: 'page-status',
+      pageKey: stats?.pageKey ?? '',
+    } satisfies ToWorker);
+    return (r as ReportInput['workerQueue']) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function exportLog(): Promise<void> {
   const note = $('export-note');
   const tab = await activeTab();
@@ -246,6 +259,7 @@ async function exportLog(): Promise<void> {
     domain: state ?? null,
     stats,
     modelCheck: stored['modelCheck'],
+    workerQueue: await askWorkerQueue(),
     events: await readDiag(),
     now: Date.now(),
   });

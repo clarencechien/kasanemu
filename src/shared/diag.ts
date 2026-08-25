@@ -9,7 +9,19 @@
  *
  * 一律不記原文與譯文全文,只記前 60 字 —— log 是要拿去貼給別人的。
  */
-const KEY = 'diag';
+/**
+ * **每個 scope 一把鑰匙。**
+ *
+ * 原本 content 與 worker 寫同一個 key,而兩邊是不同的 JS realm ——
+ * 各自「讀 → 合併 → 寫」,後寫的把先寫的整段蓋掉。
+ * 上一份 log 裡五次 `queue-l1` 只有兩次配得到 `enqueued`,
+ * 我差點把它當成訊息掉了的證據;真相是**那幾行被對面的 flush 蓋掉了**。
+ *
+ * 診斷工具本身會說謊是最糟的一種 bug:它讓每一次除錯都從錯的前提出發。
+ */
+const KEYS = { content: 'diag:content', worker: 'diag:worker', popup: 'diag:popup' } as const;
+const LEGACY_KEY = 'diag';
+/** 每個 scope 各自 300 —— 兩邊不再互相擠掉對方 */
 const CAP = 300;
 
 export type DiagScope = 'content' | 'worker' | 'popup';
@@ -26,6 +38,8 @@ export interface DiagEvent {
 let buffer: DiagEvent[] = [];
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 let scope: DiagScope = 'content';
+/** 同一個 context 裡的 flush 也要排隊,否則自己蓋自己 */
+let chain: Promise<void> = Promise.resolve();
 
 export function setDiagScope(s: DiagScope): void {
   scope = s;
@@ -64,24 +78,32 @@ function schedule(): void {
   }, 700);
 }
 
-export async function flush(): Promise<void> {
-  if (buffer.length === 0) return;
+export function flush(): Promise<void> {
+  if (buffer.length === 0) return chain;
   const mine = buffer;
   buffer = [];
-  try {
-    const got = await chrome.storage.session.get(KEY);
-    const prev = (got[KEY] as DiagEvent[] | undefined) ?? [];
-    const next = [...prev, ...mine].slice(-CAP);
-    await chrome.storage.session.set({ [KEY]: next });
-  } catch {
-    /* session storage 滿了或 context 正在關閉:log 掉了就掉了,不能因此壞掉 */
-  }
+  const key = KEYS[scope];
+  chain = chain.then(async () => {
+    try {
+      const got = await chrome.storage.session.get(key);
+      const prev = (got[key] as DiagEvent[] | undefined) ?? [];
+      await chrome.storage.session.set({ [key]: [...prev, ...mine].slice(-CAP) });
+    } catch {
+      /* session storage 滿了或 context 正在關閉:log 掉了就掉了,不能因此壞掉 */
+    }
+  });
+  return chain;
 }
 
 export async function readDiag(): Promise<DiagEvent[]> {
   try {
-    const got = await chrome.storage.session.get(KEY);
-    return ((got[KEY] as DiagEvent[] | undefined) ?? []).sort((a, b) => a.at - b.at);
+    const got = await chrome.storage.session.get([...Object.values(KEYS), LEGACY_KEY]);
+    const all: DiagEvent[] = [];
+    for (const k of [...Object.values(KEYS), LEGACY_KEY]) {
+      const part = got[k] as DiagEvent[] | undefined;
+      if (part) all.push(...part);
+    }
+    return all.sort((a, b) => a.at - b.at);
   } catch {
     return [];
   }
@@ -89,5 +111,5 @@ export async function readDiag(): Promise<DiagEvent[]> {
 
 export async function clearDiag(): Promise<void> {
   buffer = [];
-  await chrome.storage.session.remove(KEY).catch(() => undefined);
+  await chrome.storage.session.remove([...Object.values(KEYS), LEGACY_KEY]).catch(() => undefined);
 }

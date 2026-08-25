@@ -16,6 +16,8 @@ export interface ReportInput {
   domain: DomainState | null;
   stats: PageStats | null;
   modelCheck: unknown;
+  /** worker 那一側的佇列深度,拿來和 stats.l1Queue 對帳 */
+  workerQueue?: { total: number; page: number; oldestMs: number; draining: boolean } | null;
   events: DiagEvent[];
   now: number;
 }
@@ -101,6 +103,25 @@ export function buildReport(i: ReportInput): string {
         `- 捲動策略:${m.stability} → ${m.guard ? '捲動時先藏' : '一直顯示'}` +
           `(appShell=${m.appShell} 內層捲動=${m.innerScroll} 釘住的單元 ${m.pinned})`,
       );
+    }
+    /*
+     * **兩側的佇列一定要並排。**
+     *
+     * 「排進去了但沒有變 L1」查了三輪都卡在同一個地方:內容腳本說
+     * 「這幾塊在佇列裡」,而我沒有任何辦法知道 worker 那邊到底有沒有收到。
+     * 兩個數字分開看都像正常的,擺在一起才看得出訊息掉在中間。
+     */
+    const q = i.stats.l1Queue;
+    const wq = i.workerQueue;
+    if ((q && q.queued > 0) || (wq && wq.total > 0) || (q && q.retried > 0)) {
+      const mine = q ? `頁面認為 ${q.queued} 塊在排隊(最舊 ${Math.round(q.oldestMs / 1000)}s)` : '頁面:—';
+      const theirs = wq
+        ? `worker 佇列本頁 ${wq.page} / 全部 ${wq.total}${wq.draining ? '(drain 中)' : ''}`
+        : 'worker:問不到';
+      lines.push(`- L1 佇列:${mine} · ${theirs}${q && q.retried > 0 ? ` · 看門狗重排過 ${q.retried}` : ''}`);
+      if (q && q.queued > 0 && wq && wq.page === 0) {
+        lines.push('  - **兩側對不起來:訊息掉在中間,或譯文送回來時掉了**');
+      }
     }
     const bad = i.stats.unparsedColors ?? [];
     if (bad.length > 0) lines.push(`- **顏色解析失敗 ${bad.length} 種**:${bad.join(' · ')}`);

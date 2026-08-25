@@ -52,9 +52,52 @@ export const CHROME_SELECTOR =
   '[role="tooltip"]';
 
 export const EXCLUDE_SELECTOR =
-  '[aria-hidden="true"],[contenteditable],[contenteditable=""],[translate="no"],.notranslate,' +
+  '[contenteditable],[contenteditable=""],[translate="no"],.notranslate,' +
   '.robots-nocontent,[class*="sharedaddy"],[class*="sd-sharing"],[class*="social-share"],' +
   '[class*="share-buttons"],[class*="addtoany"]';
+
+/**
+ * `aria-hidden="true"` **不等於看不見**。
+ *
+ * 這條規則以前寫在 EXCLUDE_SELECTOR 裡,結果是 anthropic.com 的主標題
+ * 一個字都沒翻:
+ *
+ *   <h1 aria-label="Anthropic's approach to teaching and learning AI">
+ *     <span class="word" aria-hidden="true">Anthropic's</span> …
+ *
+ * 這是逐字進場動畫的標準寫法 —— 把整句話放進 `aria-label` 給螢幕閱讀器,
+ * 再把畫面上真正看得到的每一個字標成 `aria-hidden`,免得讀兩次。
+ * 使用者的話是「這看起來是有點搞笑」:**整頁最大的那行字,
+ * 因為對螢幕閱讀器隱藏,所以對眼睛也不翻了。**
+ *
+ * `aria-hidden` 的定義是「對輔助技術隱藏」,而 Kasanemu 疊的是**眼睛看到的東西**。
+ * 兩者剛好相反。真正的「看不見」由 CSS 回答,而那個判斷本來就有
+ * (`isInvisible` / sr-only / getClientRects)。
+ *
+ * 所以留下來的只有原本真正要擋的那一半:aria-hidden **而且畫面上也沒有**
+ * —— Gmail 那個 `<div role="tooltip" aria-hidden="true">Download</div>`
+ * 是 display:none 的,照樣擋得住。
+ */
+export function ariaHiddenSkip(el: Element): boolean {
+  if (el.getAttribute('aria-hidden') !== 'true') return false;
+  const cs = getComputedStyle(el);
+  if (isInvisible(cs)) return true;
+  // 沒有繪製面積 = 眼睛看不到,和 sr-only 同一個判準
+  return el.getClientRects().length === 0;
+}
+
+/** 排除清單 + 「aria-hidden 而且真的看不見」 */
+export function excluded(el: Element): boolean {
+  return el.matches(EXCLUDE_SELECTOR) || ariaHiddenSkip(el);
+}
+
+/** 自己或任一祖先被排除(取代 `closest(EXCLUDE_SELECTOR)`) */
+export function inExcluded(el: Element): boolean {
+  for (let p: Element | null = el; p; p = p.parentElement) {
+    if (excluded(p)) return true;
+  }
+  return false;
+}
 
 const BLOCKISH_DISPLAY = new Set(['block', 'flex', 'grid', 'list-item', 'flow-root', 'table-cell', 'table-caption']);
 
@@ -142,7 +185,7 @@ function listItemText(li: Element, skip?: ReadonlySet<Element>): string {
     if (kid.tagName === 'UL' || kid.tagName === 'OL') continue;
     if (NON_TEXT_TAGS.has(kid.tagName)) continue;
     if (skip?.has(kid)) continue;
-    if (kid.matches(EXCLUDE_SELECTOR)) continue;
+    if (excluded(kid)) continue;
     out += ownText(kid, skip);
   }
   return normalizeText(out);
@@ -319,7 +362,7 @@ export function ownText(el: Element, skip?: ReadonlySet<Element>): string {
      * 會讓它的父層變成一個內容是「Download」的翻譯單元。
      * 這是 sr-only 那個坑的第四次:**認出來還不夠,祖先也要扣掉。**
      */
-    if (kid.matches(EXCLUDE_SELECTOR)) continue;
+    if (excluded(kid)) continue;
     out += ownText(kid, skip);
   }
   return out;
@@ -341,7 +384,7 @@ export function ownText(el: Element, skip?: ReadonlySet<Element>): string {
 export function hasContainerChild(el: Element): boolean {
   for (const kid of Array.from(el.querySelectorAll(CONTAINER_TAGS))) {
     if (EXCLUDE_TAGS.has(kid.tagName)) continue;
-    if (kid.matches(EXCLUDE_SELECTOR)) continue;
+    if (excluded(kid)) continue;
     if (ownText(kid).trim().length > 0) return true;
   }
   return false;
@@ -457,7 +500,7 @@ function inlineOwnText(el: Element, skip?: ReadonlySet<Element>): string {
     const kid = node as Element;
     if (NON_TEXT_TAGS.has(kid.tagName)) continue;
     if (skip?.has(kid)) continue;
-    if (kid.matches(EXCLUDE_SELECTOR)) continue;
+    if (excluded(kid)) continue;
     if (kid.matches(CONTAINER_TAGS)) continue;
     out += ownText(kid, skip);
   }
@@ -665,7 +708,7 @@ interface WalkCtx {
  */
 function walk(el: Element, ctx: WalkCtx, pinned = false): boolean {
   if (EXCLUDE_TAGS.has(el.tagName)) return false;
-  if (el.matches(EXCLUDE_SELECTOR)) return false;
+  if (excluded(el)) return false;
   // 應用程式外殼:不蓋疊層,但 hover / 選取仍然翻得到(見 CHROME_SELECTOR)
   if (isAppChrome(el)) return false;
   // 無文字的子樹直接剪掉,省下大量 getComputedStyle。
@@ -844,7 +887,7 @@ export function inlineRuns(el: Element): Array<{ range: Range; nodes: Node[] }> 
         flush();
         continue;
       }
-      if (NON_TEXT_TAGS.has(kid.tagName) || kid.matches(EXCLUDE_SELECTOR)) continue;
+      if (NON_TEXT_TAGS.has(kid.tagName) || excluded(kid)) continue;
     } else if (node.nodeType !== 3 /* TEXT_NODE */) {
       continue;
     }
@@ -947,7 +990,7 @@ function captureInlineText(el: Element, ctx: WalkCtx, pinned: boolean): boolean 
      * 走捷徑的路徑要自己補上主路徑的每一道關卡。
      */
     if (EXCLUDE_TAGS.has(kid.tagName)) continue;
-    if (kid.matches(EXCLUDE_SELECTOR) || kid.matches(CHROME_SELECTOR)) continue;
+    if (excluded(kid) || kid.matches(CHROME_SELECTOR)) continue;
     if (normalizeText(ownText(kid, ctx.srOnly)) !== text) continue;
     if (ctx.made.has(kid) || ctx.seen(kid)) return true;
     const kcs = getComputedStyle(kid);
@@ -997,7 +1040,7 @@ export function findLabels(
     if (seen(el)) continue;
     // 排除清單對加翻層同樣有效 —— 先前只有內文單元遵守它,
     // 於是 .notranslate / translate="no" 裡的連結照樣被翻
-    if (el.closest(EXCLUDE_SELECTOR)) continue;
+    if (inExcluded(el)) continue;
     // 巢狀互動元素只取最內層(連結包按鈕、按鈕包連結)
     if (el.querySelector(INTERACTIVE_SELECTOR) !== null) continue;
     const cs = getComputedStyle(el);
@@ -1057,7 +1100,7 @@ export function explainCandidate(el: Element): string[] {
   // 祖先鏈:被擋掉的祖先會讓整個子樹跳過
   for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
     if (EXCLUDE_TAGS.has(p.tagName)) reasons.push(`祖先 <${p.tagName.toLowerCase()}> 在排除清單上`);
-    else if (p.matches(EXCLUDE_SELECTOR)) reasons.push(`祖先 <${p.tagName.toLowerCase()}> 命中排除選擇器`);
+    else if (excluded(p)) reasons.push(`祖先 <${p.tagName.toLowerCase()}> 命中排除選擇器`);
     else {
       const pcs = getComputedStyle(p);
       if (isInvisible(pcs)) reasons.push(`祖先 <${p.tagName.toLowerCase()}> 不可見 (${pcs.display}/${pcs.visibility}/${pcs.opacity})`);
@@ -1066,7 +1109,8 @@ export function explainCandidate(el: Element): string[] {
   }
 
   if (EXCLUDE_TAGS.has(el.tagName)) return [`<${el.tagName.toLowerCase()}> 在排除清單上`];
-  if (el.matches(EXCLUDE_SELECTOR)) return ['命中排除選擇器 (aria-hidden / contenteditable / translate=no / .notranslate)'];
+  if (el.matches(EXCLUDE_SELECTOR)) return ['命中排除選擇器 (contenteditable / translate=no / .notranslate)'];
+  if (ariaHiddenSkip(el)) return ['aria-hidden="true" 而且畫面上沒有繪製面積'];
   if (!(el.textContent ?? '').trim()) return ['沒有文字'];
 
   const cs = getComputedStyle(el);
