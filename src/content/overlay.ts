@@ -544,12 +544,25 @@ export class OverlayLayer {
 
   private hud: HTMLDivElement | null = null;
   private hudTimer = 0;
+  private hudText = '';
+  private hudLevel = '';
 
   /**
    * 狀態列。`busy` 會持續顯示到下一次更新;`idle` 與 `warn` 顯示幾秒後淡出
    * (warn 停久一點,那是要被看到的)。
    */
   setHud(text: string, level: 'idle' | 'busy' | 'warn'): void {
+    /*
+     * 內容沒變就什麼都不做。
+     *
+     * updateHud() 被每一次 flush、每一批結果、每一次 hover 呼叫,
+     * 而這裡原本每次都重設淡出計時器 —— 於是「完成」的狀態列
+     * **永遠不會淡出**,因為它一直被同樣的字重新點亮。
+     * 常駐的狀態列是噪音,而這個 bug 讓它變成常駐的。
+     */
+    if (this.hudText === text && this.hudLevel === level) return;
+    this.hudText = text;
+    this.hudLevel = level;
     if (!this.hud) {
       this.hud = document.createElement('div');
       this.hud.className = 'hud';
@@ -562,7 +575,7 @@ export class OverlayLayer {
     if (level === 'busy') return;
     this.hudTimer = window.setTimeout(
       () => el.classList.remove('show'),
-      level === 'warn' ? 8000 : 3000,
+      level === 'warn' ? 8000 : 3200,
     );
   }
 
@@ -570,6 +583,9 @@ export class OverlayLayer {
     clearTimeout(this.hudTimer);
     this.hud?.remove();
     this.hud = null;
+    // 節點沒了,快取的字也要跟著清掉,否則下一次同樣的字會被當成「沒變」
+    this.hudText = '';
+    this.hudLevel = '';
   }
 
   drop(unit: Unit): void {

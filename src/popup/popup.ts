@@ -65,7 +65,11 @@ function renderState(): void {
   $('tier-note').textContent = `${TIERS[state.tier].modelId} — ${TIERS[state.tier].note}`;
   $('translate-note').textContent = settings.autoTranslate
     ? 'Alt+Shift+R;也用來重試失敗的區塊'
-    : '自動翻譯已關閉 —— 只有按這裡才會翻';
+    : 'Alt+Shift+R;每一頁都要按一次';
+  $<HTMLInputElement>('auto').checked = settings.autoTranslate;
+  $('auto-note').textContent = settings.autoTranslate
+    ? '進站與換頁都會自動整頁翻 —— 會持續產生 API 花費'
+    : '啟用只是「這個網域我要用」;要翻是另一個動作。換頁後也要再按一次。';
 }
 
 /** feature.md §6:不支援時要明確告知,不是靜靜地什麼都沒發生 */
@@ -322,7 +326,14 @@ async function main(): Promise<void> {
     });
   }
 
-  // 使用者要的「啟用之後再按翻譯」。設定頁關掉自動翻譯的話,這是唯一的入口。
+  $('auto').addEventListener('change', async () => {
+    const on = $<HTMLInputElement>('auto').checked;
+    settings = await ask<Settings>({ type: 'set-settings', patch: { autoTranslate: on } });
+    renderState();
+    window.setTimeout(() => void refresh(), 300);
+  });
+
+  // 使用者要的「啟用之後再按翻譯」。自動翻譯關掉時,這是唯一的入口。
   $('translate').addEventListener('click', async () => {
     if (tabId < 0) return;
     const btn = $<HTMLButtonElement>('translate');

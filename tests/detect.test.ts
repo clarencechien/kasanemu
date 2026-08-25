@@ -344,3 +344,84 @@ test('加翻候選:上限會擋住病態頁面', () => {
   const body = mount(many);
   assert.equal(findLabels(body, 8).length, 8);
 });
+
+/** jsdom 沒有 layout,`hidden` 不會變成 display:none —— 手動補上 */
+function displayNone(body: Element, selector: string): void {
+  for (const el of body.querySelectorAll(selector)) {
+    el.setAttribute('style', 'display: none');
+    el.getClientRects = () => [] as unknown as DOMRectList;
+  }
+}
+
+test('分享按鈕:藏起來的無障礙標籤不算長度,整塊當 UI 標籤排除', () => {
+  // 回報的真實 DOM:Jetpack 的分享列。textContent 是 47 字(超過 24),
+  // 但畫面上只有「Facebook」8 個字 —— 用 textContent 量會讓它變成內文單元,
+  // 疊層把「分享至 Facebo…」蓋在分享列上
+  const body = mount(`
+    <div class="sharedaddy"><div class="sd-content"><ul>
+      <li class="share-facebook"><a href="https://x.test/?share=facebook">
+        <span id="sharing-facebook-19725" hidden>Share on Facebook (Opens in new window)</span>
+        <span>Facebook</span>
+      </a></li>
+      <li class="share-email"><a href="mailto:?subject=x">
+        <span id="sharing-email-19725" hidden>Email a link to a friend (Opens in new window)</span>
+        <span>Email</span>
+      </a></li>
+    </ul></div></div>
+  `);
+  displayNone(body, 'span[hidden]');
+  assert.deepEqual(ids(body), []);
+});
+
+test('分享按鈕的可見標籤仍然收得到(hover 想知道還是問得到)', () => {
+  const body = mount(`
+    <a href="https://x.test/?share=facebook">
+      <span id="s1" hidden>Share on Facebook (Opens in new window)</span>
+      <span>Facebook</span>
+    </a>
+  `);
+  displayNone(body, 'span[hidden]');
+  assert.deepEqual(findLabels(body, 200).map((c) => c.src), ['Facebook']);
+});
+
+test('收折的 <details>:內容沒有繪製面積,不建立單元', () => {
+  const body = mount(`
+    <details>
+      <summary>Can I read Stratechery via RSS?</summary>
+      <p>Yes! Create a Stratechery Passport account, go to Delivery Preferences.</p>
+    </details>
+  `);
+  displayNone(body, 'details > p');
+  assert.deepEqual(ids(body), ['Can I read Stratechery via RSS?']);
+});
+
+test('展開的 <details>:問與答都是單元', () => {
+  const body = mount(`
+    <details open>
+      <summary>Can I read Stratechery via RSS?</summary>
+      <p>Yes! Create a Stratechery Passport account, go to Delivery Preferences.</p>
+    </details>
+  `);
+  assert.deepEqual(ids(body), [
+    'Can I read Stratechery via RSS?',
+    'Yes! Create a Stratechery Passport account, go to Delivery Preferences.',
+  ]);
+});
+
+test('分享 widget 整塊排除 —— 連「Share」標題與 hover 貼片都不要', () => {
+  // 回報的真實 DOM 有 robots-nocontent,那是「這不是內容」的標準訊號
+  const body = mount(`
+    <div class="sharedaddy sd-sharing-enabled"><div class="robots-nocontent sd-sharing">
+      <h3 class="sd-title">Share</h3>
+      <ul><li><a href="https://x.test/?share=facebook"><span>Facebook</span></a></li></ul>
+    </div></div>
+    <p>Stripe acquiring OpenRouter changes how AI inference gets billed.</p>
+  `);
+  assert.deepEqual(ids(body), ['Stripe acquiring OpenRouter changes how AI inference gets billed.']);
+  assert.deepEqual(findLabels(body, 200), []);
+});
+
+test('排除清單對加翻層同樣有效', () => {
+  const body = mount('<div class="notranslate"><a href="/x">Export</a></div>');
+  assert.deepEqual(findLabels(body, 200), []);
+});

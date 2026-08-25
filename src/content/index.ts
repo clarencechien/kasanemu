@@ -11,6 +11,7 @@ import type {
 import { setDebug, dbg } from '../shared/log';
 import { diag, setDiagScope } from '../shared/diag';
 import {
+  EXCLUDE_SELECTOR,
   INTERACTIVE_SELECTOR,
   explainCandidate,
   findCandidates,
@@ -43,6 +44,7 @@ import {
   isFailedTier,
   priorityOf as priorityFor,
   swapAllowed,
+  translationPhase,
 } from './upgrade';
 import { mask, protectedFragments } from './mask';
 import { OverlayLayer, type ChipItem } from './overlay';
@@ -188,6 +190,52 @@ let lastProblem = '';
 
 function makePageKey(): string {
   return `${location.origin}${location.pathname}`;
+}
+
+/**
+ * 換頁的偵測用 href,不是 page key。
+ *
+ * page key 只到 pathname —— 那是給 §8 的成本計數用的,粒度刻意粗。
+ * 但「使用者跳到另一個頁面了」這件事要更敏感:`?page=2` 的分頁、
+ * hash 路由的 SPA 都是新內容,不該沿用上一頁按下的「翻譯這一頁」。
+ */
+let lastHref = location.href;
+
+/**
+ * 換頁了。
+ *
+ * 回報:「在啟用的情況下,在同一頁點超連結跳轉後會開始自動翻譯新的內容」。
+ * SPA 換路由時 content script 不會重載,於是上一頁按下的 manualArmed
+ * 一路帶到新頁面 —— 使用者按的是「翻**這一頁**」,不是「從今以後每一頁」。
+ *
+ * 整頁重新載入沒有這個問題(content script 是新的),所以這裡只處理
+ * 同一份 document 內的換頁。
+ */
+function onRouteChange(): void {
+  const href = location.href;
+  if (href === lastHref) return;
+  lastHref = href;
+  const key = makePageKey();
+  if (key !== pageKey) {
+    send({ type: 'drop-page', pageKey });
+    pageKey = key;
+    unlockScales(units); // §4.4 規則 3
+  }
+  // 新頁面要重新表達意圖;開了自動翻譯的人不受影響(intake 自己會判斷)
+  manualArmed = false;
+  lastProblem = '';
+  emptyScans = 0;
+  firstPaintMs = -1;
+  // 上一頁的貼片與標籤單元不屬於這一頁
+  closeChip(true);
+  selectionUnit = null;
+  for (const u of labels) unitById.delete(u.id);
+  labels.clear();
+  labelByEl = new WeakMap<Element, Unit>();
+  labelMemo.clear();
+  labelQueuedText.clear();
+  diag('info', 'route-change', { pageKey, autoTranslate: settings.autoTranslate });
+  updateHud();
 }
 
 function send(msg: ToWorker): void {
@@ -363,6 +411,17 @@ function onMotionEnd(): void {
 }
 
 /** feature.md §4.4 規則 3:只有這些事件才解鎖字級重算 */
+/**
+ * 收合元件切換 → 版面整片位移,而且可能有新內容第一次被算進版面。
+ * 所以是 relayout(重新量)+ 重掃,不是只有 flush。
+ */
+function onDisclosureToggle(): void {
+  if (!running) return;
+  diag('info', 'disclosure-toggle', {});
+  relayout();
+  scheduleFlush(true);
+}
+
 function relayout(): void {
   unlockScales(units);
   clearMeasureCache();
@@ -392,6 +451,15 @@ function flush(): void {
   for (const u of units) {
     if (hasText(u)) layer.paint(u, settings);
     else layer.paintHint(u, settings);
+    /*
+     * 來源元素現在沒有繪製面積(display:none、收折的 <details>、
+     * 隱藏的分頁)→ 疊層必須跟著消失。
+     *
+     * 這一條**不受 occlusionCheck 開關控制**,也不受可見區與 80 筆上限限制:
+     * 那個檢查是啟發式的「有沒有被祖先裁掉」,這一條是「原文根本不存在於版面上」。
+     * 沒有這條的話,收折起來的問答會把譯文留在原地,疊到別人身上。
+     */
+    layer.setCovered(u, u.rect.width < 1 || u.rect.height < 1);
   }
   const overflowing = [...units].filter((u) => u.overflowsBox).length;
   if (overflowing !== lastOverflowCount) {
@@ -822,6 +890,11 @@ function adhocLabelAt(target: EventTarget | null): Unit | null {
     if (unitByEl.has(el)) return null; // 內文區塊有自己的畫法
     if (adhocRejected.has(el)) continue;
     if (labels.size >= ANNOTATION_CAP) return null;
+    // 排除清單(.notranslate、分享 widget…)對臨時加翻同樣有效
+    if (el.closest(EXCLUDE_SELECTOR)) {
+      adhocRejected.add(el);
+      continue;
+    }
     // 底下還有帶文字的結構性區塊 → 這是容器,翻它等於把一整段塞進貼片
     if (hasContainerChild(el)) {
       adhocRejected.add(el);
@@ -1273,8 +1346,22 @@ function updateHud(): void {
   }
   const c = tierCounts();
   const failed = c.failed + c['l1-failed'];
-  const waiting = [...units].filter((u) => u.l1Queued && u.l1Text === undefined).length;
-  const pending = c.pending + c['l0-failed'];
+  let waiting = 0;
+  let nearPending = 0;
+  let farPending = 0;
+  for (const u of units) {
+    if (u.l1Queued && u.l1Text === undefined) waiting++;
+    if (u.tier !== 'pending' && u.tier !== 'l0-failed') continue;
+    if (u.maxChars <= 0) continue; // 塞不下的本來就不翻,不算「在等」
+    /*
+     * 「已經開口要了」也算在跑,即使它在畫面外:預翻範圍比視窗大,
+     * 那些請求已經在 L0 的併發池裡。只看 inView 會在送出與回來之間
+     * 閃一次「完成」。
+     */
+    const asked = u.tier === 'pending' && probed.has(u);
+    if (u.inView || asked) nearPending++;
+    else farPending++;
+  }
 
   if (lastProblem) {
     layer.setHud(`疊 · ${lastProblem}`, 'warn');
@@ -1302,9 +1389,20 @@ function updateHud(): void {
   if (settings.annotate && labels.size > 0) parts.push(`標籤 ${labels.size}`);
   const heldBack = [...units].filter((u) => u.pendingSwap !== undefined).length;
   if (heldBack > 0) parts.push(`待換 ${heldBack}`);
-  const busy = waiting > 0 || pending > 0;
-  if (busy) {
-    const tail = waiting > 0 ? `等 ${effective === 'single' ? 'L1' : '升級'} ${waiting}` : `待翻 ${pending}`;
+
+  const phase = translationPhase({
+    waiting,
+    nearPending,
+    farPending,
+    l0Busy: l0?.busy() ?? false,
+  });
+  if (phase === 'busy') {
+    const tail =
+      waiting > 0
+        ? `等 ${effective === 'single' ? 'L1' : '升級'} ${waiting}`
+        : nearPending > 0
+          ? `待翻 ${nearPending}`
+          : '翻譯中…';
     layer.setHud(`疊 · ${[...parts, tail].join(' · ')}`, 'busy');
     return;
   }
@@ -1312,8 +1410,14 @@ function updateHud(): void {
     layer.setHud('疊 · 沒有需要翻譯的內容', 'idle');
     return;
   }
+  /*
+   * 跑完了就說完了,然後讓它淡出 —— 常駐的狀態列是噪音。
+   * 「這一屏完成」不是客套話:頁面下面還有沒輪到的區塊時說「完成」是騙人的,
+   * 而使用者需要知道那是「捲下去會繼續」而不是「漏掉了」。
+   */
+  const done = phase === 'all-done' ? '完成' : '這一屏完成,捲動繼續翻';
   // 有紅的就順便講怎麼救 —— 使用者不會知道 hover 可以重試
-  const tail = failed > 0 ? ' · 滑到紅線上重試' : ' · 完成';
+  const tail = failed > 0 ? ' · 滑到紅線上重試' : ` · ${done}`;
   layer.setHud(`疊 · ${parts.join(' · ')}${tail}`, failed > 0 ? 'warn' : 'idle');
 }
 
@@ -1452,13 +1556,7 @@ async function start(): Promise<void> {
     for (const r of records) {
       if (r.target instanceof Element && r.target.id === 'kasanemu-root') return;
     }
-    // SPA 換路由後 pathname 會變,重新起一個 page key(§8 第 3 層的計數跟著換頁)
-    const key = makePageKey();
-    if (key !== pageKey) {
-      send({ type: 'drop-page', pageKey });
-      pageKey = key;
-      unlockScales(units); // §4.4 規則 3
-    }
+    onRouteChange();
     scheduleFlush(true);
   });
   mo.observe(document.body, { childList: true, characterData: true, subtree: true });
@@ -1475,6 +1573,20 @@ async function start(): Promise<void> {
   // 但 capture 階段會經過 document —— 沒有這個,輪播一捲整排疊層就錯位
   document.addEventListener('scroll', onScroll, { passive: true, capture: true });
   window.addEventListener('pagehide', onPageHide);
+  // 上一頁 / 下一頁與 hash 路由不一定改動 DOM,MutationObserver 打不到
+  window.addEventListener('popstate', onRouteChange);
+  window.addEventListener('hashchange', onRouteChange);
+  /*
+   * <details> 展開 / 收折。
+   *
+   * 這是回報的「原本收折的沒展開就會爆掉」的元兇:切換 open 只是**屬性**
+   * 變動,而 MutationObserver 只看 childList 與 characterData ——
+   * 完全打不到。於是內容整片上移或下移,疊層留在舊座標,
+   * 答案的譯文疊到問題的標題上。
+   *
+   * toggle 不冒泡,但 capture 階段抓得到。
+   */
+  document.addEventListener('toggle', onDisclosureToggle, true);
   // 入場動畫結束 → 位置定了,重新量一次
   document.addEventListener('transitionend', onMotionEnd, true);
   document.addEventListener('animationend', onMotionEnd, true);
@@ -1699,6 +1811,9 @@ function stop(): void {
   window.removeEventListener('resize', relayout);
   document.removeEventListener('scroll', onScroll, { capture: true } as EventListenerOptions);
   window.removeEventListener('pagehide', onPageHide);
+  window.removeEventListener('popstate', onRouteChange);
+  window.removeEventListener('hashchange', onRouteChange);
+  document.removeEventListener('toggle', onDisclosureToggle, true);
   document.removeEventListener('transitionend', onMotionEnd, true);
   document.removeEventListener('animationend', onMotionEnd, true);
   document.removeEventListener('load', onResourceLoad, true);
@@ -1731,6 +1846,7 @@ function stop(): void {
   labelMemo.clear();
   labelQueuedText.clear();
   labelByEl = new WeakMap<Element, Unit>();
+  lastHref = location.href;
   // nextId 刻意不重置:worker 佇列裡可能還有已送出的舊 id,
   // 重新從 u1 開始會讓那些結果套到完全不同的區塊上 —— 自己製造 id 對滑。
   // §6.1 說 id 是「本頁單調遞增的穩定 id」,跨 stop/start 也維持單調。
