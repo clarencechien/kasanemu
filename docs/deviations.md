@@ -3124,3 +3124,55 @@ glossaryFingerprint(src, terms)  // 沒命中 → ''  → key 與沒有詞表時
 | --- | --- | --- |
 | 匯入 | 只補不覆蓋 | **同名的以檔案為準**,本機獨有的保留 |
 | 理由 | 現有的譯文不會比較差 | 還原備份時你要的就是檔案裡那個版本 |
+
+## DD. Release 的 asset 掉了:草稿的編輯表單會覆蓋 CI 上傳的結果
+
+v0.1.0 的 Release 頁面上只有 GitHub 自動產的 source code,
+CI 打包好的 `kasanemu-0.1.0.<build>.zip` 不見了。CI 沒有失敗。
+
+### DD-1. 時間軸才看得出兇手
+
+| 時間 (UTC) | 發生什麼 |
+| --- | --- |
+| 13:47:28 | 使用者在網頁上按 **Draft a new release**,草稿建立 (`created_at`) |
+| 13:48:47 | tag `v0.1.0` 推上去,workflow 被觸發 |
+| 13:49:21–24 | CI 的 `attach zip to release` 執行,**成功、零輸出** |
+| 13:51:05 | 使用者按 **Publish release** (`published_at` == `updated_at`) |
+
+CI 那一步零輸出正是它有做事的證據:`gh release view` 找到了草稿,
+走的是 `gh release upload --clobber` 那條(成功時不印任何東西)。
+所以 13:49 的時候 asset 是在的。
+
+13:51:05 送出的是一份 **13:47 就打開、asset 還是空的表單**。
+Release 是整份取代,不是 patch —— 那份陳舊的狀態把 asset 洗掉了。
+`updated_at == published_at` 且 `assets: []` 就是這個覆蓋的指紋。
+
+### DD-2. 這不是 race condition,是「人的分頁」也是一個 writer
+
+我一開始找的是 workflow 的 bug:是不是 `gh release create` 跟
+`gh release upload` 打架、是不是 tag 指到舊的 commit(查了,
+tag 指的是含修正的 `984a61f`,跑的是新的冪等版本)。
+
+都不是。真正的第三個 writer 是**開著沒關的瀏覽器分頁**。
+自動化的流程在推理時很容易只把「其他 job」當成競爭者,
+但只要有人也握著同一個物件的編輯表單,他就是一個持有陳舊快照的 writer。
+和 `docs/lessons.md` §7 的 read-modify-write 是同一件事,
+只是其中一邊是人。
+
+### DD-3. 下次的順序:先 publish,再讓 CI 掛檔案
+
+- 要嘛**先把 release 發佈掉、把分頁關掉**,再推 tag 讓 CI 上傳;
+- 要嘛完全交給 CI(`gh release create --notes-from-tag`),人完全不碰表單。
+
+最糟的是現在這種:人開著草稿等 CI。
+
+### DD-4. 補救:重跑那個 job 就好,因為那一步是冪等的
+
+```bash
+gh release upload v0.1.0 release/kasanemu-0.1.0.<build>.zip --clobber
+```
+
+`--clobber` 讓「已發佈的 release + 已存在的同名檔案」都不是錯誤,
+所以 **Re-run all jobs** 就能把檔案補回去 —— 不用重打 tag、
+不用刪 release。冪等的補救步驟在事情出錯的時候才顯出價值,
+這也是當初把那一步改成 `view || create` 的原因(§CX 之後的那次修正)。

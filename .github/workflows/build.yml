@@ -113,3 +113,20 @@ jobs:
             || gh release create "$GITHUB_REF_NAME" release/*.zip \
               --title "$GITHUB_REF_NAME" --generate-notes
           fi
+
+      # 上傳成功不等於檔案還在:如果有人開著草稿的編輯表單、在這之後才按
+      # Publish,那份陳舊的表單會把 asset 洗掉(docs/deviations.md §DD)。
+      # 那個覆蓋擋不住,但至少不要讓它靜悄悄 —— job 紅了才有人會去看。
+      - name: verify asset is attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          n=$(gh release view "$GITHUB_REF_NAME" --json assets \
+                --jq '[.assets[] | select(.name | endswith(".zip"))] | length')
+          echo "zip assets on $GITHUB_REF_NAME: $n"
+          if [ "$n" -eq 0 ]; then
+            echo "::error::release $GITHUB_REF_NAME has no zip asset —" \
+                 "有人在上傳之後送出了陳舊的編輯表單?重跑這個 job 即可補回。"
+            exit 1
+          fi
