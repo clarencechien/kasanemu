@@ -94,3 +94,6 @@ a { color: inherit; }
 code { font-size: 12px; }
 
 textarea { resize: vertical; font: 13px/1.5 ui-monospace, monospace; }
+
+/* 快取那一組按鈕橫排 —— 三顆分開三行只是浪費空間 */
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }

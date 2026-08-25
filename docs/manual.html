@@ -779,6 +779,26 @@ footer {
           <p>這是最需要回報的類型。請截圖 + 匯出 log,並且說一下當下在做什麼(剛捲動?剛展開選單?)。</p>
         </div>
         <div class="card">
+          <span class="k">換版、重灌之前先備份譯文</span>
+          <p>
+            <strong>設定 → 快取 → 匯出快取</strong>,存成一個 <code>.json</code>。
+            裝好新版之後按<strong>匯入快取</strong>倒回去,已經翻過的就不必再翻一次。
+            匯入是<strong>只補不覆蓋</strong>,所以倒回舊檔不會蓋掉你剛翻好的東西。
+          </p>
+        </div>
+        <div class="card">
+          <span class="k">把翻好的這一頁存下來</span>
+          <p>
+            popup → <strong>匯出這一頁(疊好的)</strong>,存成一個 <code>.html</code>。
+            打開就是譯文版,<strong>滑過去或按住 <kbd>Alt</kbd> 一樣看得到原文</strong> ——
+            和使用中的行為一致,只是改由三行 CSS 兌現,不需要擴充功能也能看。
+            <br />
+            兩個限制:頁面自己的 <code>&lt;script&gt;</code> 會被拿掉(不然框架重新
+            渲染時會把譯文洗掉),而樣式與圖片仍然向原站取用 ——
+            <strong>離線開只剩文字</strong>。
+          </p>
+        </div>
+        <div class="card">
           <span class="k">同一頁重開,會不會再花一次錢?</span>
           <p>
             不會。譯文快取<strong>預設存在磁碟上</strong>(IndexedDB),關掉瀏覽器、重開機都還在,

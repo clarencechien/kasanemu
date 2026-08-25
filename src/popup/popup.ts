@@ -1,4 +1,4 @@
-import type { PageStats, ToWorker } from '../shared/messages';
+import type { PageStats, ToContent, ToWorker } from '../shared/messages';
 import { TIERS, type Tier } from '../shared/models';
 import type { DomainState, Pipeline, PipelineSpend, Settings, SpendDay } from '../shared/types';
 import { clearDiag, readDiag, setDiagScope } from '../shared/diag';
@@ -270,6 +270,43 @@ async function exportLog(): Promise<void> {
   note.textContent = copied ? `已複製到剪貼簿並下載(${kb} KB)` : `已下載(${kb} KB);剪貼簿被擋了`;
 }
 
+/**
+ * 把「疊好的樣子」存成 HTML。
+ *
+ * 譯文從來沒有寫進頁面,所以這不是「另存新檔」—— content script 會在
+ * DOM 的複本上把原文與譯文並排放好,再交給這裡下載(見 content/snapshot.ts)。
+ */
+async function exportPage(): Promise<void> {
+  const note = $('page-note');
+  if (tabId < 0) {
+    note.textContent = '找不到分頁';
+    return;
+  }
+  note.textContent = '組裝中…';
+  let res: { html?: string; applied?: number; total?: number; title?: string; error?: string };
+  try {
+    res = await chrome.tabs.sendMessage(tabId, { type: 'export-page' } satisfies ToContent);
+  } catch {
+    note.textContent = '這一頁沒有 content script(或還沒啟用)';
+    return;
+  }
+  if (!res?.html) {
+    note.textContent = res?.error ?? '匯出失敗';
+    return;
+  }
+  const url = URL.createObjectURL(new Blob([res.html], { type: 'text/html' }));
+  const a = document.createElement('a');
+  a.href = url;
+  const slug = (res.title ?? 'page').replace(/[^\w\u4e00-\u9fff-]+/g, '-').slice(0, 60);
+  a.download = `kasanemu-${slug || 'page'}.html`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  const mb = (res.html.length / 1024 / 1024).toFixed(2);
+  note.textContent =
+    `已存 ${res.applied}/${res.total} 段譯文(${mb} MB)· ` +
+    '樣式與圖片仍然向原站取用,離線開會只剩文字';
+}
+
 async function main(): Promise<void> {
   const tab = await activeTab();
   tabId = tab?.id ?? -1;
@@ -348,6 +385,7 @@ async function main(): Promise<void> {
   });
 
   $('export-log').addEventListener('click', () => void exportLog());
+  $('export-page').addEventListener('click', () => void exportPage());
   $('clear-log').addEventListener('click', async () => {
     await clearDiag();
     $('export-note').textContent = '記錄已清空 —— 重現一次問題再匯出';

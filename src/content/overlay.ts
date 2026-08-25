@@ -11,7 +11,7 @@ import { hintClassFor } from './upgrade';
  * stacking context、transform 都會破壞定位。
  * §11.1 容器用 closed shadow DOM,樣式不受頁面 CSS 影響。
  */
-const HOST_ID = 'kasanemu-root';
+export const HOST_ID = 'kasanemu-root';
 
 /** feature.md §4.5 過場刻意短。越明顯的動畫越吸引注意,替換應該低調。 */
 const SWAP_MS = 80;

@@ -36,6 +36,8 @@ export type ToWorker =
   | { type: 'get-spend' }
   | { type: 'validate-models' }
   | { type: 'clear-cache' }
+  | { type: 'export-cache' }
+  | { type: 'import-cache'; dump: unknown }
   | { type: 'page-status'; pageKey: string };
 
 /** worker → content,以及 popup → content */
@@ -48,6 +50,7 @@ export type ToContent =
   | { type: 'command'; command: 'toggle-enabled' | 'toggle-mode' | 'translate-page' }
   /** feature.md §5.2 popup 讀本頁的階層統計 */
   | { type: 'get-page-stats' }
+  | { type: 'export-page' }
   /**
    * feature.md §3.2 規則 2:downloadable 的 create() 需要 user gesture,
    * 所以語言包由 popup 的按鈕點擊觸發下載,完成後叫 content 重試 L0。

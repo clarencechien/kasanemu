@@ -115,3 +115,80 @@ export async function clearAll(): Promise<void> {
     warn('IndexedDB 清空失敗', e);
   }
 }
+
+/** 匯出檔的格式。版本號是為了以後改格式時能認出舊檔。 */
+export interface CacheDump {
+  v: 1;
+  at: number;
+  count: number;
+  /** [key, 譯文, 最後使用時間] —— 陣列比物件省一半體積 */
+  records: Array<[string, string, number]>;
+}
+
+/**
+ * 把快取整包倒出來。
+ *
+ * 使用者的原話:「這樣就可以不用在移掉 ext 或昇版時 一切都重來」——
+ * 封測期間每換一版就重新載入擴充功能,`chrome.storage.session` 會清空,
+ * 而重灌更是連 IndexedDB 都沒了。譯文是花錢換來的,不該綁在安裝上。
+ *
+ * 兩個來源都倒:persistent 模式的資料在 IndexedDB,session 模式的在
+ * storage.session。以 IndexedDB 的時間戳優先(它才有真正的 LRU 資訊)。
+ */
+export async function exportAll(): Promise<CacheDump> {
+  const map = new Map<string, [string, number]>();
+  try {
+    const all = await tx<Array<{ k: string; t: string; at: number }>>('readonly', (s) => s.getAll());
+    for (const r of all) map.set(r.k, [r.t, r.at ?? 0]);
+  } catch (e) {
+    warn('IndexedDB 匯出失敗', e);
+  }
+  const session = await chrome.storage.session.get(null).catch(() => ({}));
+  for (const [sk, v] of Object.entries(session)) {
+    if (!sk.startsWith('tx:') || typeof v !== 'string') continue;
+    const k = sk.slice(3);
+    if (!map.has(k)) map.set(k, [v, 0]);
+  }
+  const records: Array<[string, string, number]> = [];
+  for (const [k, [t, at]] of map) records.push([k, t, at]);
+  return { v: 1, at: Date.now(), count: records.length, records };
+}
+
+/**
+ * 匯入。**只補不覆蓋** —— 同一把 key 的譯文是同一段原文、同一個模型、
+ * 同一個長度分桶算出來的,現有的那份沒有比較差,而覆蓋會把
+ * 「剛剛才翻好、還熱著的」換成檔案裡的舊資料。
+ *
+ * 一律同時寫進記憶體、session 與 IndexedDB:匯入的人多半正要換模式,
+ * 寫兩邊比猜他等一下想用哪一種可靠。
+ */
+export async function importAll(dump: unknown): Promise<{ added: number; skipped: number }> {
+  const d = dump as Partial<CacheDump> | null;
+  if (!d || d.v !== 1 || !Array.isArray(d.records)) throw new Error('不是 Kasanemu 的快取檔');
+  let added = 0;
+  let skipped = 0;
+  const batch: Record<string, string> = {};
+  for (const rec of d.records) {
+    if (!Array.isArray(rec) || typeof rec[0] !== 'string' || typeof rec[1] !== 'string') {
+      skipped++;
+      continue;
+    }
+    const [k, t, at] = rec;
+    if (await get('persistent', k)) {
+      skipped++;
+      continue;
+    }
+    mem.set(k, t);
+    batch[`tx:${k}`] = t;
+    try {
+      await tx('readwrite', (s) =>
+        s.put({ k, t, at: typeof at === 'number' && at > 0 ? at : Date.now(), size: t.length * 2 + 96 }),
+      );
+    } catch (e) {
+      warn('IndexedDB 匯入失敗', e);
+    }
+    added++;
+  }
+  await chrome.storage.session.set(batch).catch(() => undefined);
+  return { added, skipped };
+}

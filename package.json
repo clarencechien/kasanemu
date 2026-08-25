@@ -16,7 +16,8 @@
     "package": "npm run build && npm run zip",
     "probe:colors": "node scripts/probe-colors.mjs",
     "probe:detect": "node scripts/probe-detect.mjs",
-    "audit:coverage": "node scripts/audit-coverage.mjs"
+    "audit:coverage": "node scripts/audit-coverage.mjs",
+    "probe:snapshot": "node scripts/probe-snapshot.mjs"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.268",

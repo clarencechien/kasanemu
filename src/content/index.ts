@@ -51,7 +51,7 @@ import {
   translationPhase,
 } from './upgrade';
 import { mask, protectedFragments } from './mask';
-import { OverlayLayer, type ChipItem } from './overlay';
+import { HOST_ID, OverlayLayer, type ChipItem } from './overlay';
 import {
   hintColor,
   parseColor,
@@ -63,6 +63,7 @@ import {
 import { clearMeasureCache } from './measure';
 import { activeText, hasText, type Unit } from './unit';
 import { dedupeByText, labelBudget } from './annotate';
+import { buildSnapshot } from './snapshot';
 
 setDiagScope('content');
 
@@ -2642,6 +2643,21 @@ chrome.runtime.onMessage.addListener((raw: ToContent, _sender, reply) => {
     }
     case 'get-page-stats': {
       reply(pageStats());
+      return true;
+    }
+    case 'export-page': {
+      const done = [...units].filter((u) => hasText(u)).length;
+      if (done === 0) {
+        reply({ error: '這一頁還沒有任何譯文 —— 先翻再匯出' });
+        return true;
+      }
+      const snap = buildSnapshot({
+        units,
+        hostId: HOST_ID,
+        url: location.href,
+        version: chrome.runtime.getManifest().version_name ?? chrome.runtime.getManifest().version,
+      });
+      reply({ html: snap.html, applied: snap.applied, title: document.title, total: done });
       return true;
     }
     case 'l0-ready': {

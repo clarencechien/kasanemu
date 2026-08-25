@@ -184,7 +184,20 @@
       <label>persistent LRU 上限(MB)
         <input type="number" data-k="persistentCacheMB" data-num="1" min="1" />
       </label>
-      <button id="clear-cache">清空快取</button>
+      <div class="row">
+        <button id="export-cache">匯出快取</button>
+        <button id="import-cache">匯入快取</button>
+        <button id="clear-cache">清空快取</button>
+      </div>
+      <input type="file" id="cache-file" accept="application/json,.json" hidden />
+      <div id="cache-note" class="note"></div>
+      <p class="hint">
+        譯文是花錢換來的,不該綁在安裝上。<strong>換版、重灌、換機器前先匯出</strong>,
+        裝好之後匯回來就不必重翻。
+        <br />
+        匯入是<strong>只補不覆蓋</strong>:同一把 key 代表同一段原文 + 同一個模型 +
+        同一個長度分桶,現有的那份不會比較差,而覆蓋會把剛翻好、還熱著的換成檔案裡的舊資料。
+      </p>
     </section>
 
     <section>
