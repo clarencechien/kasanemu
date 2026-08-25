@@ -1747,7 +1747,18 @@ function updateHud(): void {
    * 沒人告訴他整頁其實翻完了。他的結論是「文章翻不完,HUD 不見了,
    * 是不是死掉了」。**沒說完成,就等於說了沒完成。**
    */
-  const tail = hard > 0 ? ` · ${done}(滑到紅線上重試)` : ` · ${done}`;
+  /*
+   * 「完成」要說得起。整頁跑完了,但還有區塊停在 L0(捲太快、沒停留過)——
+   * 那不是壞掉,可是也不該讓使用者以為那就是最終品質。
+   * 講清楚,而且**告訴他怎麼要**:同一顆按鈕再按一次就全部升級。
+   */
+  const onlyL0 = usesL1(effective) ? c.l0 : 0;
+  const tail =
+    hard > 0
+      ? ` · ${done}(滑到紅線上重試)`
+      : onlyL0 > 0 && phase === 'all-done'
+        ? ` · ${done} · ${onlyL0} 塊只有 L0,Alt+Shift+R 全部升級`
+        : ` · ${done}`;
   layer.setHud(`疊 · ${parts.join(' · ')}${tail}`, hard > 0 ? 'warn' : 'idle');
 }
 
@@ -2710,6 +2721,25 @@ async function translatePage(): Promise<void> {
       u.l0Tries = 0;
       probed.delete(u);
     }
+  }
+  /*
+   * **再按一次 = 把還停在 L0 的也升上去。**
+   *
+   * §4.2 的停留門檻(1.5 秒)是成本閘門:純粹捲過去的段落留在 L0,一毛不花。
+   * 那條規則是對的,但它留下一個沒有出口的狀態 —— 整頁「完成」了,
+   * 其中十二塊卻只有 L0 品質,而使用者沒有任何方法說「那幾塊我要好的」。
+   * 使用者的原話:「有些還停在 L0 但顯示完成」。
+   *
+   * 這個動作本來就叫「翻譯這一頁」,而且是使用者親手按的 ——
+   * 讓它把工作做完是最不意外的行為,也不需要新的按鈕或快捷鍵。
+   */
+  const stillL0 = [...units].filter(
+    (u) => u.tier === 'l0' && !u.l1Queued && u.maxChars > 0 && !hiddenByDisclosure(u.el),
+  );
+  if (stillL0.length > 0) {
+    stillL0.sort((a, b) => priorityOf(a) - priorityOf(b));
+    diag('info', 'upgrade-all', { units: stillL0.length });
+    queueUpgrade(stillL0);
   }
   updateHud();
   scheduleFlush(true);
