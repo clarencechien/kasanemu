@@ -152,20 +152,27 @@ export async function cacheProbe(
  * 兩句話擺在一起才看得出訊息掉在中間;分開看,兩邊都像正常的。
  * 協定裡本來就有 `page-status` 這條訊息,只是從來沒有人實作它。
  */
-export async function queueStatus(pageKey?: string): Promise<{
+export async function queueStatus(
+  pageKey?: string,
+  ids?: string[],
+): Promise<{
   total: number;
   page: number;
   oldestMs: number;
   draining: boolean;
+  /** 問到的 id 裡,還在佇列裡的那幾筆 */
+  has: string[];
 }> {
   const q = await loadQueue();
   const mine = pageKey === undefined ? q : q.filter((i) => i.pageKey === pageKey);
   const now = Date.now();
+  const held = new Set(mine.map((i) => i.id));
   return {
     total: q.length,
     page: mine.length,
     oldestMs: mine.length > 0 ? now - Math.min(...mine.map((i) => i.at)) : 0,
     draining,
+    has: (ids ?? []).filter((id) => held.has(id)),
   };
 }
 

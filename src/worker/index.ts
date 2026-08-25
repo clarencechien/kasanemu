@@ -104,7 +104,7 @@ chrome.runtime.onMessage.addListener((raw: ToWorker, sender, reply) => {
           break;
         }
         case 'page-status': {
-          reply(await queueStatus(raw.pageKey));
+          reply(await queueStatus(raw.pageKey, raw.ids));
           break;
         }
         case 'get-spend': {

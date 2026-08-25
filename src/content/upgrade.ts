@@ -38,12 +38,31 @@ export const STUCK_L1_MS = 45_000;
  * 上限一次。無人看管的重試迴圈會安靜地一直花錢。
  */
 export function stuckPlan(
-  u: { l1Queued: boolean; l1Text?: string; upgradeQueuedAt?: number; l1Retries?: number },
+  u: {
+    l1Queued: boolean;
+    l1Text?: string;
+    upgradeQueuedAt?: number;
+    l1Retries?: number;
+    /** 上一次確認過「它還在 worker 佇列裡」的時間 */
+    l1CheckedAt?: number;
+  },
   now: number,
   thresholdMs = STUCK_L1_MS,
 ): 'ok' | 'requeue' | 'give-up' {
   if (!u.l1Queued || u.l1Text !== undefined || u.upgradeQueuedAt === undefined) return 'ok';
-  if (now - u.upgradeQueuedAt <= thresholdMs) return 'ok';
+  /*
+   * **等在後面不是卡住。**
+   *
+   * 上一份 log 抓到看門狗做多了:09:28:47 那一塊「卡了 45 秒」,
+   * 可是同一秒 worker 的佇列深度是 16 —— 它一直好好地排在隊伍裡,
+   * 只是前面還有十幾塊。重排完全沒有意義(worker 端以 id 去重,
+   * 所以那次 enqueue 是個 no-op),還會浪費一次重試預算。
+   *
+   * 所以逾時之後先去問 worker「這個 id 還在不在你手上」,
+   * 在就把碼表歸零(`l1CheckedAt`)繼續等 —— 那是塞車,不是失蹤。
+   */
+  const since = Math.max(u.upgradeQueuedAt, u.l1CheckedAt ?? 0);
+  if (now - since <= thresholdMs) return 'ok';
   return (u.l1Retries ?? 0) >= 1 ? 'give-up' : 'requeue';
 }
 

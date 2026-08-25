@@ -2764,3 +2764,65 @@ display:none 的,照樣擋得住 —— 原本要擋的那一半一個都沒放�
 fixture 兩個方向都放了(§CM):看得見的逐字標題要翻成**一塊**,
 display:none 的提示框不能翻。把規則改回舊版,probe 立刻報
 `aria-hidden 逐字標題:整行沒翻`。
+
+## CV. 一塊翻好的字被降級成紅色
+
+使用者:「看起來要多按幾次才行。」
+
+log 終於問得出東西了(§CR 之後),而它一次就指到了:
+
+```
+09:25:25 ! batch-parsed {"dupe":1,"failures":["u31 duplicate-id"],"got":5,"kept":4}
+09:28:09 ! batch-parsed {"dupe":1,"failures":["u36 duplicate-id"],"got":7,"kept":6}
+09:28:32 ! batch-parsed {"dupe":1,"failures":["u50 duplicate-id"],"got":6,"kept":5}
+```
+
+三次 `duplicate-id`,三塊區塊。而 `duplicate-id` 記在**第二次**出現的
+那一筆上 —— 第一次早就進了 `results`。也就是說**那三塊翻好了**,
+只是模型多回了一份。
+
+而 results 與 failures 是兩則訊息,results 先到:
+
+```
+post(results)   → u31 拿到譯文,tier = 'l1'
+post(failures)  → u31 reason=duplicate-id,tier = 'l1-failed'   ← 冤枉
+```
+
+於是提示線變紅,而唯一的出路是使用者滑上去、或者按「翻譯這一頁」。
+`translate-page {"retried":2}` 就是這麼來的 ——「要多按幾次」不是錯覺,
+**是每一次 duplicate-id 都製造一塊需要手動救援的區塊。**
+
+修法在兩層:
+- `parseBatch` 把已經有結果的 id 從 failures 裡濾掉。重覆的 id 仍然
+  留在 `stats.dupe`(協定紀律的訊號該看見),但它不是「這塊沒翻到」。
+- 內容腳本加一條不變式:**`l1Text` 已經有值的區塊永遠不接受失敗標記**。
+  worker 那側已經不會再送了,但這條便宜,而且它防的是下一條路徑。
+
+## CW. 等在後面不是卡住
+
+同一份 log 也抓到 §CQ 的看門狗做多了:
+
+```
+09:28:47 ! l1-stuck {"oldestMs":45754,"requeued":1,"stuck":1}
+09:28:47   enqueued {"asked":1,"queue":16}      ← worker 佇列裡有 16 塊
+```
+
+那一塊「卡了 45 秒」的同一秒,worker 的佇列深度是 16 —— 它一直好好地
+排在隊伍裡,只是前面還有十幾塊(那一輪 L1 佇列一度到 46)。重排是個
+no-op(worker 端以 id 去重),卻白白花掉那一塊唯一的重試預算:
+**下一次它真的掉了,看門狗會直接判它失敗。**
+
+看門狗不必猜:§CR-3 剛做的 `page-status` 現在可以帶 `ids` 回答
+「這幾筆還在不在你手上」。逾時之後先問一次 ——
+
+- 在佇列裡 → 塞車,碼表歸零(`l1CheckedAt`)繼續等
+- 不在 → 真的不見了,才重排
+
+同一份 log 的第二次就是真的:`enqueued {"asked":1,"queue":1}`
+(佇列本來是空的),重排之後 2 秒就回來了。**兩種情況長得一模一樣,
+差別只有問一句話。**
+
+順帶把按鈕的回音也講清楚:原本說「這幾塊已經在升級佇列裡了」,
+沒說錯,但沒有回答**還要等多久**,所以看起來像沒反應。
+改成「這 2 塊在佇列裡,前面還有 14 塊」—— 排隊和當機是兩件事,
+使用者看得出差別就不會一直按。

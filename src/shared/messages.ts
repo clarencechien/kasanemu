@@ -38,7 +38,11 @@ export type ToWorker =
   | { type: 'clear-cache' }
   | { type: 'export-cache' }
   | { type: 'import-cache'; dump: unknown }
-  | { type: 'page-status'; pageKey: string };
+  /**
+   * worker 佇列的現況。`ids` 給的話,回傳其中哪幾筆還在佇列裡 ——
+   * 看門狗要靠它分辨「塞在後面」和「真的不見了」。
+   */
+  | { type: 'page-status'; pageKey: string; ids?: string[] };
 
 /** worker → content,以及 popup → content */
 export type ToContent =

@@ -83,6 +83,8 @@ export interface Unit {
    * 無人看管的重試迴圈會安靜地一直花錢。
    */
   l1Retries?: number;
+  /** 看門狗上一次向 worker 確認「它還在佇列裡」的時間 */
+  l1CheckedAt?: number;
   /**
    * feature.md §4.4 / D19 字級在 L0 完成時鎖定,L1 替換不重算分組。
    * 0 = 尚未鎖定(single 模式一直是 0,沿用 Phase 1 的每次重算)。

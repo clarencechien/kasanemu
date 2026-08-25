@@ -926,14 +926,45 @@ function queueUpgrade(list: Unit[]): void {
  * 再卡就標成失敗,提示線轉警示色、hover 可以重試。
  * 有出口總比永遠等下去好。上限一次,不做無人看管的重試迴圈。
  */
-function sweepStuckL1(now: number): void {
-  if (!usesL1(effective)) return;
+let sweeping = false;
+
+async function sweepStuckL1(now: number): Promise<void> {
+  if (!usesL1(effective) || sweeping) return;
+  /*
+   * **先問 worker「這幾筆還在不在你手上」。**
+   *
+   * 上一份 log 抓到看門狗做多了:那一塊「卡了 45 秒」的同一秒,
+   * worker 的佇列深度是 16 —— 它一直好好地排在隊伍裡,只是前面還有
+   * 十幾塊。重排是個 no-op(worker 端以 id 去重),卻白白花掉一次
+   * 重試預算,下一次真的掉了就直接被判失敗。
+   *
+   * 在佇列裡 = 塞車,碼表歸零繼續等;不在 = 真的不見了,才重排。
+   */
+  const overdue = [...units].filter((u) => stuckPlan(u, now) !== 'ok');
+  if (overdue.length === 0) return;
+  sweeping = true;
+  let held: Set<string>;
+  try {
+    const r = await ask<{ has?: string[] }>({
+      type: 'page-status',
+      pageKey,
+      ids: overdue.map((u) => u.id),
+    });
+    held = new Set(r?.has ?? []);
+  } finally {
+    sweeping = false;
+  }
+  const waiting = overdue.filter((u) => held.has(u.id));
+  for (const u of waiting) u.l1CheckedAt = Date.now();
+  if (waiting.length > 0) {
+    diag('info', 'l1-waiting', { units: waiting.length, oldestMs: Math.round(now - Math.min(...waiting.map((u) => u.upgradeQueuedAt ?? now))) });
+  }
   const requeue: Unit[] = [];
   let gaveUp = 0;
   let oldest = 0;
-  for (const u of units) {
+  for (const u of overdue) {
     const plan = stuckPlan(u, now);
-    if (plan === 'ok') continue;
+    if (plan === 'ok' || held.has(u.id)) continue;
     oldest = Math.max(oldest, now - (u.upgradeQueuedAt ?? now));
     u.l1Queued = false;
     u.upgradeQueuedAt = undefined;
@@ -973,7 +1004,7 @@ function sweepStuckL1(now: number): void {
 function dwellTick(): void {
   if (!running) return;
   const now = Date.now();
-  sweepStuckL1(now);
+  void sweepStuckL1(now);
   if (effective !== 'progressive') return;
   const due = [...units].filter(
     (u) => dwellReady(u, now, settings.upgradeDwellMs, effective) && !hiddenByDisclosure(u.el),
@@ -2767,6 +2798,15 @@ chrome.runtime.onMessage.addListener((raw: ToContent, _sender, reply) => {
       for (const f of raw.failures) {
         const u = unitById.get(f.id);
         if (!u) continue;
+        /*
+         * **有譯文就不是失敗。**
+         *
+         * results 與 failures 是兩則訊息,results 先到 —— 所以一則遲到的
+         * 失敗可以把一塊已經翻好的字降級成紅色。worker 那一側已經不會再送
+         * 這種東西了(protocol.ts 把有結果的 id 濾掉),但這條不變式便宜,
+         * 而且它防的是「未來某條路徑又送了一次」。
+         */
+        if (u.l1Text !== undefined) continue;
         // feature.md §5.1:有 L0 可讀就停在 L0 並標記(l1-failed),
         // 沒有的話才是真的 failed。兩者的提示線都是警示色 —— 不可以看起來正常。
         u.tier = u.l0Text !== undefined ? 'l1-failed' : 'failed';
@@ -2923,8 +2963,27 @@ async function translatePage(): Promise<void> {
     ready.sort((a, b) => priorityOf(a) - priorityOf(b));
     queueUpgrade(ready);
   } else if (retryCount === 0) {
-    // 按了就要有回音 —— 沒事可做也是一種回音
-    lastProblem = l0Units.length > 0 ? '這幾塊已經在升級佇列裡了' : '沒有可以再升級的區塊';
+    /*
+     * 按了就要有回音 —— 而「已經在佇列裡」這句話還不夠。
+     *
+     * 使用者的原話是「看起來要多按幾次才行」:他按下去,狀態列說
+     * 「已經在佇列裡了」,畫面沒有任何變化,於是再按一次。那句話
+     * 沒有說錯,但它沒有回答**還要等多久**,所以看起來像沒反應。
+     *
+     * 去問 worker 佇列現在多深,把數字說出來:排隊和當機是兩件事,
+     * 使用者看得出差別就不會一直按。
+     */
+    const depth = await ask<{ page?: number; total?: number }>({
+      type: 'page-status',
+      pageKey,
+    });
+    const ahead = depth?.total ?? 0;
+    lastProblem =
+      l0Units.length > 0
+        ? ahead > 0
+          ? `這 ${l0Units.length} 塊在佇列裡,前面還有 ${ahead} 塊`
+          : `這 ${l0Units.length} 塊已經送出去了,等回應`
+        : '沒有可以再升級的區塊';
     window.setTimeout(() => {
       if (lastProblem !== '') lastProblem = '';
       updateHud();
