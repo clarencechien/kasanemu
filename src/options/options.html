@@ -127,6 +127,26 @@
         頁面若有透明的點擊攔截層可能誤判,那時關掉。
       </p>
       <label class="check"><input type="checkbox" data-k="hintLine" /> 顯示譯文左緣提示線</label>
+      <label>捲動時的疊層穩定策略
+        <select data-k="stability">
+          <option value="auto">自動(預設)</option>
+          <option value="always">一直顯示</option>
+          <option value="strict">嚴格:任何動靜都先藏</option>
+        </select>
+      </label>
+      <p class="hint">
+        Gmail 這種應用程式的捲動發生在<strong>內層容器</strong>裡,而疊層畫在 document 座標上
+        不會跟著動 —— 不透明的盒子就畫到別人的內容上。那種頁面只能「捲動時先藏起來,
+        停下來再一次量、一次顯示」。
+        但同一條規則套在一般長文上只換來閃爍:文章的段落在 document 座標裡
+        根本不會因為捲動而移動。
+        <br />
+        <strong>自動</strong>不看網域看行為:document 自己不捲,或這一頁真的收到過
+        內層容器的捲動事件,才啟用。白名單列不完,而且會漏掉沒列到的網站。
+        <br />
+        <strong>一直顯示</strong>是「我不在意偶爾不對齊,不要閃」;
+        <strong>嚴格</strong>是舊行為,版面很動態的頁面上最保守。
+      </p>
       <label class="check"><input type="checkbox" data-k="annotate" /> 加翻層:UI 標籤、選單、連結滑過時顯示譯文貼片</label>
       <p class="hint">
         24 字以內的按鈕與連結不會被疊層覆蓋 —— 譯文比原文短,盒子要嘛蓋掉項目之間的

@@ -36,6 +36,7 @@ import {
   unlockScales,
 } from './geometry';
 import { clipInsets, scrolls, type Box } from './cover';
+import { hidePinnedWhileScrolling, motionGuard } from './motion';
 import { deviceProfile, type DeviceProfile } from './device';
 import { probePackagedFonts } from './fonts';
 import { L0Engine, translatorSupported } from './l0';
@@ -241,6 +242,10 @@ let firstPaintMs = -1;
 let device: DeviceProfile | null = null;
 /** feature.md §4.3 距上次捲動 < 400ms 的區塊延後替換 */
 let lastScrollAt = 0;
+/** document 自己不捲(Gmail / Slack 這種應用程式外殼)—— start() 時量一次 */
+let appShellPage = false;
+/** 這一頁收到過內層容器的捲動事件 */
+let sawInnerScroll = false;
 /** feature.md §2.2「L0 讀完就沒再看 L1」的比例 */
 let swapsTotal = 0;
 let swapsOffscreen = 0;
@@ -467,7 +472,12 @@ function auditPositions(full = true): void {
     if (dx > 1 || dy > 1 || dw > 1 || dh > 1) {
       diag('info', 'position-drift', { id: u.id, dx, dy, dw, dh });
       // 一個錯得離譜就代表這一批都不能信(多半是共同的祖先動了)
-      if (Math.max(dx, dy) > GROSS_DRIFT_PX) {
+      /*
+       * 座標錯得離譜 → 這一批都不能信。**但「先藏起來」只有在會反覆發生的
+       * 頁面上才划算**:長文上這通常是一張圖載完把後面推走,量一次就對了,
+       * 藏 200ms 只換來一次閃爍。flushNow() 當幀就重畫到正確位置。
+       */
+      if (Math.max(dx, dy) > GROSS_DRIFT_PX && guarding()) {
         markAllStale();
         noteMotion();
       }
@@ -587,7 +597,11 @@ function flush(): void {
      * (build 14 的教訓),所以走和內層捲動同一條路:先藏起來,
      * 停下來再一次量、一次顯示。只藏這幾個,一般段落照常留在畫面上。
      */
-    layer.setStale(u, !settled() || (u.pinned === true && !scrollIdle()));
+    layer.setStale(
+      u,
+      (guarding() && !settled()) ||
+        (u.pinned === true && !scrollIdle() && hidePinnedWhileScrolling(settings.stability)),
+    );
   }
   pinnedCount = [...units].filter((u) => u.pinned === true).length;
   const hidden = [...units].filter((u) => u.box && !isRendered(u.el)).length;
@@ -1720,6 +1734,13 @@ function pageStats(): PageStats {
     device: device ?? undefined,
     l0Timing: l0?.timing(),
     unparsedColors: unparsedColors(),
+    motion: {
+      stability: settings.stability,
+      guard: guarding(),
+      appShell: appShellPage,
+      innerScroll: sawInnerScroll,
+      pinned: pinnedCount,
+    },
     swapsOffscreen,
     swapsTotal,
   };
@@ -1887,7 +1908,14 @@ async function start(): Promise<void> {
    */
   const el = document.documentElement;
   const appShell = el.scrollHeight <= el.clientHeight + 4;
-  diag('info', 'layout-mode', { appShell, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight });
+  appShellPage = appShell;
+  diag('info', 'layout-mode', {
+    appShell,
+    stability: settings.stability,
+    guard: motionGuard({ stability: settings.stability, appShell, innerScroll: sawInnerScroll }),
+    scrollHeight: el.scrollHeight,
+    clientHeight: el.clientHeight,
+  });
   if (appShell) {
     driftTimer = window.setInterval(() => {
       if (document.hidden) return;
@@ -2214,7 +2242,7 @@ function scrollSync(): void {
    * **別人的內容**上,那才是「破版」—— 先藏起來再說。
    * 門檻分開是為了不讓 parallax / sticky 那種長期小幅漂移一直閃。
    */
-  if (off > GROSS_DRIFT_PX) {
+  if (off > GROSS_DRIFT_PX && guarding()) {
     markAllStale();
     noteMotion();
   }
@@ -2300,6 +2328,20 @@ function scrollIdle(): boolean {
   return performance.now() - lastScrollAt >= MOTION_SETTLE_MS;
 }
 
+/**
+ * 這一頁要不要用「動就先藏起來」的策略。
+ *
+ * 判斷收在一個地方,而且**每次都重問** —— sawInnerScroll 會在頁面用了
+ * 內層捲動的那一刻變成 true,設定也可能在使用中改掉。
+ */
+function guarding(): boolean {
+  return motionGuard({
+    stability: settings.stability,
+    appShell: appShellPage,
+    innerScroll: sawInnerScroll,
+  });
+}
+
 function noteMotion(): void {
   lastMotionAt = performance.now();
   if (settleTick === 0) settleTick = window.setTimeout(checkSettled, MOTION_SETTLE_MS);
@@ -2323,11 +2365,15 @@ function onScroll(e: Event): void {
    * 全部先藏起來,靜下來再一次顯示。
    */
   if (layer && running && innerScrollerOf(e)) {
-    if (settled()) {
-      markAllStale();
-      diag('info', 'inner-scroll', { units: units.size });
+    // 證據比推測強:收到過就從此開啟守衛(一般文章一輩子收不到)
+    sawInnerScroll = true;
+    if (guarding()) {
+      if (settled()) {
+        markAllStale();
+        diag('info', 'inner-scroll', { units: units.size });
+      }
+      noteMotion();
     }
-    noteMotion();
   }
 
   /*
@@ -2379,6 +2425,8 @@ function stop(): void {
   clearTimeout(pinnedTimer);
   pinnedTimer = 0;
   pinnedCount = 0;
+  appShellPage = false;
+  sawInnerScroll = false;
   document.removeEventListener('mouseover', onMouseOver, true);
   document.removeEventListener('mouseleave', onDocLeave);
   document.removeEventListener('focusin', onFocusIn, true);

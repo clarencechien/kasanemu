@@ -12,6 +12,9 @@ export type Pipeline = 'single' | 'progressive' | 'l0-only';
 /** feature.md §4.1 區塊狀態機 */
 export type UnitTier = 'pending' | 'l0' | 'l1' | 'l0-failed' | 'l1-failed' | 'failed' | 'skipped';
 export type OverlayStyleName = 'inherit' | 'annotation';
+/** 捲動時的疊層穩定策略(見 content/motion.ts) */
+export type Stability = 'auto' | 'always' | 'strict';
+
 export type CacheMode = 'session' | 'persistent' | 'off';
 
 /** 一個翻譯單元送去 API 的樣子 (§6.1) */
@@ -122,6 +125,13 @@ export interface Settings {
   /** §4.7 提示線 */
   hintLine: boolean;
   /**
+   * 捲動時疊層要不要先藏起來(見 content/motion.ts)。
+   *  - auto:只在「座標真的會跑」的頁面上藏(Gmail 這種內層捲動的應用程式)
+   *  - always:一律不藏,接受捲動時可能短暫不對齊
+   *  - strict:任何動靜都先藏,最保守
+   */
+  stability: Stability;
+  /**
    * 加翻層:UI 標籤、選單、連結不覆蓋原文,改成 hover 時在旁邊顯示貼片。
    * 見 docs/plan-annotation.md。
    */
@@ -168,6 +178,8 @@ export const DEFAULT_SETTINGS: Settings = {
   occlusionCheck: true,
   weightOffset: 100,
   hintLine: true,
+  // 預設自動:長文一直閃是比偶爾不對齊更明顯的干擾,而長文根本不需要藏
+  stability: 'auto',
   annotate: true,
   annotateAltOnly: false,
   forceAnnotation: false,

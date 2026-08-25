@@ -95,6 +95,14 @@ export interface PageStats {
    * 要靠使用者截圖才看得見。列在報告裡就不必再猜。
    */
   unparsedColors?: string[];
+  /** 捲動時的疊層策略與它的判斷依據(見 content/motion.ts) */
+  motion?: {
+    stability: string;
+    guard: boolean;
+    appShell: boolean;
+    innerScroll: boolean;
+    pinned: number;
+  };
   /** feature.md §2.2「L0 讀完就沒再看 L1」:替換時該區塊已離開可見區的次數 */
   swapsOffscreen: number;
   swapsTotal: number;
