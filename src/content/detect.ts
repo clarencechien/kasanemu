@@ -284,6 +284,37 @@ function isScreenReaderOnly(el: Element, cs: CSSStyleDeclaration): boolean {
   return w <= 4 || h <= 4;
 }
 
+/**
+ * 在收折的 `<details>` 裡面(而且不是它的 `<summary>`)。
+ *
+ * 使用者的觀察是對的:**打開跟關起來的 element 看起來長得一模一樣**。
+ * `<p>` 上沒有任何屬性或 class 改變,computed style 的 display 與
+ * visibility 也都不變 —— 現代 Chrome 用 `content-visibility: hidden`
+ * 收折,而那會**保留佈局狀態**:
+ *
+ *   getBoundingClientRect() → 展開時的位置與大小(不是零!)
+ *   getClientRects()        → 一樣有東西
+ *   getComputedStyle()      → display: block, visibility: visible
+ *
+ * 也就是說,**所有量測都在說謊**,而且說得前後一致 ——
+ * 所以座標稽核也抓不到漂移(診斷 log 裡 position-drift 是零筆)。
+ * 這是前三輪一直修不好的原因:我一直在問「量到的值對不對」,
+ * 但每一種量法都回同一個錯的值。
+ *
+ * 唯一誠實的來源是 DOM 本身:祖先有沒有一個沒帶 `open` 的 `<details>`。
+ * 這不是啟發式,是規格定義的行為。
+ */
+export function hiddenByDisclosure(el: Element): boolean {
+  let child: Element = el;
+  for (let p = el.parentElement; p; child = p, p = p.parentElement) {
+    // <summary> 在收折時仍然看得見,它的子孫也是
+    if (p.tagName === 'DETAILS' && !p.hasAttribute('open') && child.tagName !== 'SUMMARY') {
+      return true;
+    }
+  }
+  return false;
+}
+
 function isInvisible(cs: CSSStyleDeclaration): boolean {
   return (
     cs.display === 'none' ||
@@ -341,6 +372,13 @@ function walk(el: Element, ctx: WalkCtx): boolean {
   // 這裡用 textContent 是刻意的:只是剪枝,精確的文字晚一點用 ownText 取。
   if (!(el.textContent ?? '').trim()) return false;
 
+  // 收折的 <details>:所有量測都會說謊,只有 DOM 說實話
+  if (el.tagName === 'DETAILS' && !el.hasAttribute('open')) {
+    for (const kid of Array.from(el.children)) {
+      if (kid.tagName === 'SUMMARY' && walk(kid, ctx)) return true;
+    }
+    return false;
+  }
   const cs = getComputedStyle(el);
   if (isInvisible(cs)) {
     /*

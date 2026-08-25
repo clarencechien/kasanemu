@@ -5,6 +5,7 @@ import {
   MAX_UNIT_CHARS,
   findCandidates,
   findLabels,
+  hiddenByDisclosure,
   isMeaningfulText,
   looksLikeTargetLang,
 } from '../src/content/detect.ts';
@@ -454,4 +455,50 @@ test('地標排除只擋疊翻,不擋加翻 —— 選單項目滑上去還是�
   const body = mount('<div role="navigation"><a href="#inbox">Inbox</a></div>');
   assert.deepEqual(ids(body), []);
   assert.deepEqual(findLabels(body, 200).map((c) => c.src), ['Inbox']);
+});
+
+test('收折的 <details>:只有 summary 進得來,內容不進來', () => {
+  // 使用者的觀察:「打開跟關起來的 element 看起來長的一樣」。
+  // 現代 Chrome 用 content-visibility: hidden 收折,佈局狀態被保留 ——
+  // rect、client rects、computed style 全部回展開時的值,所有量測都說謊。
+  // 唯一誠實的來源是 DOM:祖先有沒有一個沒帶 open 的 <details>。
+  const body = mount(`
+    <details>
+      <summary>Can I read Stratechery via RSS?</summary>
+      <p>Yes! Create a Stratechery Passport account, go to Delivery Preferences.</p>
+    </details>
+  `);
+  assert.deepEqual(ids(body), ['Can I read Stratechery via RSS?']);
+});
+
+test('展開的 <details>:問與答都進得來', () => {
+  const body = mount(`
+    <details open>
+      <summary>Can I read Stratechery via RSS?</summary>
+      <p>Yes! Create a Stratechery Passport account, go to Delivery Preferences.</p>
+    </details>
+  `);
+  assert.deepEqual(ids(body), [
+    'Can I read Stratechery via RSS?',
+    'Yes! Create a Stratechery Passport account, go to Delivery Preferences.',
+  ]);
+});
+
+test('hiddenByDisclosure:summary 看得見,內容看不見,展開後都看得見', () => {
+  const body = mount(`
+    <details id="shut">
+      <summary id="s1"><span id="s1b">Can I read Stratechery via RSS?</span></summary>
+      <p id="p1">Yes! Create a Stratechery Passport account.</p>
+    </details>
+    <details id="open" open>
+      <summary id="s2">Another question</summary>
+      <p id="p2">Another answer that is long enough to matter.</p>
+    </details>
+  `);
+  const at = (id: string) => body.querySelector(`#${id}`)!;
+  assert.equal(hiddenByDisclosure(at('s1')), false);
+  assert.equal(hiddenByDisclosure(at('s1b')), false, 'summary 的子孫也看得見');
+  assert.equal(hiddenByDisclosure(at('p1')), true);
+  assert.equal(hiddenByDisclosure(at('s2')), false);
+  assert.equal(hiddenByDisclosure(at('p2')), false);
 });

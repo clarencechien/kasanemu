@@ -17,6 +17,7 @@ import {
   findCandidates,
   findLabels,
   hasContainerChild,
+  hiddenByDisclosure,
   isMeaningfulText,
   looksLikeTargetLang,
   normalizeText,
@@ -165,6 +166,8 @@ let settleTimer = 0;
 let driftTimer = 0;
 /** 只在數量變化時記錄,否則每次重排都記一筆會把 log 洗掉 */
 let lastOverflowCount = -1;
+/** 來源元素現在沒被畫出來的疊層數(收折的 <details> 等) */
+let lastHiddenCount = -1;
 let lastShiftBucket = '';
 let lastTopBand = -1;
 let lastBottomBand = -1;
@@ -328,6 +331,8 @@ function scan(): void {
  * 逐條用 computed style 判斷會漏掉最後那一種 —— 它不改 display,也不改 visibility。
  */
 function isRendered(el: Element): boolean {
+  // 收折的 <details>:量測全部說謊,先問 DOM(見 detect.ts 的 hiddenByDisclosure)
+  if (hiddenByDisclosure(el)) return false;
   const check = (el as Element & { checkVisibility?: (o?: object) => boolean }).checkVisibility;
   if (typeof check !== 'function') return true;
   return check.call(el, { contentVisibilityAuto: true, visibilityProperty: true });
@@ -481,6 +486,11 @@ function flush(): void {
     // 量完了,座標又可信了
     layer.setStale(u, false);
   }
+  const hidden = [...units].filter((u) => u.box && !isRendered(u.el)).length;
+  if (hidden !== lastHiddenCount) {
+    lastHiddenCount = hidden;
+    diag('info', 'unrendered-sources', { count: hidden });
+  }
   const overflowing = [...units].filter((u) => u.overflowsBox).length;
   if (overflowing !== lastOverflowCount) {
     lastOverflowCount = overflowing;
@@ -529,6 +539,8 @@ async function intake(): Promise<void> {
       u.tier === 'pending' &&
       u.maxChars > 0 &&
       !probed.has(u) &&
+      // 收折起來的內容不必翻 —— 展開時 scan 會再帶進來(而且是免費的 DOM 檢查)
+      !hiddenByDisclosure(u.el) &&
       u.rect.top + u.rect.height >= top &&
       u.rect.top <= bottom,
   );
@@ -687,7 +699,9 @@ function queueUpgrade(list: Unit[]): void {
 function dwellTick(): void {
   if (!running || effective !== 'progressive') return;
   const now = Date.now();
-  const due = [...units].filter((u) => dwellReady(u, now, settings.upgradeDwellMs, effective));
+  const due = [...units].filter(
+    (u) => dwellReady(u, now, settings.upgradeDwellMs, effective) && !hiddenByDisclosure(u.el),
+  );
   if (due.length > 0) {
     due.sort((a, b) => priorityOf(a) - priorityOf(b));
     queueUpgrade(due);
@@ -1580,7 +1594,20 @@ async function start(): Promise<void> {
     onRouteChange();
     scheduleFlush(true);
   });
-  mo.observe(document.body, { childList: true, characterData: true, subtree: true });
+  /*
+   * 屬性也要看,但只看收合元件那幾個。
+   *
+   * `<details open>` 的切換是**屬性**變動,而診斷 log 顯示 `toggle` 事件
+   * 根本沒進來(頁面自己的 JS 直接改屬性時不會派發那個事件)。
+   * attributeFilter 讓成本維持在只有這幾個名字才觸發。
+   */
+  mo.observe(document.body, {
+    childList: true,
+    characterData: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['open', 'hidden', 'aria-expanded', 'aria-hidden'],
+  });
 
   document.addEventListener('mouseover', onMouseOver, true);
   document.addEventListener('mouseleave', onDocLeave);

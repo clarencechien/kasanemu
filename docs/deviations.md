@@ -1442,3 +1442,67 @@ scrollHeight / scrollWidth → 上一次的尺寸     ← 佈局狀態被保留�
 兩次都在事件層打轉。真正該問的是**「這個座標是怎麼算出來的」**——
 一問就發現 0×0 的元素被撐成了一個有面積的盒子。
 BE 那條不變式(不顯示已知錯位的疊層)仍然有價值,但它是安全網,不是修復。
+
+## BG. 所有量測都說謊時,只有 DOM 說實話
+
+使用者的觀察一句話就把三輪的錯誤方向講完了:
+**「打開跟關起來的 element 看起來長的一樣」**。
+
+診斷 log 證實了這件事的嚴重程度 —— build 30 在 stratechery 上跑完整輪:
+
+```
+disclosure-toggle   0 筆     ← toggle 事件根本沒進來
+position-drift      0 筆     ← 座標稽核認為一切正常
+origin-offset       0 筆     ← 原點沒問題
+inner-scroll        0 筆     ← 不是內層捲動
+```
+
+**沒有任何一個偵測機制認為出事了。** 而畫面上疊層堆在一起。
+
+原因是現代 Chrome 用 `content-visibility: hidden` 收折 `<details>`,
+而那會**保留佈局狀態**:
+
+| 量法 | 收折時回傳 |
+|---|---|
+| `getBoundingClientRect()` | **展開時的位置與大小**(不是零) |
+| `getClientRects()` | 一樣有東西(不是空的) |
+| `getComputedStyle().display` | `block` |
+| `getComputedStyle().visibility` | `visible` |
+| DOM 屬性 / class | 完全沒變 |
+
+所以 §BF 的修法(沒有 client rect 就回零)打不到 —— 它有 client rect;
+座標稽核也抓不到漂移 —— 前後量到的值一致,只是**一致地錯**。
+
+**前三輪我一直在問「量到的值對不對」,但每一種量法都回同一個錯的值。**
+這是這個專案到目前為止最貴的一個教訓:當所有觀測互相印證時,
+不代表觀測是對的,可能只是它們共用同一個錯誤的來源。
+
+唯一誠實的來源是 DOM 結構本身:
+
+```ts
+export function hiddenByDisclosure(el: Element): boolean {
+  let child: Element = el;
+  for (let p = el.parentElement; p; child = p, p = p.parentElement) {
+    if (p.tagName === 'DETAILS' && !p.hasAttribute('open') && child.tagName !== 'SUMMARY') {
+      return true;
+    }
+  }
+  return false;
+}
+```
+
+這不是啟發式,是規格定義的行為:沒帶 `open` 的 `<details>`,
+除了 `<summary>` 以外的內容不顯示。
+
+用在三個地方:
+
+1. `walk()` —— 收折的 `<details>` 只走它的 `<summary>`,內容不建立單元
+2. flush 的 `isRendered()` —— 已經存在的單元(展開時建立、後來被收折)藏起來
+3. 成本閘門(`intake` 與 `dwellTick`)—— 收折的內容不送 L0 也不送 L1。
+   這裡**只用 DOM 檢查**,不用 `checkVisibility()`:後者會觸發 layout,
+   而這兩條路每 300ms 跑一次
+
+**另外:`toggle` 事件不可靠。** log 裡零筆。頁面自己的 JS 直接改 `open`
+屬性時不會派發那個事件。所以 MutationObserver 加上
+`attributeFilter: ['open', 'hidden', 'aria-expanded', 'aria-hidden']` ——
+只有這幾個名字會觸發,成本可控,而且順便涵蓋自繪的 accordion。
