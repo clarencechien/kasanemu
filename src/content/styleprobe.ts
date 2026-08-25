@@ -66,23 +66,53 @@ function canvasColor(): string {
   return dark ? 'rgb(18, 18, 18)' : 'rgb(255, 255, 255)';
 }
 
+/** 把 src 以 source-over 疊在 dst 上 */
+export function over(src: Rgb, dst: Rgb): Rgb {
+  const a = src.a + dst.a * (1 - src.a);
+  if (a <= 0) return { r: 0, g: 0, b: 0, a: 0 };
+  const mix = (s: number, d: number): number => (s * src.a + d * dst.a * (1 - src.a)) / a;
+  return { r: mix(src.r, dst.r), g: mix(src.g, dst.g), b: mix(src.b, dst.b), a };
+}
+
+/** stack 由近而遠(index 0 是元素自己);先鋪最遠的,再一層層疊上來 */
+export function composite(stack: Rgb[], base: Rgb): Rgb {
+  let out = base;
+  for (let i = stack.length - 1; i >= 0; i--) out = over(stack[i]!, out);
+  return out;
+}
+
 /**
- * §4.1 從來源元素往上走 parent chain,取第一個 alpha > 0.05 的
- * background-color,以完整不透明度套用。半透明不提供旋鈕:底下是活文字,
+ * §4.1 從來源元素往上走 parent chain,解出**畫面上實際看到的**背景色,
+ * 再以完整不透明度套用。半透明不提供旋鈕:底下是活文字,
  * 兩層字會互相干擾 (D04)。
+ *
+ * 「解出實際看到的顏色」和舊版的「取第一個 alpha > 0.05 的顏色」不一樣,
+ * 而那個差別在深色頁面上是致命的。ClickHouse 部落格的卡片寫
+ * `background-color: rgba(255, 255, 255, 0.1)`,疊在近黑色的頁面上 ——
+ * 畫面上是深灰。舊版看到 alpha 0.1 > 0.05,就把它當成「找到了」,
+ * 以**全不透明的白**畫出去:深色頁面上冒出一塊刺眼的白底,
+ * 配上頁面自己的淺灰字,等於看不見。使用者的原話是「選色錯誤了」。
+ *
+ * 半透明層不是答案,是**答案的一部分** —— 要一路收集到不透明的那一層
+ * (或 UA canvas)才能合成出真正的顏色。
  */
 export function resolveBackground(el: Element): { color: string | null; risk: boolean } {
+  const stack: Rgb[] = [];
   let node: Element | null = el;
   while (node && node !== document.documentElement.parentElement) {
     const cs = getComputedStyle(node);
     if (cs.backgroundImage !== 'none') return { color: null, risk: true };
     if (cs.backdropFilter && cs.backdropFilter !== 'none') return { color: null, risk: true };
     const c = parseColor(cs.backgroundColor);
+    // 認不得的顏色語法(oklab / color-mix 的計算值)—— 不猜
     if (!c) return { color: null, risk: true };
-    if (c.a > 0.05) return { color: rgbToCss(c, 1), risk: false };
+    // 不透明:底定了,把沿路收集的半透明層疊回去
+    if (c.a >= 0.999) return { color: rgbToCss(composite(stack, c), 1), risk: false };
+    if (c.a > 0.004) stack.push(c);
     node = node.parentElement;
   }
-  return { color: canvasColor(), risk: false };
+  const base = parseColor(canvasColor()) ?? { r: 255, g: 255, b: 255, a: 1 };
+  return { color: rgbToCss(composite(stack, base), 1), risk: false };
 }
 
 /**
@@ -132,10 +162,32 @@ function px(v: string): number {
  * 可靠得多,而且在深色橫幅、深色模式、彩色卡片上都成立。
  */
 export function backgroundForText(color: string): string {
+  return lightText(color) ? 'rgb(20, 24, 29)' : 'rgb(246, 248, 250)';
+}
+
+/** 文字本身是亮的 → 它底下的版面必然是深的 */
+export function lightText(color: string): boolean {
   const c = parseColor(color);
-  if (!c) return 'rgb(255, 255, 255)';
-  const lum = (c.r * 0.299 + c.g * 0.587 + c.b * 0.114) / 255;
-  return lum > 0.6 ? 'rgb(20, 24, 29)' : 'rgb(246, 248, 250)';
+  if (!c) return false;
+  return (c.r * 0.299 + c.g * 0.587 + c.b * 0.114) / 255 > 0.6;
+}
+
+/*
+ * §4.6 標註樣式的配色。
+ *
+ * 這一組顏色是**刻意**與頁面不同的 —— 標註的意思是「這是我加上去的,
+ * 不是原本就有的」,所以它需要自己的識別。但「有識別」不等於「寫死」:
+ * 淺藍底配褐字在淺色頁面上是恰到好處的便條紙,在 ClickHouse 那種
+ * 近黑色的版面上就是一塊刺眼的白斑。
+ *
+ * 兩套配色,對比度相當,依頁面明暗擇一。
+ */
+export function annotBg(textColor: string): string {
+  return lightText(textColor) ? 'rgba(24, 31, 40, 0.94)' : 'rgba(230, 241, 251, 0.94)';
+}
+
+export function annotFg(textColor: string): string {
+  return lightText(textColor) ? '#F0A868' : '#993C1D';
 }
 
 export function probeStyle(el: Element, weightOffset: number): ProbedStyle {

@@ -85,6 +85,30 @@ const L0_LOOKAHEAD_PX = 1500;
 const L0_LOOKAHEAD_SLOW_PX = 400;
 /** 超過這個平均延遲就算慢機器(ms) */
 const SLOW_MACHINE_MS = 2000;
+/**
+ * L0 佇列深度上限。超過就**不再往前預翻**,只收現在看得到的。
+ *
+ * 診斷 log(ClickHouse 那篇 268 個區塊的長文,Chromebook):開場沒多久
+ * 佇列就有 179 個在排,每個呼叫 2.4 秒、併發 2 —— 那是五分鐘的存貨。
+ * 預翻的用意是「使用者捲到的時候已經翻好了」,可是排在 179 個後面的東西
+ * 不管使用者捲不捲都不會準時到,只是把 CPU 佔住、讓真正在看的那一屏也慢。
+ *
+ * 存貨超過這個數就停止進料;下一輪 scan 會再來看。
+ * 30 個 × 2.4 秒 ÷ 併發 2 ≈ 36 秒,對慢機器來說已經是預翻的上限了。
+ */
+const L0_QUEUE_CAP = 30;
+/**
+ * 同一個區塊最多讓 L0 試幾次。
+ *
+ * catchUpL0 每 900ms 重試一次 l0-failed,原本沒有上限。多數失敗是暫時的
+ * (語言包還沒好),但**佔位符被翻掉**那種不是:masked.restore() 對同一段
+ * 文字永遠回 null,而且 L0 的譯文有快取 —— 重試連 API 都不用打就直接失敗。
+ * log 裡整段 `l0-done {"asked":6,"batchMs":0,...,"failed":6}` 每 900ms 一筆、
+ * calls 完全不動,就是這個永動機。試三次還不行就交給 L1,別再空轉。
+ */
+const L0_MAX_TRIES = 3;
+/** 佇列滿到一個都放不下時,隔多久再來看一次 */
+const INTAKE_RETRY_MS = 600;
 
 function lookaheadPx(): number {
   const t = l0?.timing();
@@ -572,6 +596,16 @@ function flush(): void {
  * feature.md §4.6 / D23:先問快取。命中就直接以 L1 譯文渲染,跳過 L0,
  * 第二次讀同一頁不該先閃一次 L0。
  */
+let lastCappedAt = -1e9;
+
+/** 佇列滿的診斷每秒最多一筆 —— 它每 600ms 會來一次,照實記會把 log 洗掉 */
+function noteCapped(want: number, room: number, queued: number, visible: number): void {
+  const now = performance.now();
+  if (now - lastCappedAt < 1000) return;
+  lastCappedAt = now;
+  diag('info', 'intake-capped', { want, room, queued, visible });
+}
+
 async function intake(): Promise<void> {
   if (!running) return;
   if (!settings.autoTranslate && !manualArmed) {
@@ -594,7 +628,7 @@ async function intake(): Promise<void> {
   const ahead = lookaheadPx();
   const top = window.scrollY - ahead;
   const bottom = window.scrollY + window.innerHeight + ahead;
-  const fresh = [...units].filter(
+  let fresh = [...units].filter(
     (u) =>
       u.tier === 'pending' &&
       u.maxChars > 0 &&
@@ -607,6 +641,43 @@ async function intake(): Promise<void> {
   if (fresh.length === 0) return;
   // 先翻使用者現在看得到的:預翻範圍拉大之後,順序比以前更重要
   fresh.sort((a, b) => priorityOf(a) - priorityOf(b));
+  /*
+   * 佇列已經很滿就只補到上限為止。**沒被取走的不標記 probed**,
+   * 下一輪 scan 會重新考慮它們 —— 那時使用者可能已經捲到附近,
+   * 優先度也就跟著對了。
+   */
+  /*
+   * 佇列太深就停止**預翻**,但看得見的一律照收。
+   *
+   * 上限管的是存貨,不是需求:使用者現在看得到的東西沒有「等下一輪」這個選項,
+   * 而排在幾十個離螢幕很遠的區塊後面等於沒翻。
+   */
+  const queued = l0?.queueDepth() ?? 0;
+  const room = Math.max(0, L0_QUEUE_CAP - queued);
+  if (room < fresh.length) {
+    const viewTop = window.scrollY;
+    const viewBottom = viewTop + window.innerHeight;
+    const visible = fresh.filter(
+      (u) => u.rect.top + u.rect.height >= viewTop && u.rect.top <= viewBottom,
+    );
+    const rest = fresh.filter((u) => !visible.includes(u));
+    noteCapped(fresh.length, room, queued, visible.length);
+    fresh = [...visible, ...rest.slice(0, room)];
+    /*
+     * 一個都放不下。這裡**必須自己排下一次** —— 平常是
+     * runL0 → scheduleFlush → flush → scheduleIntake 這條迴圈在推,
+     * 沒送出任何東西就沒有 flush,進料會停在這裡不再醒來。
+     */
+    if (fresh.length === 0) {
+      if (!enqueueTimer) {
+        enqueueTimer = window.setTimeout(() => {
+          enqueueTimer = 0;
+          void intake();
+        }, INTAKE_RETRY_MS);
+      }
+      return;
+    }
+  }
   for (const u of fresh) probed.add(u);
 
   /*
@@ -630,8 +701,8 @@ async function intake(): Promise<void> {
     return hits.size;
   });
 
-  const l0 = runL0(fresh);
-  const [cacheHits] = await Promise.all([probing, l0]);
+  const l0Run = runL0(fresh);
+  const [cacheHits] = await Promise.all([probing, l0Run]);
   diag('info', 'intake', { fresh: fresh.length, cacheHits, lookahead: ahead });
 }
 
@@ -662,10 +733,13 @@ async function runL0(list: Unit[]): Promise<void> {
     list.map(async (u) => {
       // 快取比 L0 先回來 → 不必翻了(D23:不閃 L0)
       if (u.l1Text !== undefined) return;
+      u.l0Tries = (u.l0Tries ?? 0) + 1;
       // §3.4 送出前把行內 code 與不翻清單換成佔位符
       const masked = mask(u.src, protectedFragments(u.el, settings.noTranslateTerms));
       // 距視窗中心越近越先翻 —— 捲到新一屏時會插隊到預翻的遠處區塊前面
-      const raw = await engine.translate(masked.text, Math.round(priorityOf(u)));
+      // 優先度傳 thunk,不傳數字 —— 佇列在出隊時才問「現在離視窗多遠」。
+      // 傳數字的話,捲動之前入隊的區塊會帶著過期的順序卡在佇列深處(見 l0.ts slot())
+      const raw = await engine.translate(masked.text, () => Math.round(priorityOf(u)));
       if (raw === null) {
         u.tier = effective === 'l0-only' ? 'failed' : 'l0-failed';
         u.failReason = 'l0';
@@ -1321,8 +1395,10 @@ function retryUnit(u: Unit): void {
     u.tier = 'l0';
     if (usesL1(effective)) queueUpgrade([u]);
   } else {
-    // 連 L0 都沒有:退回 pending,讓 intake() 照正常流程重跑一次
+    // 連 L0 都沒有:退回 pending,讓 intake() 照正常流程重跑一次。
+    // 重試次數歸零 —— 使用者親手指定的重試不該被 L0_MAX_TRIES 擋掉
     u.tier = 'pending';
+    u.l0Tries = 0;
     void intake();
   }
   lastProblem = '';
@@ -2427,6 +2503,7 @@ async function translatePage(): Promise<void> {
       u.tier = u.l0Text !== undefined ? 'l0' : 'pending';
       u.l1Queued = false;
       u.failReason = undefined;
+      u.l0Tries = 0;
       probed.delete(u);
     }
   }
@@ -2443,7 +2520,11 @@ async function translatePage(): Promise<void> {
 async function catchUpL0(): Promise<void> {
   if (!running || !usesL0(effective) || l0?.state !== 'ready') return;
   const stuck = [...units].filter(
-    (u) => u.tier === 'l0-failed' && u.l1Text === undefined && u.maxChars > 0,
+    (u) =>
+      u.tier === 'l0-failed' &&
+      u.l1Text === undefined &&
+      u.maxChars > 0 &&
+      (u.l0Tries ?? 0) < L0_MAX_TRIES,
   );
   if (stuck.length === 0) return;
   await runL0(stuck);

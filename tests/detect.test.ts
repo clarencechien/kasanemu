@@ -559,3 +559,51 @@ test('行內小圖示不算圖文混排', () => {
   icon.getBoundingClientRect = () => ({ width: 14, height: 14 }) as unknown as DOMRect;
   assert.deepEqual(ids(body), ['Drone delivery is scaling rapidly in the US.']);
 });
+
+/*
+ * ClickHouse 部落格的目次:同一份 <ul> 裡短的 12 字、長的 49 字。
+ * 逐項套 24 字門檻的話,短的變貼片、長的變疊層 —— 一半翻一半不翻。
+ */
+const TOC = `<article><ul>
+  <li><a href="#a">Introduction</a></li>
+  <li><a href="#b">Count aggregations in ClickHouse and Elasticsearch</a></li>
+  <li><a href="#c">Benchmark setup</a></li>
+  <li><a href="#d">Benchmark queries</a></li>
+</ul></article>`;
+
+test('內容清單裡的短連結歸內文層,整份目次一致', () => {
+  const root = mount(TOC);
+  const texts = findCandidates(root, () => false).map((c) => c.src);
+  assert.ok(texts.includes('Introduction'), `短條目也要進內文層,實得 ${JSON.stringify(texts)}`);
+  assert.ok(texts.includes('Benchmark setup'));
+  assert.ok(texts.includes('Count aggregations in ClickHouse and Elasticsearch'));
+});
+
+test('內容清單裡的短連結不再被加翻層收走,避免同一份清單兩種畫法', () => {
+  const root = mount(TOC);
+  const labels = findLabels(root, 50).map((c) => c.src);
+  assert.deepEqual(labels, [], `目次不該產生貼片,實得 ${JSON.stringify(labels)}`);
+});
+
+test('每項都短的清單仍然是選單,照舊走加翻層', () => {
+  const root = mount(
+    `<nav><ul>
+      <li><a href="#1">Mail</a></li>
+      <li><a href="#2">Chat</a></li>
+      <li><a href="#3">Meet</a></li>
+      <li><a href="#4">Contacts</a></li>
+    </ul></nav>`,
+  );
+  assert.deepEqual(findCandidates(root, () => false).map((c) => c.src), []);
+  assert.deepEqual(findLabels(root, 50).map((c) => c.src), ['Mail', 'Chat', 'Meet', 'Contacts']);
+});
+
+test('兩項的清單不算清單 —— 樣本太小,不足以推翻長度門檻', () => {
+  const root = mount(
+    `<ul>
+      <li><a href="#1">Docs</a></li>
+      <li><a href="#2">A rather long link label that is content</a></li>
+    </ul>`,
+  );
+  assert.deepEqual(findLabels(root, 50).map((c) => c.src), ['Docs']);
+});

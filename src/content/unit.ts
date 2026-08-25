@@ -30,6 +30,8 @@ export interface Unit {
   sizeGroup: number;
   scale: number;
   maxChars: number;
+  /** L0 已經試過幾次。catchUpL0 用它擋住永遠失敗的區塊(見 L0_MAX_TRIES) */
+  l0Tries?: number;
   rect: DocRect;
   /** 疊層往外撐多少才蓋得住原文的墨水(見 bleed.ts) */
   bleed: { x: number; y: number };

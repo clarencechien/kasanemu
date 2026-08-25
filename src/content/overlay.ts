@@ -1,6 +1,6 @@
 import type { DisplayMode, Settings } from '../shared/types';
 import { fontFaceCss, fontStack } from './fonts';
-import { hintColor } from './styleprobe';
+import { annotBg, annotFg, hintColor } from './styleprobe';
 import { LETTER_SPACING_EM, activeText, effectiveFontSize, type Unit } from './unit';
 import { place, type ViewRect } from './annotate';
 import { hintClassFor } from './upgrade';
@@ -91,8 +91,8 @@ const LAYER_CSS = `
 /* §4.6 標註樣式:fallback、按住 Alt 掃視、或 options 指定 */
 .layer.alt-scan .box,
 .box.annotate {
-  background: rgba(230, 241, 251, 0.94);
-  color: #993C1D;
+  background: var(--ksnm-annot-bg);
+  color: var(--ksnm-annot-fg);
   font-family: var(--ksnm-annot-ff);
   font-weight: 400;
   font-size: var(--ksnm-annot-size);
@@ -517,6 +517,10 @@ export class OverlayLayer {
       '--ksnm-fg': s.color,
       '--ksnm-ff': fontStack(s.isSerif, s.sourceStack),
       '--ksnm-annot-ff': fontStack(false, 'sans-serif'),
+      // 標註色也要跟著頁面明暗走。寫死的淺藍底 + 褐字在深色頁面上
+      // 就是使用者說的「選色錯誤」—— 亮字必然配深底,反之亦然。
+      '--ksnm-annot-bg': annotBg(s.color),
+      '--ksnm-annot-fg': annotFg(s.color),
       '--ksnm-size': `${size}px`,
       // §4.6 標註樣式字級為來源 −1px,下限 12px
       '--ksnm-annot-size': `${Math.max(12, s.fontSizePx - 1)}px`,

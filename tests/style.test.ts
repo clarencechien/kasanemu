@@ -1,7 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { bleedFor, inkOverflow } from '../src/content/bleed.ts';
-import { isSerifStack, parseColor, rgbToCss, targetWeight } from '../src/content/styleprobe.ts';
+import {
+  annotBg,
+  annotFg,
+  composite,
+  isSerifStack,
+  lightText,
+  parseColor,
+  rgbToCss,
+  targetWeight,
+} from '../src/content/styleprobe.ts';
 import { cacheKey, maxCharsBucket } from '../src/shared/hash.ts';
 
 test('parseColor 認得 rgb / rgba / transparent,認不得的回 null', () => {
@@ -90,4 +99,41 @@ test('出血永遠不是負的', () => {
   const b = bleedFor(10, 40, 0, 'body');
   assert.equal(b.y, 0);
   assert.equal(b.x, 0);
+});
+
+/*
+ * ClickHouse 部落格的迴歸:深色頁面上的半透明白卡片。
+ *
+ * `rgba(255,255,255,0.1)` 疊在近黑色的版面上,畫面是深灰;
+ * 舊版把它當成「找到不透明色了」直接以全白畫出去,配上頁面自己的
+ * 淺灰字就是使用者說的「選色錯誤了」。合成才是對的答案。
+ */
+test('半透明背景要合成到底下的實色,不能直接當成不透明', () => {
+  const card = parseColor('rgba(255, 255, 255, 0.1)')!;
+  const page = parseColor('rgb(19, 19, 18)')!;
+  const out = composite([card], page);
+  assert.ok(out.r < 60, `合成後應該還是深色,得到 ${rgbToCss(out, 1)}`);
+  assert.ok(out.r > 19, '但要比純底色亮一點');
+});
+
+test('多層半透明由遠而近疊,結果落在兩端之間', () => {
+  const base = parseColor('rgb(0, 0, 0)')!;
+  const one = composite([parseColor('rgba(255,255,255,0.1)')!], base);
+  const two = composite(
+    [parseColor('rgba(255,255,255,0.1)')!, parseColor('rgba(255,255,255,0.1)')!],
+    base,
+  );
+  assert.ok(two.r > one.r, '兩層比一層亮');
+  assert.ok(two.r < 255, '仍然遠離純白');
+});
+
+test('標註配色跟著頁面明暗走,不寫死淺色', () => {
+  // 深色頁面(亮字)
+  assert.equal(lightText('rgb(223, 223, 223)'), true);
+  assert.ok(annotBg('rgb(223, 223, 223)').startsWith('rgba(24'));
+  assert.equal(annotFg('rgb(223, 223, 223)'), '#F0A868');
+  // 淺色頁面(暗字)—— 維持原本的便條紙配色
+  assert.equal(lightText('rgb(36, 41, 47)'), false);
+  assert.ok(annotBg('rgb(36, 41, 47)').startsWith('rgba(230'));
+  assert.equal(annotFg('rgb(36, 41, 47)'), '#993C1D');
 });

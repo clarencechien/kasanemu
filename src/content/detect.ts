@@ -111,6 +111,35 @@ function isAppHeading(el: Element): boolean {
   return normalizeText(el.textContent ?? '').length <= UI_LABEL_MAX_CHARS;
 }
 
+const LIST_TAGS = new Set(['UL', 'OL']);
+
+/**
+ * 這個互動元素在**內容清單**裡,不是選單裡。
+ *
+ * ClickHouse 的目次是 `<ul><li><a>Introduction</a></li>…</ul>`,同一份清單裡
+ * 「Introduction」12 字、「Count aggregations in ClickHouse and Elasticsearch」49 字。
+ * 照 24 字門檻逐項判斷,短的變成要 hover 的貼片、長的變成常駐疊層 ——
+ * 同一份目次一半翻一半不翻,使用者的原話是「有些不翻 有些翻」。
+ *
+ * 門檻本身沒有錯,錯在**逐項套用**。清單是一個整體:裡面只要有一項長到
+ * 明顯是內容(文章標題、目次條目),整份清單就是內容,不是導覽列。
+ * 反過來說,Gmail 左欄與一般網站的選單每一項都短,結論不變。
+ */
+function inContentList(act: Element, skip?: ReadonlySet<Element>): boolean {
+  const item = act.closest('li');
+  const list = item?.parentElement;
+  if (!item || !list || !LIST_TAGS.has(list.tagName)) return false;
+  const items = list.children;
+  if (items.length < 3) return false;
+  for (const li of items) {
+    if (li === item || li.tagName !== 'LI') continue;
+    const sibling = li.querySelector(INTERACTIVE_SELECTOR);
+    if (!sibling) continue;
+    if (visibleTextOf(sibling, skip).length > UI_LABEL_MAX_CHARS) return true;
+  }
+  return false;
+}
+
 export function isUiLabel(el: Element, skip?: ReadonlySet<Element>): boolean {
   /*
    * `<div role="heading">Mail</div>` —— 應用程式的區塊標題。
@@ -123,6 +152,15 @@ export function isUiLabel(el: Element, skip?: ReadonlySet<Element>): boolean {
   if (el.getAttribute('role') === 'heading' && !HEADING_TAGS.has(el.tagName)) {
     if (visibleTextOf(el, skip).length <= UI_LABEL_MAX_CHARS) return true;
   }
+  /*
+   * 內容清單整份一起判定,不逐項套長度門檻。
+   *
+   * 傳 el 本身也成立:`<li>` 的 closest('li') 就是它自己,所以
+   * 「連結」與「只包著連結的 li」兩條路徑共用同一個結論 ——
+   * 少了這一點,目次的短條目會在下面那條「文字全來自互動子孫」的規則
+   * 再一次被判成 UI 標籤。
+   */
+  if (inContentList(el, skip)) return false;
   const act = el.closest(INTERACTIVE_SELECTOR);
   if (act) return visibleTextOf(act, skip).length <= UI_LABEL_MAX_CHARS;
   /*
@@ -539,6 +577,9 @@ export function findLabels(
     }
     const text = normalizeText(ownText(el, srOnly));
     if (text.length === 0 || text.length > UI_LABEL_MAX_CHARS) continue;
+    // 內容清單裡的短連結交給內文層畫常駐疊層,不要在這裡收成貼片 ——
+    // 否則同一份目次會一半貼片一半疊層(見 inContentList)
+    if (inContentList(el, srOnly)) continue;
     if (!isMeaningfulText(text)) continue;
     if (looksLikeTargetLang(text)) continue;
     if (el.getClientRects().length === 0) continue;
