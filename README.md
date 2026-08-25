@@ -6,6 +6,7 @@
 Phase 1(`kasanemuphase1prd.md` v1.0)+ 漸進式翻譯(`feature.md` v1.0)+
 加翻層(`docs/plan-annotation.md`)。**0.1.0 文字階段收關。**
 
+- 每一版做了什麼:[`CHANGELOG.md`](CHANGELOG.md)
 - 走過的每一個坑與它的理由:[`docs/deviations.md`](docs/deviations.md)(111 節)
 - 從那些坑裡歸納出來的通則:[`docs/lessons.md`](docs/lessons.md) ← **先讀這個**
 
@@ -176,6 +177,24 @@ docs/       lessons(通則)· deviations(逐件記錄)· acceptance(人工驗收
             plan-glossary(詞表規格 + 模型實測)· manual.html(使用說明)
 feature.md  漸進式翻譯的規格
 ```
+
+## 發版
+
+推 tag 就會打包並掛上 GitHub Release(`.github/workflows/build.yml` 的 `release` job)。
+
+```bash
+git tag -a v0.1.0 -m "$(sed -n '/^## v0.1.0/,/^## v0\.0/p' CHANGELOG.md)"
+git push origin v0.1.0
+```
+
+附註標籤的訊息會直接變成發行說明。CI 那一步是冪等的:release 不存在就建、
+已存在就 `gh release upload --clobber`,所以**補檔案只要 Re-run all jobs**,
+不用重打 tag。
+
+> **不要在 CI 上傳的期間開著草稿的編輯表單。**
+> Release 是整份取代不是 patch:那份表單送出時帶的是它打開當下的狀態,
+> 會把 CI 剛掛上去的 zip 洗掉(v0.1.0 就這樣掉過一次,`docs/deviations.md` §DD)。
+> 要用網頁建 release 的話,**先發佈、關掉分頁,再推 tag**。
 
 ## 這一版做了什麼
 

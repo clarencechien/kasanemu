@@ -95,4 +95,38 @@ jobs:
       - name: attach zip to release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" release/*.zip --generate-notes --title "${GITHUB_REF_NAME}"
+        # tag 有兩條來路,而它們的先後順序相反:
+        #   CLI  `git push origin v0.1.0` → tag 先有,release 還不存在
+        #   UI   「Draft a new release」   → release 先有,tag 才被推出來
+        # 只寫 create 的話,第二條路會撞「already exists」而整個 job 變紅,
+        # 使用者看到的是「發了 release 但 CI 失敗,而且 zip 沒附上」。
+        # 兩條都要能把 zip 掛上去。
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release/*.zip --clobber
+          else
+            # 附註標籤(annotated tag)的訊息就是我寫的發行說明,優先用它;
+            # UI 建的是輕量標籤、沒有訊息,那時才退回自動產生的 commit 列表。
+            gh release create "$GITHUB_REF_NAME" release/*.zip \
+              --title "$GITHUB_REF_NAME" --notes-from-tag \
+            || gh release create "$GITHUB_REF_NAME" release/*.zip \
+              --title "$GITHUB_REF_NAME" --generate-notes
+          fi
+
+      # 上傳成功不等於檔案還在:如果有人開著草稿的編輯表單、在這之後才按
+      # Publish,那份陳舊的表單會把 asset 洗掉(docs/deviations.md §DD)。
+      # 那個覆蓋擋不住,但至少不要讓它靜悄悄 —— job 紅了才有人會去看。
+      - name: verify asset is attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          n=$(gh release view "$GITHUB_REF_NAME" --json assets \
+                --jq '[.assets[] | select(.name | endswith(".zip"))] | length')
+          echo "zip assets on $GITHUB_REF_NAME: $n"
+          if [ "$n" -eq 0 ]; then
+            echo "::error::release $GITHUB_REF_NAME has no zip asset —" \
+                 "有人在上傳之後送出了陳舊的編輯表單?重跑這個 job 即可補回。"
+            exit 1
+          fi
