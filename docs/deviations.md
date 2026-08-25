@@ -1397,3 +1397,48 @@ transform 的容器,那時整層會平移一段**固定**距離 ——
 **這不是 build 14 的做法。** 那個是每個捲動 frame 用 JS 追 `scrollY`,
 追不上就抖。這裡修的是**靜態**誤差:只在版面變動時重算一次,
 不隨捲動改變,所以不會抖。
+
+## BF. 一個 bug,兩個症狀:沒被畫出來的元素被撐成貼在視窗左上角的盒子
+
+回報:「收折也還是壞的」,附圖顯示答案的譯文全部堆在問題標題上;
+以及前一輪 Gmail 的「ARK • Disrupt」疊層跑到畫面最上方。
+
+**這兩件事是同一個 bug**,而且我前兩輪都修錯了地方
+(去追捲動事件、去追 toggle 事件)。病根在 `coverRect()`:
+
+```
+getBoundingClientRect()   → 0×0 @ (0,0)      ← 現在沒被畫出來
+scrollHeight / scrollWidth → 上一次的尺寸     ← 佈局狀態被保留了
+```
+
+`coverRect` 的「內容比 border-box 大就撐開」那一段(為了蓋住緊排標題
+露出來的半個 g,§的老問題)於是把 0×0 撐成 W×H,而座標還是 (0,0)——
+換算成 document 座標就是 **(scrollX, scrollY),也就是視窗的左上角**。
+一整批這種疊層就全部堆在那裡,蓋掉真正在那個位置的內容。
+
+而 `setCovered(u, rect.width < 1 || rect.height < 1)` 那道兜底也因此失效:
+寬高**不是**零。
+
+製造這個狀態的是 `content-visibility`:
+
+- `content-visibility: hidden` —— 收折的 `<details>`(現代 Chrome 的 UA 樣式)
+- `content-visibility: auto` —— Gmail 對離開畫面的區塊做的效能優化
+
+兩者都是「佈局跳過,但尺寸留著,好讓它快速恢復」。
+逐條看 computed style 抓不到:它**不改 display,也不改 visibility**。
+
+修法兩層:
+
+1. `coverRect()`:**沒有任何 client rect = 沒被畫出來**,一律回零矩形,
+   不看 scrollWidth / scrollHeight。
+2. flush 的兜底改用 `el.checkVisibility({ contentVisibilityAuto: true })` ——
+   一次回答 display:none、visibility:hidden、以及 content-visibility 被跳過。
+
+順手把 `coverRect` 拆成 `src/content/cover.ts`,只有 type import,所以測得到。
+這條規則已經出過兩次事(第一次是量測與驗證用不同公式造成無限重排,
+第二次是這個),它值得自己一個檔案。
+
+**教訓**:前兩輪我從症狀出發(「疊層在滑」→ 追捲動;「收折壞掉」→ 追 toggle),
+兩次都在事件層打轉。真正該問的是**「這個座標是怎麼算出來的」**——
+一問就發現 0×0 的元素被撐成了一個有面積的盒子。
+BE 那條不變式(不顯示已知錯位的疊層)仍然有價值,但它是安全網,不是修復。

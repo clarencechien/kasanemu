@@ -319,6 +319,20 @@ function scan(): void {
   }
 }
 
+/**
+ * 這個元素**現在**有沒有被畫出來。
+ *
+ * `checkVisibility()` 一次回答 display:none、visibility:hidden、
+ * 以及 content-visibility 被跳過的內容(收折的 <details>、
+ * Gmail 對離開畫面的區塊做的 `content-visibility: auto`)。
+ * 逐條用 computed style 判斷會漏掉最後那一種 —— 它不改 display,也不改 visibility。
+ */
+function isRendered(el: Element): boolean {
+  const check = (el as Element & { checkVisibility?: (o?: object) => boolean }).checkVisibility;
+  if (typeof check !== 'function') return true;
+  return check.call(el, { contentVisibilityAuto: true, visibilityProperty: true });
+}
+
 function prune(): void {
   for (const u of [...units]) {
     if (u.el.isConnected) continue;
@@ -463,7 +477,7 @@ function flush(): void {
      * 那個檢查是啟發式的「有沒有被祖先裁掉」,這一條是「原文根本不存在於版面上」。
      * 沒有這條的話,收折起來的問答會把譯文留在原地,疊到別人身上。
      */
-    layer.setCovered(u, u.rect.width < 1 || u.rect.height < 1);
+    layer.setCovered(u, !isRendered(u.el) || u.rect.width < 1 || u.rect.height < 1);
     // 量完了,座標又可信了
     layer.setStale(u, false);
   }
