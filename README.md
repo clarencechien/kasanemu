@@ -174,7 +174,8 @@ scripts/    audit-sites · audit-coverage · probe-{detect,colors,snapshot,gemma
 tests/      217 個 node:test
 docs/       lessons(通則)· deviations(逐件記錄)· acceptance(人工驗收)
             fonts(subset 實測)· plan-annotation(加翻層規格)
-            plan-glossary(詞表規格 + 模型實測)· manual.html(使用說明)
+            plan-glossary(詞表規格 + 模型實測)· plan-images(圖片翻譯規格)
+            manual.html(使用說明)
 feature.md  漸進式翻譯的規格
 ```
 
