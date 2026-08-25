@@ -1307,3 +1307,46 @@ content script 不重載,於是上一頁按下的 `manualArmed` 一路帶到新�
 - **排除清單先前只有內文單元遵守**,加翻層與臨時加翻完全沒看它 ——
   於是 `.notranslate` / `translate="no"` 裡的連結照樣 hover 得到譯文。
   三條路徑現在都檢查 `closest(EXCLUDE_SELECTOR)`。
+
+## BD. Gmail:內層捲動追不上,以及應用程式外殼被當成內文
+
+### 疊層在滑
+
+視窗捲動時瀏覽器自己搬疊層(document 座標),**零延遲**。
+但 Gmail 是在 `<div>` 裡面捲的:document 根本沒動,疊層留在原地,
+原文從底下滑走 —— 只能由 JS 追,而 **JS 永遠慢合成器一幀**。
+這和 build 14 的抖動是同一件事,只是反過來。
+
+追不上就別追:**捲的當下先藏起來,停下來重新量好再出現**。
+錯位的疊層比暫時看原文更糟 —— 這和「貼片捲動時直接關掉」是同一個判斷。
+
+三個細節:
+
+- 只藏**這個容器裡的**單元,不是整層:輪播捲一下不該讓整頁疊層閃一次
+- 每一輪捲動只標記一次(`innerSettleTimer === 0` 才做)——
+  scroll 事件一秒幾十次,不然 O(單元數) 的迴圈會跑上百次
+- 停下來之後**直接進 flush**,不走 `scheduleFlush()` 的 120ms debounce ——
+  那 120ms 會被使用者看成「疊層慢半拍」
+- 用獨立的 `.stale` class,不跟 `.covered` 打架:那個是遮擋判定,這個是暫時失效
+
+### 「Mail / Chat / Meet / Labels」被翻
+
+兩個獨立的成因,各補一條規則。
+
+**其一:`EXCLUDE_TAGS` 只認標籤,不認 role。**
+NAV / HEADER / FOOTER / ASIDE 早就排除了,但 Gmail 這種單頁應用不用那些標籤,
+它用 `<div role="navigation">`。新增 `CHROME_SELECTOR`,收 ARIA 地標與
+工具列角色(navigation / banner / contentinfo / complementary /
+toolbar / menubar / menu / tablist / search / tooltip)。
+
+**和 `EXCLUDE_SELECTOR` 的差別很重要:這一層只擋疊翻,不擋加翻。**
+選單項目本來就是使用者可能想知道的東西(§AY 的原話:
+「有些是 menu 或是 link 可能想知道」),所以滑上去、選起來仍然翻得到。
+**不該被蓋掉的是版面,不是資訊。**
+
+**其二:`<div role="heading">Mail</div>`。**
+真正的文章用 `<h1>`–`<h6>`;把 role 掛在 div / span 上幾乎只出現在自繪的 UI。
+所以「非 heading 標籤 + `role="heading"` + 24 字以內」視為 UI 標籤。
+這一條不依賴祖先是不是地標,所以就算 Gmail 沒有把左欄包在
+`role="navigation"` 裡也擋得住。誤判的代價只是「要滑上去才看得到譯文」,
+不是看不到。

@@ -24,6 +24,23 @@ const EXCLUDE_TAGS = new Set([
  * 會誤傷 `.shared-post` 的寬鬆比對。使用者的原話是
  * 「分享到 facebook 什麼的,這種就不用翻了」。
  */
+/**
+ * 應用程式的介面外殼(ARIA 地標與工具列角色)。
+ *
+ * 這是 `EXCLUDE_TAGS` 裡 NAV / HEADER / FOOTER / ASIDE 的 role 版本 ——
+ * Gmail 這種單頁應用不用那些標籤,它用 `<div role="navigation">`。
+ * 於是左側的「Mail」「Chat」「Meet」「Labels」變成內文單元被疊層蓋掉。
+ *
+ * 和 EXCLUDE_SELECTOR 的差別很重要:**這一層只擋疊翻,不擋加翻**。
+ * 選單項目本來就是使用者可能想知道的東西(「有些是 menu 或是 link
+ * 可能想知道」),所以滑上去、選起來仍然翻得到 ——
+ * 不該被蓋掉的是版面,不是資訊。
+ */
+export const CHROME_SELECTOR =
+  '[role="navigation"],[role="banner"],[role="contentinfo"],[role="complementary"],' +
+  '[role="toolbar"],[role="menubar"],[role="menu"],[role="tablist"],[role="search"],' +
+  '[role="tooltip"]';
+
 export const EXCLUDE_SELECTOR =
   '[aria-hidden="true"],[contenteditable],[contenteditable=""],[translate="no"],.notranslate,' +
   '.robots-nocontent,[class*="sharedaddy"],[class*="sd-sharing"],[class*="social-share"],' +
@@ -82,7 +99,20 @@ function visibleTextOf(el: Element, skip?: ReadonlySet<Element>): string {
   return normalizeText(skip ? ownText(el, skip) : (el.textContent ?? ''));
 }
 
+const HEADING_TAGS = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6']);
+
 export function isUiLabel(el: Element, skip?: ReadonlySet<Element>): boolean {
+  /*
+   * `<div role="heading">Mail</div>` —— 應用程式的區塊標題。
+   *
+   * 真正的文章用 `<h1>`–`<h6>`;把 role 掛在 div / span 上幾乎只出現在
+   * 自繪的 UI(Gmail 左欄的 Mail / Chat / Meet / Labels 就是這樣寫的)。
+   * 加上和其他 UI 標籤同一個長度上限,誤判的代價也只是
+   * 「要滑上去才看得到譯文」,不是看不到。
+   */
+  if (el.getAttribute('role') === 'heading' && !HEADING_TAGS.has(el.tagName)) {
+    if (visibleTextOf(el, skip).length <= UI_LABEL_MAX_CHARS) return true;
+  }
   const act = el.closest(INTERACTIVE_SELECTOR);
   if (act) return visibleTextOf(act, skip).length <= UI_LABEL_MAX_CHARS;
   /*
@@ -305,6 +335,8 @@ interface WalkCtx {
 function walk(el: Element, ctx: WalkCtx): boolean {
   if (EXCLUDE_TAGS.has(el.tagName)) return false;
   if (el.matches(EXCLUDE_SELECTOR)) return false;
+  // 應用程式外殼:不蓋疊層,但 hover / 選取仍然翻得到(見 CHROME_SELECTOR)
+  if (el.matches(CHROME_SELECTOR)) return false;
   // 無文字的子樹直接剪掉,省下大量 getComputedStyle。
   // 這裡用 textContent 是刻意的:只是剪枝,精確的文字晚一點用 ownText 取。
   if (!(el.textContent ?? '').trim()) return false;

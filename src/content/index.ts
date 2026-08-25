@@ -460,6 +460,8 @@ function flush(): void {
      * 沒有這條的話,收折起來的問答會把譯文留在原地,疊到別人身上。
      */
     layer.setCovered(u, u.rect.width < 1 || u.rect.height < 1);
+    // 量完了,座標又可信了
+    layer.setStale(u, false);
   }
   const overflowing = [...units].filter((u) => u.overflowsBox).length;
   if (overflowing !== lastOverflowCount) {
@@ -1768,8 +1770,55 @@ function noteDrift(id: string, d: { dx: number; dy: number }): void {
   diag('info', 'scroll-drift', { id, dx: Math.round(d.dx), dy: Math.round(d.dy) });
 }
 
-function onScroll(): void {
+/**
+ * 內層容器捲動之後多久重新量(ms)。
+ * 太短會在慣性捲動中反覆重排,太長會讓疊層消失得很明顯。
+ */
+const INNER_SCROLL_SETTLE_MS = 90;
+let innerSettleTimer = 0;
+
+/**
+ * 這次捲動是不是發生在頁面內部的容器裡。
+ *
+ * 視窗捲動時瀏覽器自己搬疊層(document 座標),零延遲、零問題。
+ * 內層容器捲動時 document 沒動 —— 疊層留在原地,原文從底下滑走。
+ * Gmail、Slack、任何 app shell 都是這樣,而回報的「layer 會滑動」就是它。
+ */
+function innerScrollerOf(e: Event): Element | null {
+  const t = e.target;
+  if (!(t instanceof Element)) return null;
+  if (t === document.documentElement || t === document.body) return null;
+  return t;
+}
+
+function onScroll(e: Event): void {
   lastScrollAt = performance.now();
+  /*
+   * 追不上就先藏起來:錯位的疊層比暫時看原文更糟。
+   * 只藏在這個容器裡的單元 —— 輪播捲一下不該讓整頁疊層閃一次。
+   * 每一輪捲動只標記一次(timer 是 0 才做),不然 scroll 事件會把
+   * O(單元數) 的迴圈跑上百次。
+   */
+  const scroller = layer && running ? innerScrollerOf(e) : null;
+  if (scroller) {
+    if (innerSettleTimer === 0) {
+      let touched = 0;
+      for (const u of units) {
+        if (!u.box || !scroller.contains(u.el)) continue;
+        layer!.setStale(u, true);
+        touched++;
+      }
+      if (touched > 0) diag('info', 'inner-scroll', { units: touched });
+    }
+    clearTimeout(innerSettleTimer);
+    innerSettleTimer = window.setTimeout(() => {
+      innerSettleTimer = 0;
+      // 直接進 flush,不走 scheduleFlush 的 120ms debounce ——
+      // 那 120ms 全部會被使用者看成「疊層慢半拍」
+      requestAnimationFrame(flush);
+    }, INNER_SCROLL_SETTLE_MS);
+  }
+
   /*
    * 貼片是 position: fixed,不跟著頁面捲 —— 所以捲動時直接關掉。
    * 這是**刻意**不走疊翻那套 document 座標 + 捲動自我修正:
@@ -1824,6 +1873,8 @@ function stop(): void {
   motionTimer = 0;
   clearTimeout(hoverRetryTimer);
   hoverRetryTimer = undefined;
+  clearTimeout(innerSettleTimer);
+  innerSettleTimer = 0;
   if (scrollRaf) cancelAnimationFrame(scrollRaf);
   scrollRaf = 0;
   emptyScans = 0;

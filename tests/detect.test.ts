@@ -425,3 +425,33 @@ test('排除清單對加翻層同樣有效', () => {
   const body = mount('<div class="notranslate"><a href="/x">Export</a></div>');
   assert.deepEqual(findLabels(body, 200), []);
 });
+
+test('應用程式外殼:ARIA 地標角色不蓋疊層(Gmail 的左欄)', () => {
+  const body = mount(`
+    <div role="navigation">
+      <div class="apW" role="heading" aria-level="2">Mail</div>
+      <div class="apW" role="heading" aria-level="2">Chat</div>
+      <a href="#inbox">Inbox</a>
+    </div>
+    <div role="main"><p>Last week, Zipline and Uber announced a partnership targeting one million drone deliveries per day.</p></div>
+  `);
+  assert.deepEqual(ids(body), [
+    'Last week, Zipline and Uber announced a partnership targeting one million drone deliveries per day.',
+  ]);
+});
+
+test('div role="heading" 是應用程式的 UI 標籤,不是文章標題', () => {
+  // Gmail 左欄的真實寫法。真正的文章用 <h1>–<h6>
+  const body = mount(`
+    <div class="apW" role="heading" aria-level="2">Mail</div>
+    <span class="aAv" role="heading">Labels</span>
+    <h2>Drone Delivery Is Scaling Rapidly In The US</h2>
+  `);
+  assert.deepEqual(ids(body), ['Drone Delivery Is Scaling Rapidly In The US']);
+});
+
+test('地標排除只擋疊翻,不擋加翻 —— 選單項目滑上去還是問得到', () => {
+  const body = mount('<div role="navigation"><a href="#inbox">Inbox</a></div>');
+  assert.deepEqual(ids(body), []);
+  assert.deepEqual(findLabels(body, 200).map((c) => c.src), ['Inbox']);
+});

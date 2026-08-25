@@ -93,6 +93,18 @@ const LAYER_CSS = `
 /* 來源元素其實看不見(被裁切、隱藏的重複 DOM)→ 疊層也不該出現 */
 .box.covered, .hint.covered { display: none; }
 /*
+ * 內層容器正在捲動 —— 疊層在 document 座標,不會跟著動。
+ *
+ * 視窗捲動時瀏覽器自己搬疊層,零延遲;但 Gmail 這種在 <div> 裡面捲的
+ * 應用程式,document 根本沒動,只能由 JS 追 —— 而 JS 永遠慢合成器一幀。
+ * 追不上就會「疊層在滑」。
+ *
+ * 所以捲的當下**先藏起來**(看得到原文),停下來重新量好再出現。
+ * 這和貼片捲動時直接關掉是同一個判斷:錯位的疊層比暫時看原文更糟。
+ * 用獨立的 class,不跟 covered 打架 —— 那個是遮擋判定,這個是暫時失效。
+ */
+.box.stale, .hint.stale { visibility: hidden; }
+/*
  * §4.7 提示線是唯一表明「這是譯文」的記號;hover 時保留。
  * feature.md §5.1 / D22:並且以虛實與顏色表明階層 ——
  * 這是安全需求,不是美觀選項。L0 打底會讓 L1 的失敗變隱形。
@@ -342,6 +354,12 @@ export class OverlayLayer {
   }
 
   /** 來源元素看不見時把疊層藏起來(不是刪掉 —— 它可能又出現) */
+  /** 內層容器捲動中,座標暫時不可信 —— 藏起來,重新量好再出現 */
+  setStale(unit: Unit, stale: boolean): void {
+    unit.box?.classList.toggle('stale', stale);
+    unit.hint?.classList.toggle('stale', stale);
+  }
+
   setCovered(unit: Unit, covered: boolean): void {
     unit.box?.classList.toggle('covered', covered);
     unit.hint?.classList.toggle('covered', covered);
