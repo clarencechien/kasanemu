@@ -259,7 +259,7 @@ let sawInnerScroll = false;
 let swapsTotal = 0;
 let swapsOffscreen = 0;
 /**
- * 手動翻譯已被觸發過(popup 按鈕或 Alt+Shift+R)。
+ * 手動翻譯已被觸發過(popup 按鈕或 Alt+R)。
  * autoTranslate 關掉時,這個旗標是唯一的放行條件。
  */
 let manualArmed = false;
@@ -1718,7 +1718,7 @@ function updateHud(): void {
     return;
   }
   if (!settings.autoTranslate && !manualArmed) {
-    layer.setHud(`疊 · 已啟用,${units.size} 塊待翻 —— 按 Alt+Shift+R 或 popup 開始`, 'idle');
+    layer.setHud(`疊 · 已啟用,${units.size} 塊待翻 —— 按 Alt+R 或 popup 開始`, 'idle');
     return;
   }
   const parts: string[] = [];

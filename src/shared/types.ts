@@ -102,7 +102,7 @@ export interface Settings {
   noTranslateTerms: string[];
   /**
    * 啟用後是否自動翻譯可見區(PRD §7.1 的行為)。
-   * 關掉就必須按 popup 的「翻譯這一頁」或 Alt+Shift+R 才開始 ——
+   * 關掉就必須按 popup 的「翻譯這一頁」或 Alt+R 才開始 ——
    * 想先看清楚狀態、或不想一啟用就花錢的時候用。
    */
   autoTranslate: boolean;
@@ -169,7 +169,7 @@ export const DEFAULT_SETTINGS: Settings = {
    *
    * 競品多半一進站就整頁翻,但使用者的原話是「我沒有要每頁都翻,
    * 也不是這樣燒 token 的」。啟用 = 這個網域我要用 Kasanemu;
-   * 真的要翻是另一個動作(popup 的按鈕 / Alt+Shift+R)。
+   * 真的要翻是另一個動作(popup 的按鈕 / Alt+R)。
    * 想要競品那種行為的人把這個打開就有。
    */
   autoTranslate: false,

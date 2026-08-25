@@ -64,8 +64,8 @@ function renderState(): void {
   }
   $('tier-note').textContent = `${TIERS[state.tier].modelId} — ${TIERS[state.tier].note}`;
   $('translate-note').textContent = settings.autoTranslate
-    ? 'Alt+Shift+R;也用來重試失敗的區塊'
-    : 'Alt+Shift+R;每一頁都要按一次';
+    ? 'Alt+R;也用來重試失敗的區塊'
+    : 'Alt+R;每一頁都要按一次';
   $<HTMLInputElement>('auto').checked = settings.autoTranslate;
   $('auto-note').textContent = settings.autoTranslate
     ? '進站與換頁都會自動整頁翻 —— 會持續產生 API 花費'
