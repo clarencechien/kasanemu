@@ -5,6 +5,7 @@ import {
   MAX_UNIT_CHARS,
   findCandidates,
   findLabels,
+  hiddenByDisclosure,
   isMeaningfulText,
   looksLikeTargetLang,
 } from '../src/content/detect.ts';
@@ -424,4 +425,137 @@ test('分享 widget 整塊排除 —— 連「Share」標題與 hover 貼片都�
 test('排除清單對加翻層同樣有效', () => {
   const body = mount('<div class="notranslate"><a href="/x">Export</a></div>');
   assert.deepEqual(findLabels(body, 200), []);
+});
+
+test('應用程式外殼:ARIA 地標角色不蓋疊層(Gmail 的左欄)', () => {
+  const body = mount(`
+    <div role="navigation">
+      <div class="apW" role="heading" aria-level="2">Mail</div>
+      <div class="apW" role="heading" aria-level="2">Chat</div>
+      <a href="#inbox">Inbox</a>
+    </div>
+    <div role="main"><p>Last week, Zipline and Uber announced a partnership targeting one million drone deliveries per day.</p></div>
+  `);
+  assert.deepEqual(ids(body), [
+    'Last week, Zipline and Uber announced a partnership targeting one million drone deliveries per day.',
+  ]);
+});
+
+test('div role="heading" 是應用程式的 UI 標籤,不是文章標題', () => {
+  // Gmail 左欄的真實寫法。真正的文章用 <h1>–<h6>
+  const body = mount(`
+    <div class="apW" role="heading" aria-level="2">Mail</div>
+    <span class="aAv" role="heading">Labels</span>
+    <h2>Drone Delivery Is Scaling Rapidly In The US</h2>
+  `);
+  assert.deepEqual(ids(body), ['Drone Delivery Is Scaling Rapidly In The US']);
+});
+
+test('地標排除只擋疊翻,不擋加翻 —— 選單項目滑上去還是問得到', () => {
+  const body = mount('<div role="navigation"><a href="#inbox">Inbox</a></div>');
+  assert.deepEqual(ids(body), []);
+  assert.deepEqual(findLabels(body, 200).map((c) => c.src), ['Inbox']);
+});
+
+test('收折的 <details>:只有 summary 進得來,內容不進來', () => {
+  // 使用者的觀察:「打開跟關起來的 element 看起來長的一樣」。
+  // 現代 Chrome 用 content-visibility: hidden 收折,佈局狀態被保留 ——
+  // rect、client rects、computed style 全部回展開時的值,所有量測都說謊。
+  // 唯一誠實的來源是 DOM:祖先有沒有一個沒帶 open 的 <details>。
+  const body = mount(`
+    <details>
+      <summary>Can I read Stratechery via RSS?</summary>
+      <p>Yes! Create a Stratechery Passport account, go to Delivery Preferences.</p>
+    </details>
+  `);
+  assert.deepEqual(ids(body), ['Can I read Stratechery via RSS?']);
+});
+
+test('展開的 <details>:問與答都進得來', () => {
+  const body = mount(`
+    <details open>
+      <summary>Can I read Stratechery via RSS?</summary>
+      <p>Yes! Create a Stratechery Passport account, go to Delivery Preferences.</p>
+    </details>
+  `);
+  assert.deepEqual(ids(body), [
+    'Can I read Stratechery via RSS?',
+    'Yes! Create a Stratechery Passport account, go to Delivery Preferences.',
+  ]);
+});
+
+test('hiddenByDisclosure:summary 看得見,內容看不見,展開後都看得見', () => {
+  const body = mount(`
+    <details id="shut">
+      <summary id="s1"><span id="s1b">Can I read Stratechery via RSS?</span></summary>
+      <p id="p1">Yes! Create a Stratechery Passport account.</p>
+    </details>
+    <details id="open" open>
+      <summary id="s2">Another question</summary>
+      <p id="p2">Another answer that is long enough to matter.</p>
+    </details>
+  `);
+  const at = (id: string) => body.querySelector(`#${id}`)!;
+  assert.equal(hiddenByDisclosure(at('s1')), false);
+  assert.equal(hiddenByDisclosure(at('s1b')), false, 'summary 的子孫也看得見');
+  assert.equal(hiddenByDisclosure(at('p1')), true);
+  assert.equal(hiddenByDisclosure(at('s2')), false);
+  assert.equal(hiddenByDisclosure(at('p2')), false);
+});
+
+test('Gmail 的「Labels」:inline 的 role=heading,祖先也不能撿走它的文字', () => {
+  // isUiLabel 只在元素「像 block」時才會被問到,而 <span> 是 inline ——
+  // 於是外層的 div 撿走「Labels」變成翻譯單元。要跟 sr-only 一樣登記起來。
+  const body = mount(`
+    <div class="aAw FgKVne">
+      <span class="aAv" role="heading">Labels</span>
+      <div class="aAu arN" aria-label="Create new label" role="button" tabindex="0"></div>
+    </div>
+    <p>Drone delivery is scaling rapidly in the United States this year.</p>
+  `);
+  assert.deepEqual(ids(body), ['Drone delivery is scaling rapidly in the United States this year.']);
+});
+
+test('隱形的注入元素不該讓段落被當成容器,文字也不該外洩給祖先', () => {
+  // Gmail 在每個含圖片的 <p> 裡塞一個下載按鈕(用 DOM API 塞的,所以
+  // <div> 真的在 <p> 裡面),裡面唯一的文字是 aria-hidden 的 tooltip
+  // 「Download」—— 於是那個 <p> 被當成容器,整段圖表註解從來沒被翻過
+  const body = mount('<p id="fig"></p>');
+  const doc = body.ownerDocument;
+  const p = body.querySelector('#fig')!;
+  const btn = doc.createElement('div');
+  btn.className = 'a6S';
+  const tip = doc.createElement('div');
+  tip.setAttribute('role', 'tooltip');
+  tip.setAttribute('aria-hidden', 'true');
+  tip.textContent = 'Download';
+  btn.appendChild(tip);
+  p.appendChild(btn);
+  const note = doc.createElement('span');
+  note.textContent =
+    'Note: Cost decline percentages are rounded to the nearest 5%. Source: ARK Investment Management LLC.';
+  p.appendChild(note);
+
+  assert.deepEqual(ids(body), [
+    'Note: Cost decline percentages are rounded to the nearest 5%. Source: ARK Investment Management LLC.',
+  ]);
+});
+
+test('圖文混排的段落不建立單元 —— 蓋下去會把圖蓋掉', () => {
+  const body = mount(`
+    <p id="fig"><img id="chart" /><span>Note: cost decline percentages are rounded to the nearest 5%.</span></p>
+    <p>Drone delivery is scaling rapidly in the United States this year.</p>
+  `);
+  // jsdom 沒有 layout,手動給圖表一個面積
+  const chart = body.querySelector('#chart')!;
+  chart.getBoundingClientRect = () =>
+    ({ width: 450, height: 300 }) as unknown as DOMRect;
+  assert.deepEqual(ids(body), ['Drone delivery is scaling rapidly in the United States this year.']);
+});
+
+test('行內小圖示不算圖文混排', () => {
+  const body = mount('<p id="p"><img id="icon" />Drone delivery is scaling rapidly in the US.</p>');
+  const icon = body.querySelector('#icon')!;
+  icon.getBoundingClientRect = () => ({ width: 14, height: 14 }) as unknown as DOMRect;
+  assert.deepEqual(ids(body), ['Drone delivery is scaling rapidly in the US.']);
 });

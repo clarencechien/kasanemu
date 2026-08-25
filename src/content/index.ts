@@ -17,6 +17,7 @@ import {
   findCandidates,
   findLabels,
   hasContainerChild,
+  hiddenByDisclosure,
   isMeaningfulText,
   looksLikeTargetLang,
   normalizeText,
@@ -34,6 +35,7 @@ import {
   measureUnit,
   unlockScales,
 } from './geometry';
+import { clipInsets } from './cover';
 import { probePackagedFonts } from './fonts';
 import { L0Engine, translatorSupported } from './l0';
 import { pageSourceLang, sampleVisibleText, sniffScript, toTranslatorTarget } from './lang';
@@ -161,8 +163,30 @@ let reprioTimer = 0;
 let motionTimer = 0;
 let scrollRaf = 0;
 let settleTimer = 0;
+/** 應用程式外殼的快速座標檢查(document 本身不捲時才開) */
+let driftTimer = 0;
 /** 只在數量變化時記錄,否則每次重排都記一筆會把 log 洗掉 */
+/**
+ * 兩次掃描之間至少隔這麼久(ms),而且**掃不到東西就往上退**。
+ *
+ * 診斷 log 顯示 Gmail 上 `scan {"found":0}` 每 500ms 一次、持續整段時間 ——
+ * 單元數從頭到尾都是 59,一次新的都沒有。應用程式的 DOM 為了自己的理由
+ * 一直在動,而每一次都被我們翻譯成一次全樹 walk + getComputedStyle。
+ *
+ * 掃描是為了「發現新內容」。連續掃不到就代表這一頁的內容已經穩定了,
+ * 退到 3 秒一次;一旦真的掃到新東西就立刻回到 400ms(無限捲動的頁面
+ * 要能馬上跟上)。
+ */
+const MIN_SCAN_GAP_MS = 400;
+const MAX_SCAN_GAP_MS = 3000;
+let scanGapMs = MIN_SCAN_GAP_MS;
+let lastScanAt = -1e9;
+let rescanTimer = 0;
 let lastOverflowCount = -1;
+/** 來源元素現在沒被畫出來的疊層數(收折的 <details> 等) */
+let lastHiddenCount = -1;
+/** 被容器裁到的疊層數 */
+let lastClippedCount = -1;
 let lastShiftBucket = '';
 let lastTopBand = -1;
 let lastBottomBand = -1;
@@ -226,6 +250,7 @@ function onRouteChange(): void {
   lastProblem = '';
   emptyScans = 0;
   firstPaintMs = -1;
+  scanGapMs = MIN_SCAN_GAP_MS;
   // 上一頁的貼片與標籤單元不屬於這一頁
   closeChip(true);
   selectionUnit = null;
@@ -267,8 +292,13 @@ function scan(): void {
       src: c.src,
       style,
       geometryRisk: c.geometryRisk,
-      // §4.1 取不到不透明實色 → 降級為標註樣式,不要猜
-      annotation: style.backgroundRisk,
+      /*
+       * §4.1 原本是「取不到不透明實色 → 降級為標註樣式」。
+       * 改成只有使用者明確要求時才用標註樣式 —— 背景取不到的情況現在由
+       * backgroundForText() 依文字亮度挑一個對比色處理,那比固定淺色底
+       * 準得多(深色橫幅上一塊淺藍配橘字實在太醜)。
+       */
+      annotation: settings.forceAnnotation,
       singleLine: false,
       sizeGroup: Math.round(style.fontSizePx),
       scale: 1,
@@ -295,8 +325,11 @@ function scan(): void {
     }
   }
   scanLabels();
+  // 掃到新東西就回到最快的節奏,連續掃不到就退 —— 見 scanGapMs 的說明
+  scanGapMs = found.length > 0 ? MIN_SCAN_GAP_MS : Math.min(scanGapMs * 2, MAX_SCAN_GAP_MS);
   dbg('scan', { found: found.length, total: units.size });
   diag(units.size === 0 ? 'warn' : 'info', 'scan', {
+    gapMs: scanGapMs,
     found: found.length,
     total: units.size,
     pipeline: effective,
@@ -315,6 +348,22 @@ function scan(): void {
   } else {
     emptyScans = 0;
   }
+}
+
+/**
+ * 這個元素**現在**有沒有被畫出來。
+ *
+ * `checkVisibility()` 一次回答 display:none、visibility:hidden、
+ * 以及 content-visibility 被跳過的內容(收折的 <details>、
+ * Gmail 對離開畫面的區塊做的 `content-visibility: auto`)。
+ * 逐條用 computed style 判斷會漏掉最後那一種 —— 它不改 display,也不改 visibility。
+ */
+function isRendered(el: Element): boolean {
+  // 收折的 <details>:量測全部說謊,先問 DOM(見 detect.ts 的 hiddenByDisclosure)
+  if (hiddenByDisclosure(el)) return false;
+  const check = (el as Element & { checkVisibility?: (o?: object) => boolean }).checkVisibility;
+  if (typeof check !== 'function') return true;
+  return check.call(el, { contentVisibilityAuto: true, visibilityProperty: true });
 }
 
 function prune(): void {
@@ -351,10 +400,12 @@ function scheduleFlush(alsoScan = false): void {
  * 這裡在捲動停止、轉場結束之後對可見單元驗一次座標,對不上就重排。
  * 不在捲動**過程中**做,§10.2 的「捲動時額外開銷 0」還是成立。
  */
-function auditPositions(): void {
+function auditPositions(full = true): void {
   if (!layer || !running) return;
+  // 還在動就別量了:量到的一定是漂移,而處置已經做了(藏起來 + 等靜下來)
+  if (!settled()) return;
   applyChromeClip();
-  checkOcclusion();
+  if (full) checkOcclusion();
   // 用**疊層畫在哪**來決定要驗誰,而不是來源元素現在在哪:
   // 錯位的症狀正是「來源元素跑掉了,疊層還留在視口裡」,
   // 只驗 inView 的來源元素會漏掉那些。
@@ -373,7 +424,12 @@ function auditPositions(): void {
     const dh = Math.abs(rect.height - u.rect.height);
     if (dx > 1 || dy > 1 || dw > 1 || dh > 1) {
       diag('info', 'position-drift', { id: u.id, dx, dy, dw, dh });
-      scheduleFlush();
+      // 一個錯得離譜就代表這一批都不能信(多半是共同的祖先動了)
+      if (Math.max(dx, dy) > GROSS_DRIFT_PX) {
+        markAllStale();
+        noteMotion();
+      }
+      flushNow();
       return;
     }
   }
@@ -424,6 +480,7 @@ function onDisclosureToggle(): void {
 
 function relayout(): void {
   unlockScales(units);
+  for (const u of units) clippersOf.delete(u);
   clearMeasureCache();
   // 幾何變了,還沒送出去的長度預算要跟著重算(已送出的不動,反正回不去了)
   for (const u of units) if (!u.l1Queued) u.maxChars = 0;
@@ -432,8 +489,29 @@ function relayout(): void {
 
 function flush(): void {
   if (!layer || !running) return;
-  const doScan = pendingScan;
-  pendingScan = false;
+  /*
+   * 掃描節流。
+   *
+   * Gmail 的診斷 log 顯示 `scan {"found":0}` **每秒跑兩次** ——
+   * 應用程式的 DOM 一直在動,每一次變動都觸發一次全樹 walk + getComputedStyle。
+   * 那是純浪費,而且會排擠真正要做的重新量測。
+   *
+   * 掃描是為了「發現新內容」,那件事不需要 60fps。重新量測(flush 的其餘部分)
+   * 才需要即時,所以只節流掃描,不節流 flush。
+   * 空掃重試(emptyScans)期間不節流 —— 那時候正在等內容出現。
+   */
+  const now = performance.now();
+  const doScan = pendingScan && (emptyScans > 0 || now - lastScanAt >= scanGapMs);
+  if (doScan) {
+    lastScanAt = now;
+    pendingScan = false;
+  } else if (pendingScan && rescanTimer === 0) {
+    // 被節流掉的掃描要補回來,不然安靜的頁面會永遠等不到下一次 flush
+    rescanTimer = window.setTimeout(() => {
+      rescanTimer = 0;
+      scheduleFlush();
+    }, scanGapMs);
+  }
   prune();
   if (doScan) scan();
 
@@ -459,7 +537,14 @@ function flush(): void {
      * 那個檢查是啟發式的「有沒有被祖先裁掉」,這一條是「原文根本不存在於版面上」。
      * 沒有這條的話,收折起來的問答會把譯文留在原地,疊到別人身上。
      */
-    layer.setCovered(u, u.rect.width < 1 || u.rect.height < 1);
+    layer.setCovered(u, !isRendered(u.el) || u.rect.width < 1 || u.rect.height < 1);
+    // 還在動就一直藏著(座標每個 frame 都在變);靜下來才放出來
+    layer.setStale(u, !settled());
+  }
+  const hidden = [...units].filter((u) => u.box && !isRendered(u.el)).length;
+  if (hidden !== lastHiddenCount) {
+    lastHiddenCount = hidden;
+    diag('info', 'unrendered-sources', { count: hidden });
   }
   const overflowing = [...units].filter((u) => u.overflowsBox).length;
   if (overflowing !== lastOverflowCount) {
@@ -467,6 +552,7 @@ function flush(): void {
     if (overflowing > 0) diag('info', 'content-overflows-box', { count: overflowing });
   }
   applyChromeClip();
+  checkOrigin();
   if (firstPaintMs < 0 && paintable.length > 0) {
     firstPaintMs = Math.round(performance.now() - startedAt);
     dbg('first paint', firstPaintMs, 'ms', effective);
@@ -508,6 +594,8 @@ async function intake(): Promise<void> {
       u.tier === 'pending' &&
       u.maxChars > 0 &&
       !probed.has(u) &&
+      // 收折起來的內容不必翻 —— 展開時 scan 會再帶進來(而且是免費的 DOM 檢查)
+      !hiddenByDisclosure(u.el) &&
       u.rect.top + u.rect.height >= top &&
       u.rect.top <= bottom,
   );
@@ -666,7 +754,9 @@ function queueUpgrade(list: Unit[]): void {
 function dwellTick(): void {
   if (!running || effective !== 'progressive') return;
   const now = Date.now();
-  const due = [...units].filter((u) => dwellReady(u, now, settings.upgradeDwellMs, effective));
+  const due = [...units].filter(
+    (u) => dwellReady(u, now, settings.upgradeDwellMs, effective) && !hiddenByDisclosure(u.el),
+  );
   if (due.length > 0) {
     due.sort((a, b) => priorityOf(a) - priorityOf(b));
     queueUpgrade(due);
@@ -872,7 +962,16 @@ function anchorRectOf(u: Unit): DOMRect | null {
  * 往上找**自己就有文字**的最近祖先。上限 240 字:再長就是段落,
  * 那是疊翻的守備範圍,塞進貼片只會變成一面牆。
  */
-const ADHOC_MAX_CHARS = 240;
+/**
+ * 臨時加翻 / 選取加翻的長度上限。
+ *
+ * 原本是 240,而回報的那段 Note 是 400 字 —— **hover 與選取兩條路都在
+ * 同一個上限上被靜靜擋掉**,於是看起來像「選了也沒有翻」。
+ *
+ * 500 字在 26em 寬、13px 的貼片裡大約十行,對「我想知道這段在寫什麼」
+ * 來說是可以讀的;再長就真的是一面牆,那是疊翻的守備範圍。
+ */
+const ADHOC_MAX_CHARS = 500;
 const ADHOC_HOPS = 6;
 /**
  * 看過但不合格的元素。mouseover 在導覽列上會反覆打到同一批元素,
@@ -949,8 +1048,21 @@ function applySelection(): void {
   }
   const range = sel.getRangeAt(0);
   const text = normalizeText(sel.toString());
-  if (text.length < SELECTION_MIN_CHARS || text.length > ADHOC_MAX_CHARS) return;
-  if (!isMeaningfulText(text) || looksLikeTargetLang(text)) return;
+  // 被擋掉要留下痕跡:靜靜地什麼都不做,使用者只會覺得「這功能沒做」
+  const why =
+    text.length < SELECTION_MIN_CHARS
+      ? 'too-short'
+      : text.length > ADHOC_MAX_CHARS
+        ? 'too-long'
+        : !isMeaningfulText(text)
+          ? 'not-text'
+          : looksLikeTargetLang(text)
+            ? 'already-target'
+            : null;
+  if (why) {
+    diag('info', 'selection-skipped', { why, chars: text.length });
+    return;
+  }
   const host = range.commonAncestorContainer;
   const el = host instanceof Element ? host : host.parentElement;
   if (!el) return;
@@ -1559,7 +1671,20 @@ async function start(): Promise<void> {
     onRouteChange();
     scheduleFlush(true);
   });
-  mo.observe(document.body, { childList: true, characterData: true, subtree: true });
+  /*
+   * 屬性也要看,但只看收合元件那幾個。
+   *
+   * `<details open>` 的切換是**屬性**變動,而診斷 log 顯示 `toggle` 事件
+   * 根本沒進來(頁面自己的 JS 直接改屬性時不會派發那個事件)。
+   * attributeFilter 讓成本維持在只有這幾個名字才觸發。
+   */
+  mo.observe(document.body, {
+    childList: true,
+    characterData: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['open', 'hidden', 'aria-expanded', 'aria-hidden'],
+  });
 
   document.addEventListener('mouseover', onMouseOver, true);
   document.addEventListener('mouseleave', onDocLeave);
@@ -1606,6 +1731,23 @@ async function start(): Promise<void> {
     auditPositions();
     void catchUpL0();
   }, 900);
+  /*
+   * 應用程式外殼(document 本身不捲,像 Gmail / Slack)另外開一輪快檢。
+   *
+   * 那種頁面的捲動發生在內層容器裡,而**捲動事件不一定收得到**
+   * (自訂捲動、虛擬清單、shadow DOM)。與其賭事件收得到,
+   * 不如直接量:座標一錯就先藏起來再重排。
+   * 只驗座標,不做遮擋檢查(那個貴,而且不會因為捲動而改變結論)。
+   */
+  const el = document.documentElement;
+  const appShell = el.scrollHeight <= el.clientHeight + 4;
+  diag('info', 'layout-mode', { appShell, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight });
+  if (appShell) {
+    driftTimer = window.setInterval(() => {
+      if (document.hidden) return;
+      auditPositions(false);
+    }, 250);
+  }
   // §3.4 字型載入會改變所有 rect,完成後強制重算一次
   document.fonts.ready.then(relayout);
 
@@ -1642,21 +1784,86 @@ function onDocLeave(): void {
  * elementFromPoint 打不到我們自己,回來的一定是頁面的東西。
  */
 function chromeBand(y: number, top: boolean): number {
-  const x = Math.round(window.innerWidth / 2);
-  const hit = document.elementFromPoint(x, y);
-  for (let el: Element | null = hit; el && el !== document.body; el = el.parentElement) {
-    const cs = getComputedStyle(el);
-    if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
-    // 透明的覆蓋層不會擋住文字,不要當成頁首
-    if (Number(cs.opacity) === 0 || cs.visibility === 'hidden') continue;
-    const r = el.getBoundingClientRect();
-    const band = top ? r.bottom : window.innerHeight - r.top;
-    return Math.max(0, Math.min(band, window.innerHeight / 2));
+  /*
+   * 取樣三個 x,取最大的帶。
+   *
+   * 原本只在正中央取一次 —— 而 Gmail 的 Reply / Forward 列只佔左半邊,
+   * 正中央那一點打到的是它右邊的空白。回報的「下面超出的部分」
+   * 就是這樣漏掉的:整條列明明釘在那裡,我們卻量到 0。
+   */
+  let band = 0;
+  for (const ratio of [0.25, 0.5, 0.75]) {
+    const x = Math.round(window.innerWidth * ratio);
+    const hit = document.elementFromPoint(x, y);
+    for (let el: Element | null = hit; el && el !== document.body; el = el.parentElement) {
+      const cs = getComputedStyle(el);
+      if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
+      // 透明的覆蓋層不會擋住文字,不要當成頁首
+      if (Number(cs.opacity) === 0 || cs.visibility === 'hidden') continue;
+      const r = el.getBoundingClientRect();
+      const b = top ? r.bottom : window.innerHeight - r.top;
+      if (b > band) band = b;
+      break;
+    }
   }
-  return 0;
+  return Math.max(0, Math.min(band, window.innerHeight / 2));
 }
 
-/** 把被固定頁首 / 頁尾蓋住的那一段從疊層上裁掉,讓它跟原文一樣消失 */
+/**
+ * 會裁切這個單元的祖先(`overflow` 不是 visible 的那些)。
+ *
+ * 找一次就存起來:結構不會因為捲動而改變,只有重排才需要重算。
+ * 每次 flush 重找的話是 59 個單元 × 十幾層 getComputedStyle。
+ */
+const clippersOf = new WeakMap<Unit, Element[]>();
+
+function clippers(u: Unit): Element[] {
+  const hit = clippersOf.get(u);
+  if (hit) return hit;
+  const out: Element[] = [];
+  for (let p = u.el.parentElement; p && p !== document.documentElement; p = p.parentElement) {
+    const cs = getComputedStyle(p);
+    if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') out.push(p);
+  }
+  clippersOf.set(u, out);
+  return out;
+}
+
+/**
+ * 疊層可以畫在視窗的哪一塊(視窗座標)。
+ *
+ * 使用者的話:「破版有辦法量 inner 的上下嗎?可以保守一點。」——
+ * 對,而且該量的不只上下,是**四邊**,而且不只一層。
+ *
+ * 這是「疊在頁面外面」的最後一個代價:內容捲出捲動容器時,頁面會把它裁掉,
+ * 而我們的疊層在最上層,不受任何裁切 —— 於是畫到 Gmail 的搜尋列與
+ * 工具列上面去。附圖裡那些浮在最上方的譯文全部是這樣來的。
+ *
+ * 修法和「被固定頁首蓋住」完全一樣:算出可見的矩形,用 clip-path 裁掉。
+ * 保守的方向是**寧可多裁**:交集為空就整塊不見。
+ */
+function visibleBox(u: Unit): { top: number; right: number; bottom: number; left: number } {
+  let top = lastTopBand;
+  let left = 0;
+  let right = window.innerWidth;
+  let bottom = window.innerHeight - lastBottomBand;
+  for (const p of clippers(u)) {
+    const r = p.getBoundingClientRect();
+    if (r.width < 1 && r.height < 1) continue; // 祖先自己沒被畫出來,交給別的檢查處理
+    if (r.top > top) top = r.top;
+    if (r.left > left) left = r.left;
+    if (r.right < right) right = r.right;
+    if (r.bottom < bottom) bottom = r.bottom;
+  }
+  return { top, right, bottom, left };
+}
+
+/**
+ * 把「頁面自己會裁掉、而我們不會」的部分從疊層上裁掉。
+ *
+ * 兩個來源:固定頁首 / 頁尾(蓋住原文),以及內層捲動容器(裁掉原文)。
+ * 兩者的處置一樣 —— 原文看不到的地方,譯文也不該看得到。
+ */
 function applyChromeClip(): void {
   if (!layer || !running) return;
   const h = window.innerHeight;
@@ -1667,16 +1874,30 @@ function applyChromeClip(): void {
     lastBottomBand = bottom;
     diag('info', 'chrome-band', { top, bottom });
   }
-  // 純算術,不讀 layout:u.rect 是快取值
+  let clipped = 0;
   for (const u of units) {
     if (!u.box) continue;
     const vTop = u.rect.top - window.scrollY - u.bleed.y;
+    const vLeft = u.rect.left - window.scrollX - u.bleed.x;
     const vBottom = vTop + u.rect.height + u.bleed.y * 2;
+    const vRight = vLeft + u.rect.width + u.bleed.x * 2;
     if (vBottom < -50 || vTop > h + 50) {
-      layer.setClip(u, 0, 0);
+      layer.setClip(u, 0, 0, 0, 0);
       continue;
     }
-    layer.setClip(u, Math.max(0, top - vTop), Math.max(0, vBottom - (h - bottom)));
+    const ins = clipInsets(
+      { top: vTop, right: vRight, bottom: vBottom, left: vLeft },
+      visibleBox(u),
+    );
+    if (ins.top > 0 || ins.right > 0 || ins.bottom > 0 || ins.left > 0) clipped++;
+    layer.setClip(u, ins.top, ins.right, ins.bottom, ins.left);
+  }
+  if (clipped !== lastClippedCount) {
+    lastClippedCount = clipped;
+    let noClipper = 0;
+    for (const u of units) if (u.box && clippers(u).length === 0) noClipper++;
+    // noClipper 大 = 我根本沒找到那個捲動容器,而不是「裁了但不夠」
+    diag('info', 'clip-to-container', { clipped, noClipper, total: units.size });
   }
 }
 
@@ -1728,6 +1949,31 @@ function checkOcclusion(): void {
   }
 }
 
+let lastOrigin = '';
+
+/**
+ * 驗證「絕對座標 (0,0) 真的等於文件原點」。
+ *
+ * 正常頁面一定成立,所以這裡多半什麼都不做(一次 rect 讀取的成本)。
+ * 但應用程式外殼可能把 `<html>` / `<body>` 變成定位或 transform 的容器,
+ * 那時整層疊層會平移一段固定距離 —— 而**每一塊都錯同樣的量**,
+ * 症狀看起來就像「疊層整片跑掉」。
+ *
+ * 這是 §R / §X / §AA 三輪都在找、但當時是用「拿掉原點」的方式亂試的東西。
+ * 這次把它變成一個明確的、會寫進 log 的檢查。
+ */
+function checkOrigin(): void {
+  if (!layer) return;
+  const r = layer.hostRect();
+  const dx = Math.round(r.left + window.scrollX);
+  const dy = Math.round(r.top + window.scrollY);
+  const key = `${dx},${dy}`;
+  if (key === lastOrigin) return;
+  lastOrigin = key;
+  layer.setOrigin(-dx, -dy);
+  if (dx !== 0 || dy !== 0) diag('warn', 'origin-offset', { dx, dy });
+}
+
 /** 疊層畫的位置與來源元素現在的位置差多少 */
 function driftOf(u: Unit): { dx: number; dy: number } {
   const r = u.el.getBoundingClientRect();
@@ -1747,6 +1993,8 @@ function driftOf(u: Unit): { dx: number; dy: number } {
 function scrollSync(): void {
   scrollRaf = 0;
   if (!layer || !running) return;
+  // 還在動的時候疊層已經藏起來了,不必每個 frame 再量 —— 結論永遠是「還在動」
+  if (!settled()) return;
   // 疊層本身由瀏覽器跟著頁面捲(document 座標),JS 不碰位置。
   // 這裡只處理「被固定頁首蓋住的那一段要跟著消失」。
   applyChromeClip();
@@ -1754,10 +2002,47 @@ function scrollSync(): void {
   const probe = [...units].find((u) => u.box && u.inView && u.tier !== 'skipped');
   if (!probe) return;
   const d = driftOf(probe);
-  if (Math.abs(d.dx) > 2 || Math.abs(d.dy) > 2) {
-    noteDrift(probe.id, d);
-    scheduleFlush();
+  const off = Math.max(Math.abs(d.dx), Math.abs(d.dy));
+  if (off <= 2) return;
+  noteDrift(probe.id, d);
+  /*
+   * 差幾像素只是沒對齊,重排一下就好;差一大截代表疊層已經蓋在
+   * **別人的內容**上,那才是「破版」—— 先藏起來再說。
+   * 門檻分開是為了不讓 parallax / sticky 那種長期小幅漂移一直閃。
+   */
+  if (off > GROSS_DRIFT_PX) {
+    markAllStale();
+    noteMotion();
   }
+  flushNow();
+}
+
+/**
+ * 座標已知是錯的 → **先全部藏起來**。
+ *
+ * 這是回報的「破版」的正解:不透明的盒子畫在錯的位置上,蓋掉的是別人的
+ * 內容,看起來就是整頁爛掉。疊層暫時消失只是看到原文 —— 兩害相權,
+ * 沒有疑問。
+ *
+ * 換句話說,這裡建立一條不變式:**我們不顯示已知錯位的疊層**。
+ * 之前只有「捲動中」這一種情況會藏,但錯位的來源不只捲動
+ * (內容插入、圖片載入、應用程式重繪),而且捲動事件不一定收得到。
+ */
+/** 超過這個位移就不只是「沒對齊」,是蓋到別人身上了(px) */
+const GROSS_DRIFT_PX = 12;
+
+function markAllStale(): void {
+  if (!layer) return;
+  for (const u of units) if (u.box || u.hint) layer.setStale(u, true);
+}
+
+/** 繞過 scheduleFlush 的 120ms debounce —— 錯位的每一毫秒都看得見 */
+function flushNow(): void {
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = 0;
+  }
+  requestAnimationFrame(flush);
 }
 
 /** 只在量級變化時記一筆,不然捲動時每 frame 一筆會把 log 洗掉 */
@@ -1768,8 +2053,71 @@ function noteDrift(id: string, d: { dx: number; dy: number }): void {
   diag('info', 'scroll-drift', { id, dx: Math.round(d.dx), dy: Math.round(d.dy) });
 }
 
-function onScroll(): void {
+/**
+ * 內層容器捲動之後多久重新量(ms)。
+ * 太短會在慣性捲動中反覆重排,太長會讓疊層消失得很明顯。
+ */
+/**
+ * 「頁面靜下來了」的單一判準。
+ *
+ * 前四輪是打地鼠:捲動事件一條路、座標稽核一條路、內層沉澱一條路,
+ * 每一條都各自決定要不要把疊層放出來 —— 於是總有一條會在還在動的時候
+ * 把它放出來。log 裡 position-drift 一秒兩三筆、dy 最大 4255,
+ * 每一筆都代表「藏起來 → 量 → 放出來」跑了一遍。那就是閃爍。
+ *
+ * 改成**一個概念**:任何一種「內容在動」的訊號都只做一件事 ——
+ * 蓋上時間戳。疊層只在「距離最後一次動超過 200ms」時才顯示。
+ * 誰偵測到的不重要,偵測到幾次也不重要。
+ */
+const MOTION_SETTLE_MS = 200;
+let lastMotionAt = -1e9;
+let settleTick = 0;
+
+function settled(): boolean {
+  return performance.now() - lastMotionAt >= MOTION_SETTLE_MS;
+}
+
+function checkSettled(): void {
+  const left = MOTION_SETTLE_MS - (performance.now() - lastMotionAt);
+  if (left > 0) {
+    settleTick = window.setTimeout(checkSettled, left);
+    return;
+  }
+  settleTick = 0;
+  // 靜下來了:量一次,一次顯示
+  flushNow();
+}
+
+function noteMotion(): void {
+  lastMotionAt = performance.now();
+  if (settleTick === 0) settleTick = window.setTimeout(checkSettled, MOTION_SETTLE_MS);
+}
+
+function innerScrollerOf(e: Event): Element | null {
+  const t = e.target;
+  if (!(t instanceof Element)) return null;
+  if (t === document.documentElement || t === document.body) return null;
+  return t;
+}
+
+function onScroll(e: Event): void {
   lastScrollAt = performance.now();
+  /*
+   * 內層容器捲動 —— 疊層在 document 座標,不會跟著動。
+   *
+   * **不**再逐一檢查哪些單元在這個容器裡:log 裡出現過
+   * `inner-scroll {"units":0}`,因為 Gmail 有巢狀捲動容器,
+   * 捲的那一個不一定是我們追蹤的單元的祖先。動了就是動了,
+   * 全部先藏起來,靜下來再一次顯示。
+   */
+  if (layer && running && innerScrollerOf(e)) {
+    if (settled()) {
+      markAllStale();
+      diag('info', 'inner-scroll', { units: units.size });
+    }
+    noteMotion();
+  }
+
   /*
    * 貼片是 position: fixed,不跟著頁面捲 —— 所以捲動時直接關掉。
    * 這是**刻意**不走疊翻那套 document 座標 + 捲動自我修正:
@@ -1820,10 +2168,20 @@ function stop(): void {
   document.removeEventListener('error', onResourceLoad, true);
   clearInterval(settleTimer);
   settleTimer = 0;
+  clearInterval(driftTimer);
+  driftTimer = 0;
+  lastOrigin = '';
   clearTimeout(motionTimer);
   motionTimer = 0;
   clearTimeout(hoverRetryTimer);
   hoverRetryTimer = undefined;
+  clearTimeout(settleTick);
+  settleTick = 0;
+  lastMotionAt = -1e9;
+  clearTimeout(rescanTimer);
+  rescanTimer = 0;
+  lastScanAt = -1e9;
+  scanGapMs = MIN_SCAN_GAP_MS;
   if (scrollRaf) cancelAnimationFrame(scrollRaf);
   scrollRaf = 0;
   emptyScans = 0;

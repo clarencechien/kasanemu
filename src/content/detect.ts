@@ -24,6 +24,23 @@ const EXCLUDE_TAGS = new Set([
  * 會誤傷 `.shared-post` 的寬鬆比對。使用者的原話是
  * 「分享到 facebook 什麼的,這種就不用翻了」。
  */
+/**
+ * 應用程式的介面外殼(ARIA 地標與工具列角色)。
+ *
+ * 這是 `EXCLUDE_TAGS` 裡 NAV / HEADER / FOOTER / ASIDE 的 role 版本 ——
+ * Gmail 這種單頁應用不用那些標籤,它用 `<div role="navigation">`。
+ * 於是左側的「Mail」「Chat」「Meet」「Labels」變成內文單元被疊層蓋掉。
+ *
+ * 和 EXCLUDE_SELECTOR 的差別很重要:**這一層只擋疊翻,不擋加翻**。
+ * 選單項目本來就是使用者可能想知道的東西(「有些是 menu 或是 link
+ * 可能想知道」),所以滑上去、選起來仍然翻得到 ——
+ * 不該被蓋掉的是版面,不是資訊。
+ */
+export const CHROME_SELECTOR =
+  '[role="navigation"],[role="banner"],[role="contentinfo"],[role="complementary"],' +
+  '[role="toolbar"],[role="menubar"],[role="menu"],[role="tablist"],[role="search"],' +
+  '[role="tooltip"]';
+
 export const EXCLUDE_SELECTOR =
   '[aria-hidden="true"],[contenteditable],[contenteditable=""],[translate="no"],.notranslate,' +
   '.robots-nocontent,[class*="sharedaddy"],[class*="sd-sharing"],[class*="social-share"],' +
@@ -82,7 +99,30 @@ function visibleTextOf(el: Element, skip?: ReadonlySet<Element>): string {
   return normalizeText(skip ? ownText(el, skip) : (el.textContent ?? ''));
 }
 
+const HEADING_TAGS = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6']);
+
+/**
+ * `role="heading"` 掛在非 heading 標籤上,而且很短 —— 應用程式的區塊標題。
+ * 真正的文章用 `<h1>`–`<h6>`。
+ */
+function isAppHeading(el: Element): boolean {
+  if (el.getAttribute('role') !== 'heading') return false;
+  if (HEADING_TAGS.has(el.tagName)) return false;
+  return normalizeText(el.textContent ?? '').length <= UI_LABEL_MAX_CHARS;
+}
+
 export function isUiLabel(el: Element, skip?: ReadonlySet<Element>): boolean {
+  /*
+   * `<div role="heading">Mail</div>` —— 應用程式的區塊標題。
+   *
+   * 真正的文章用 `<h1>`–`<h6>`;把 role 掛在 div / span 上幾乎只出現在
+   * 自繪的 UI(Gmail 左欄的 Mail / Chat / Meet / Labels 就是這樣寫的)。
+   * 加上和其他 UI 標籤同一個長度上限,誤判的代價也只是
+   * 「要滑上去才看得到譯文」,不是看不到。
+   */
+  if (el.getAttribute('role') === 'heading' && !HEADING_TAGS.has(el.tagName)) {
+    if (visibleTextOf(el, skip).length <= UI_LABEL_MAX_CHARS) return true;
+  }
   const act = el.closest(INTERACTIVE_SELECTOR);
   if (act) return visibleTextOf(act, skip).length <= UI_LABEL_MAX_CHARS;
   /*
@@ -158,6 +198,13 @@ export function ownText(el: Element, skip?: ReadonlySet<Element>): string {
     if (NON_TEXT_TAGS.has(kid.tagName)) continue;
     // 螢幕閱讀器標籤的文字不算數:視覺上不存在的字不該讓祖先變成翻譯單元
     if (skip?.has(kid)) continue;
+    /*
+     * 排除清單的文字也不算數。少了這一條,Gmail 塞在段落裡的下載按鈕
+     * (唯一的文字是 `<div role="tooltip" aria-hidden="true">Download</div>`)
+     * 會讓它的父層變成一個內容是「Download」的翻譯單元。
+     * 這是 sr-only 那個坑的第四次:**認出來還不夠,祖先也要扣掉。**
+     */
+    if (kid.matches(EXCLUDE_SELECTOR)) continue;
     out += ownText(kid, skip);
   }
   return out;
@@ -167,10 +214,41 @@ export function ownText(el: Element, skip?: ReadonlySet<Element>): string {
  * 底下還有帶文字的結構性 block → 這是容器,不是段落。
  * 只在準備建立單元時才呼叫,所以不會對整頁跑一遍。
  */
+/**
+ * 這個元素在畫面上真的有文字嗎(扣掉排除清單與 aria-hidden 的子樹)。
+ *
+ * `textContent` 會把不該算的東西一起吃進來。實例:Gmail 在每個含圖片的
+ * `<p>` 裡塞一個下載按鈕 `<div class="a6S">`,裡面唯一的文字是
+ * `<div role="tooltip" aria-hidden="true">Download</div>` ——
+ * 於是 `hasContainerChild()` 判定那個 `<p>` 是「容器」,整段圖表註解就
+ * 從來沒被翻過。回報的那段 Note 就是這樣消失的。
+ */
 export function hasContainerChild(el: Element): boolean {
   for (const kid of Array.from(el.querySelectorAll(CONTAINER_TAGS))) {
     if (EXCLUDE_TAGS.has(kid.tagName)) continue;
-    if ((kid.textContent ?? '').trim().length > 0) return true;
+    if (kid.matches(EXCLUDE_SELECTOR)) continue;
+    if (ownText(kid).trim().length > 0) return true;
+  }
+  return false;
+}
+
+/**
+ * 底下有夠大的圖片 / 影片 —— 這是圖文混排的容器,不是段落。
+ *
+ * §3.5 已經處理過浮動圖片(bounding box 會蓋住它),但**不浮動的**圖片
+ * 一樣會被蓋掉:ARK 電子報的 `<p><img 圖表><span>Note: …</span></p>`
+ * 一旦被當成單元,不透明的疊層就把整張圖表蓋掉了。
+ *
+ * 門檻取 20×20:行內的小圖示不算,真的圖表才算。
+ */
+const MEDIA_TAGS = 'img,video,canvas,svg,picture,iframe';
+const MEDIA_MIN_AREA = 400;
+
+export function hasMediaChild(el: Element): boolean {
+  const kids = el.querySelectorAll(MEDIA_TAGS);
+  for (let i = 0; i < kids.length && i < 12; i++) {
+    const r = kids[i]!.getBoundingClientRect();
+    if (r.width * r.height >= MEDIA_MIN_AREA) return true;
   }
   return false;
 }
@@ -254,6 +332,37 @@ function isScreenReaderOnly(el: Element, cs: CSSStyleDeclaration): boolean {
   return w <= 4 || h <= 4;
 }
 
+/**
+ * 在收折的 `<details>` 裡面(而且不是它的 `<summary>`)。
+ *
+ * 使用者的觀察是對的:**打開跟關起來的 element 看起來長得一模一樣**。
+ * `<p>` 上沒有任何屬性或 class 改變,computed style 的 display 與
+ * visibility 也都不變 —— 現代 Chrome 用 `content-visibility: hidden`
+ * 收折,而那會**保留佈局狀態**:
+ *
+ *   getBoundingClientRect() → 展開時的位置與大小(不是零!)
+ *   getClientRects()        → 一樣有東西
+ *   getComputedStyle()      → display: block, visibility: visible
+ *
+ * 也就是說,**所有量測都在說謊**,而且說得前後一致 ——
+ * 所以座標稽核也抓不到漂移(診斷 log 裡 position-drift 是零筆)。
+ * 這是前三輪一直修不好的原因:我一直在問「量到的值對不對」,
+ * 但每一種量法都回同一個錯的值。
+ *
+ * 唯一誠實的來源是 DOM 本身:祖先有沒有一個沒帶 `open` 的 `<details>`。
+ * 這不是啟發式,是規格定義的行為。
+ */
+export function hiddenByDisclosure(el: Element): boolean {
+  let child: Element = el;
+  for (let p = el.parentElement; p; child = p, p = p.parentElement) {
+    // <summary> 在收折時仍然看得見,它的子孫也是
+    if (p.tagName === 'DETAILS' && !p.hasAttribute('open') && child.tagName !== 'SUMMARY') {
+      return true;
+    }
+  }
+  return false;
+}
+
 function isInvisible(cs: CSSStyleDeclaration): boolean {
   return (
     cs.display === 'none' ||
@@ -305,10 +414,19 @@ interface WalkCtx {
 function walk(el: Element, ctx: WalkCtx): boolean {
   if (EXCLUDE_TAGS.has(el.tagName)) return false;
   if (el.matches(EXCLUDE_SELECTOR)) return false;
+  // 應用程式外殼:不蓋疊層,但 hover / 選取仍然翻得到(見 CHROME_SELECTOR)
+  if (el.matches(CHROME_SELECTOR)) return false;
   // 無文字的子樹直接剪掉,省下大量 getComputedStyle。
   // 這裡用 textContent 是刻意的:只是剪枝,精確的文字晚一點用 ownText 取。
   if (!(el.textContent ?? '').trim()) return false;
 
+  // 收折的 <details>:所有量測都會說謊,只有 DOM 說實話
+  if (el.tagName === 'DETAILS' && !el.hasAttribute('open')) {
+    for (const kid of Array.from(el.children)) {
+      if (kid.tagName === 'SUMMARY' && walk(kid, ctx)) return true;
+    }
+    return false;
+  }
   const cs = getComputedStyle(el);
   if (isInvisible(cs)) {
     /*
@@ -333,6 +451,22 @@ function walk(el: Element, ctx: WalkCtx): boolean {
     ctx.srOnly.add(el);
     return false;
   }
+  /*
+   * 應用程式自繪的區塊標題,而且**祖先也不能繼承它的文字**。
+   *
+   * `isUiLabel()` 已經認得 `<div role="heading">`,但那條檢查只在元素
+   * 「像 block」時才會走到。Gmail 的寫法是
+   *
+   *   <div class="aAw"><span role="heading">Labels</span><div role="button"/></div>
+   *
+   * inline 的 `<span>` 在 blockish 判斷就 return false 了,於是外層的 div
+   * 撿走「Labels」變成翻譯單元 —— 左欄那個「標籤」就是這樣來的。
+   * 和 sr-only 一樣要登記起來,不然只是把問題往上搬一層。
+   */
+  if (isAppHeading(el)) {
+    ctx.srOnly.add(el);
+    return false;
+  }
 
   let produced = false;
   for (const child of Array.from(el.children)) {
@@ -344,6 +478,8 @@ function walk(el: Element, ctx: WalkCtx): boolean {
   if (!blockish) return false;
   // 子孫沒產生單元不代表可以退而求其次把容器整個吃下來
   if (hasContainerChild(el)) return false;
+  // 圖文混排:蓋下去會把圖一起蓋掉(§3.5 的非浮動版本)
+  if (hasMediaChild(el)) return false;
 
   const text = normalizeText(ownText(el, ctx.srOnly));
   if (!isMeaningfulText(text)) return false;

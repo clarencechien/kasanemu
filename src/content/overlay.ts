@@ -93,6 +93,18 @@ const LAYER_CSS = `
 /* 來源元素其實看不見(被裁切、隱藏的重複 DOM)→ 疊層也不該出現 */
 .box.covered, .hint.covered { display: none; }
 /*
+ * 內層容器正在捲動 —— 疊層在 document 座標,不會跟著動。
+ *
+ * 視窗捲動時瀏覽器自己搬疊層,零延遲;但 Gmail 這種在 <div> 裡面捲的
+ * 應用程式,document 根本沒動,只能由 JS 追 —— 而 JS 永遠慢合成器一幀。
+ * 追不上就會「疊層在滑」。
+ *
+ * 所以捲的當下**先藏起來**(看得到原文),停下來重新量好再出現。
+ * 這和貼片捲動時直接關掉是同一個判斷:錯位的疊層比暫時看原文更糟。
+ * 用獨立的 class,不跟 covered 打架 —— 那個是遮擋判定,這個是暫時失效。
+ */
+.box.stale, .hint.stale { visibility: hidden; }
+/*
  * §4.7 提示線是唯一表明「這是譯文」的記號;hover 時保留。
  * feature.md §5.1 / D22:並且以虛實與顏色表明階層 ——
  * 這是安全需求,不是美觀選項。L0 打底會讓 L1 的失敗變隱形。
@@ -144,7 +156,10 @@ const LAYER_CSS = `
   position: fixed;
   left: var(--ksnm-cx);
   top: var(--ksnm-cy);
-  max-width: 22em;
+  /* 選取一整段註解時會有十行左右,窄一點的欄位會變成很高的柱子 */
+  max-width: 26em;
+  max-height: 60vh;
+  overflow: hidden;
   box-sizing: border-box;
   margin: 0;
   padding: 3px 9px 3px 10px;
@@ -321,6 +336,26 @@ export class OverlayLayer {
    */
 
 
+  /** host 自己現在畫在哪。用來驗證「絕對座標 0,0 真的等於文件原點」 */
+  hostRect(): DOMRect {
+    return this.host.getBoundingClientRect();
+  }
+
+  /**
+   * 修正原點誤差。
+   *
+   * host 是 documentElement 的絕對定位子元素,正常情況下 (0,0) 就是文件原點。
+   * 但應用程式外殼可能把 `<html>` / `<body>` 變成定位或 transform 的容器,
+   * 那時 (0,0) 不再是文件原點,整層疊層會平移一段固定距離。
+   *
+   * 這**不是** build 14 那個做法:那是每個捲動 frame 用 JS 追 scrollY
+   * (追不上 → 抖動)。這裡修的是**靜態**誤差,只在版面變動時重算一次,
+   * 不隨捲動改變,所以不會抖。
+   */
+  setOrigin(dx: number, dy: number): void {
+    this.layer.style.transform = dx === 0 && dy === 0 ? '' : `translate(${dx}px, ${dy}px)`;
+  }
+
   setMode(mode: DisplayMode): void {
     this.layer.classList.toggle('mode-full', mode === 'full');
     this.layer.classList.toggle('mode-peek', mode === 'peek');
@@ -331,8 +366,13 @@ export class OverlayLayer {
   }
 
   /** 把盒子上下裁掉一段(px);0 / 0 表示不裁 */
-  setClip(unit: Unit, top: number, bottom: number): void {
-    const v = top <= 0 && bottom <= 0 ? '' : `inset(${Math.max(0, top)}px 0 ${Math.max(0, bottom)}px 0)`;
+  /** 四邊都要:固定頁首吃掉上下,內層捲動容器四邊都會裁 */
+  setClip(unit: Unit, top: number, right: number, bottom: number, left: number): void {
+    const t = Math.max(0, top);
+    const r = Math.max(0, right);
+    const b = Math.max(0, bottom);
+    const l = Math.max(0, left);
+    const v = t <= 0 && r <= 0 && b <= 0 && l <= 0 ? '' : `inset(${t}px ${r}px ${b}px ${l}px)`;
     for (const el of [unit.box, unit.hint]) {
       if (!el || el.dataset['clip'] === v) continue;
       el.dataset['clip'] = v;
@@ -342,6 +382,12 @@ export class OverlayLayer {
   }
 
   /** 來源元素看不見時把疊層藏起來(不是刪掉 —— 它可能又出現) */
+  /** 內層容器捲動中,座標暫時不可信 —— 藏起來,重新量好再出現 */
+  setStale(unit: Unit, stale: boolean): void {
+    unit.box?.classList.toggle('stale', stale);
+    unit.hint?.classList.toggle('stale', stale);
+  }
+
   setCovered(unit: Unit, covered: boolean): void {
     unit.box?.classList.toggle('covered', covered);
     unit.hint?.classList.toggle('covered', covered);

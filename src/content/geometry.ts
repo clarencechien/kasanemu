@@ -3,47 +3,14 @@ import { bleedFor } from './bleed';
 import { fontStack } from './fonts';
 import { LETTER_SPACING_EM, STEPS, activeText, type DocRect, type Unit } from './unit';
 import { maxCharsAt } from './upgrade';
+import { coverRect } from './cover';
+
+export { coverRect };
 
 /**
  * §3.3 幾何量測。座標一律轉成 document 座標,
  * 所以捲動不需要重算 (§3.4 / D02 的代價僅限重排)。
  */
-/**
- * 疊層該蓋住的範圍,document 座標。
- *
- * **量測與驗證必須用同一個函式**:measureUnit 存的是取過 max 的高度,
- * 而 auditPositions 若拿原始的 border-box 去比,那 62 個「內容比盒子高」的
- * 區塊會永遠被判定成漂移 → 重排 → 再判定,每 600ms 空轉一次。
- * (實際發生過:診斷 log 被 dh≈7.5 / dx=0 / dy=0 的 position-drift 洗版。)
- */
-export function coverRect(unit: Unit): { rect: DocRect; overflows: boolean } {
-  const r = unit.el.getBoundingClientRect();
-  const el = unit.el as HTMLElement;
-  const [bt, br, bb, bl] = unit.style.border;
-  /*
-   * 原文的內容可能比自己的 border-box 大:固定 height + overflow: visible,
-   * 或子元素有負 margin。照 border-box 蓋就會漏(標題底下露出半個 g)。
-   *
-   * **但只有 overflow: visible 才算。** 元素自己有裁切時,溢出的內容
-   * 根本沒被畫出來,拿 scrollWidth 去撐大盒子只會蓋到旁邊的東西 ——
-   * sr-only 的 1×1 元素配上 nowrap 長句,scrollWidth 是整句話的寬度,
-   * 就是這樣長出一條橫跨整張卡的疊層。
-   */
-  const cs = getComputedStyle(el);
-  const spills = cs.overflowX === 'visible' && cs.overflowY === 'visible';
-  const contentH = spills ? (el.scrollHeight || 0) + bt + bb : 0;
-  const contentW = spills ? (el.scrollWidth || 0) + bl + br : 0;
-  return {
-    rect: {
-      left: r.left + window.scrollX,
-      top: r.top + window.scrollY,
-      width: Math.max(r.width, contentW),
-      height: Math.max(r.height, contentH),
-    },
-    overflows: contentH > r.height + 1 || contentW > r.width + 1,
-  };
-}
-
 export function measureUnit(unit: Unit, extraBleedPx = 0): void {
   const r = unit.el.getBoundingClientRect();
   const rects = unit.el.getClientRects();

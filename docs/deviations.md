@@ -1307,3 +1307,432 @@ content script 不重載,於是上一頁按下的 `manualArmed` 一路帶到新�
 - **排除清單先前只有內文單元遵守**,加翻層與臨時加翻完全沒看它 ——
   於是 `.notranslate` / `translate="no"` 裡的連結照樣 hover 得到譯文。
   三條路徑現在都檢查 `closest(EXCLUDE_SELECTOR)`。
+
+## BD. Gmail:內層捲動追不上,以及應用程式外殼被當成內文
+
+### 疊層在滑
+
+視窗捲動時瀏覽器自己搬疊層(document 座標),**零延遲**。
+但 Gmail 是在 `<div>` 裡面捲的:document 根本沒動,疊層留在原地,
+原文從底下滑走 —— 只能由 JS 追,而 **JS 永遠慢合成器一幀**。
+這和 build 14 的抖動是同一件事,只是反過來。
+
+追不上就別追:**捲的當下先藏起來,停下來重新量好再出現**。
+錯位的疊層比暫時看原文更糟 —— 這和「貼片捲動時直接關掉」是同一個判斷。
+
+三個細節:
+
+- 只藏**這個容器裡的**單元,不是整層:輪播捲一下不該讓整頁疊層閃一次
+- 每一輪捲動只標記一次(`innerSettleTimer === 0` 才做)——
+  scroll 事件一秒幾十次,不然 O(單元數) 的迴圈會跑上百次
+- 停下來之後**直接進 flush**,不走 `scheduleFlush()` 的 120ms debounce ——
+  那 120ms 會被使用者看成「疊層慢半拍」
+- 用獨立的 `.stale` class,不跟 `.covered` 打架:那個是遮擋判定,這個是暫時失效
+
+### 「Mail / Chat / Meet / Labels」被翻
+
+兩個獨立的成因,各補一條規則。
+
+**其一:`EXCLUDE_TAGS` 只認標籤,不認 role。**
+NAV / HEADER / FOOTER / ASIDE 早就排除了,但 Gmail 這種單頁應用不用那些標籤,
+它用 `<div role="navigation">`。新增 `CHROME_SELECTOR`,收 ARIA 地標與
+工具列角色(navigation / banner / contentinfo / complementary /
+toolbar / menubar / menu / tablist / search / tooltip)。
+
+**和 `EXCLUDE_SELECTOR` 的差別很重要:這一層只擋疊翻,不擋加翻。**
+選單項目本來就是使用者可能想知道的東西(§AY 的原話:
+「有些是 menu 或是 link 可能想知道」),所以滑上去、選起來仍然翻得到。
+**不該被蓋掉的是版面,不是資訊。**
+
+**其二:`<div role="heading">Mail</div>`。**
+真正的文章用 `<h1>`–`<h6>`;把 role 掛在 div / span 上幾乎只出現在自繪的 UI。
+所以「非 heading 標籤 + `role="heading"` + 24 字以內」視為 UI 標籤。
+這一條不依賴祖先是不是地標,所以就算 Gmail 沒有把左欄包在
+`role="navigation"` 裡也擋得住。誤判的代價只是「要滑上去才看得到譯文」,
+不是看不到。
+
+## BE. 不變式:不顯示已知錯位的疊層
+
+build 28 之後回報「Gmail layer 滑動還是有」而且「也會破版」,附圖顯示
+不透明的盒子畫在空白處與別人的內容上。
+
+build 28 只處理了「捲動中」這一種情況,而且**賭 scroll 事件收得到**。
+應用程式外殼不一定會給你那個事件:自訂捲動、虛擬清單、shadow DOM。
+賭錯的代價是疊層停在錯的座標上不動 —— 那正是附圖的樣子。
+
+所以改成一條**不變式**:
+
+> 只要座標已知是錯的,疊層就不顯示。
+
+三個地方兌現它:
+
+1. `scrollSync()`(每個捲動 frame 的哨兵探測)
+2. `auditPositions()`(定時稽核)
+3. 內層容器捲動的 60ms 沉澱
+
+位移分兩級,這一條是為了不製造新問題:
+
+- **> 2px** —— 只是沒對齊,直接重排(`flushNow()`,繞過 120ms debounce)
+- **> 12px** —— 已經蓋在別人的內容上,**先全部藏起來**再重排
+
+分級是必要的:parallax / sticky 頁面會有長期的小幅漂移,
+一律藏起來會變成整頁閃爍 —— 那是用一個 bug 換另一個。
+
+另外兩件事:
+
+**應用程式外殼開一輪快檢。** `documentElement.scrollHeight <= clientHeight`
+就是「document 本身不捲」,那種頁面的捲動全在內層容器裡。
+與其賭事件收得到,不如直接量:每 250ms 驗一次座標(只驗座標,
+不做遮擋檢查 —— 那個貴,而且不會因為捲動改變結論)。
+
+**原點檢查。** host 是 `documentElement` 的絕對定位子元素,正常情況下
+(0,0) 就是文件原點。但應用程式外殼可能把 `<html>` / `<body>` 變成定位或
+transform 的容器,那時整層會平移一段**固定**距離 ——
+每一塊都錯同樣的量,看起來就像「疊層整片跑掉」。
+
+§R / §X / §AA 三輪都在找這個東西,當時的做法是「把原點拿掉再說」,
+然後又整個 revert。這次把它變成一個明確的、會寫進 log 的檢查
+(`origin-offset`),並且用 `.layer` 的 transform 修正。
+
+**這不是 build 14 的做法。** 那個是每個捲動 frame 用 JS 追 `scrollY`,
+追不上就抖。這裡修的是**靜態**誤差:只在版面變動時重算一次,
+不隨捲動改變,所以不會抖。
+
+## BF. 一個 bug,兩個症狀:沒被畫出來的元素被撐成貼在視窗左上角的盒子
+
+回報:「收折也還是壞的」,附圖顯示答案的譯文全部堆在問題標題上;
+以及前一輪 Gmail 的「ARK • Disrupt」疊層跑到畫面最上方。
+
+**這兩件事是同一個 bug**,而且我前兩輪都修錯了地方
+(去追捲動事件、去追 toggle 事件)。病根在 `coverRect()`:
+
+```
+getBoundingClientRect()   → 0×0 @ (0,0)      ← 現在沒被畫出來
+scrollHeight / scrollWidth → 上一次的尺寸     ← 佈局狀態被保留了
+```
+
+`coverRect` 的「內容比 border-box 大就撐開」那一段(為了蓋住緊排標題
+露出來的半個 g,§的老問題)於是把 0×0 撐成 W×H,而座標還是 (0,0)——
+換算成 document 座標就是 **(scrollX, scrollY),也就是視窗的左上角**。
+一整批這種疊層就全部堆在那裡,蓋掉真正在那個位置的內容。
+
+而 `setCovered(u, rect.width < 1 || rect.height < 1)` 那道兜底也因此失效:
+寬高**不是**零。
+
+製造這個狀態的是 `content-visibility`:
+
+- `content-visibility: hidden` —— 收折的 `<details>`(現代 Chrome 的 UA 樣式)
+- `content-visibility: auto` —— Gmail 對離開畫面的區塊做的效能優化
+
+兩者都是「佈局跳過,但尺寸留著,好讓它快速恢復」。
+逐條看 computed style 抓不到:它**不改 display,也不改 visibility**。
+
+修法兩層:
+
+1. `coverRect()`:**沒有任何 client rect = 沒被畫出來**,一律回零矩形,
+   不看 scrollWidth / scrollHeight。
+2. flush 的兜底改用 `el.checkVisibility({ contentVisibilityAuto: true })` ——
+   一次回答 display:none、visibility:hidden、以及 content-visibility 被跳過。
+
+順手把 `coverRect` 拆成 `src/content/cover.ts`,只有 type import,所以測得到。
+這條規則已經出過兩次事(第一次是量測與驗證用不同公式造成無限重排,
+第二次是這個),它值得自己一個檔案。
+
+**教訓**:前兩輪我從症狀出發(「疊層在滑」→ 追捲動;「收折壞掉」→ 追 toggle),
+兩次都在事件層打轉。真正該問的是**「這個座標是怎麼算出來的」**——
+一問就發現 0×0 的元素被撐成了一個有面積的盒子。
+BE 那條不變式(不顯示已知錯位的疊層)仍然有價值,但它是安全網,不是修復。
+
+## BG. 所有量測都說謊時,只有 DOM 說實話
+
+使用者的觀察一句話就把三輪的錯誤方向講完了:
+**「打開跟關起來的 element 看起來長的一樣」**。
+
+診斷 log 證實了這件事的嚴重程度 —— build 30 在 stratechery 上跑完整輪:
+
+```
+disclosure-toggle   0 筆     ← toggle 事件根本沒進來
+position-drift      0 筆     ← 座標稽核認為一切正常
+origin-offset       0 筆     ← 原點沒問題
+inner-scroll        0 筆     ← 不是內層捲動
+```
+
+**沒有任何一個偵測機制認為出事了。** 而畫面上疊層堆在一起。
+
+原因是現代 Chrome 用 `content-visibility: hidden` 收折 `<details>`,
+而那會**保留佈局狀態**:
+
+| 量法 | 收折時回傳 |
+|---|---|
+| `getBoundingClientRect()` | **展開時的位置與大小**(不是零) |
+| `getClientRects()` | 一樣有東西(不是空的) |
+| `getComputedStyle().display` | `block` |
+| `getComputedStyle().visibility` | `visible` |
+| DOM 屬性 / class | 完全沒變 |
+
+所以 §BF 的修法(沒有 client rect 就回零)打不到 —— 它有 client rect;
+座標稽核也抓不到漂移 —— 前後量到的值一致,只是**一致地錯**。
+
+**前三輪我一直在問「量到的值對不對」,但每一種量法都回同一個錯的值。**
+這是這個專案到目前為止最貴的一個教訓:當所有觀測互相印證時,
+不代表觀測是對的,可能只是它們共用同一個錯誤的來源。
+
+唯一誠實的來源是 DOM 結構本身:
+
+```ts
+export function hiddenByDisclosure(el: Element): boolean {
+  let child: Element = el;
+  for (let p = el.parentElement; p; child = p, p = p.parentElement) {
+    if (p.tagName === 'DETAILS' && !p.hasAttribute('open') && child.tagName !== 'SUMMARY') {
+      return true;
+    }
+  }
+  return false;
+}
+```
+
+這不是啟發式,是規格定義的行為:沒帶 `open` 的 `<details>`,
+除了 `<summary>` 以外的內容不顯示。
+
+用在三個地方:
+
+1. `walk()` —— 收折的 `<details>` 只走它的 `<summary>`,內容不建立單元
+2. flush 的 `isRendered()` —— 已經存在的單元(展開時建立、後來被收折)藏起來
+3. 成本閘門(`intake` 與 `dwellTick`)—— 收折的內容不送 L0 也不送 L1。
+   這裡**只用 DOM 檢查**,不用 `checkVisibility()`:後者會觸發 layout,
+   而這兩條路每 300ms 跑一次
+
+**另外:`toggle` 事件不可靠。** log 裡零筆。頁面自己的 JS 直接改 `open`
+屬性時不會派發那個事件。所以 MutationObserver 加上
+`attributeFilter: ['open', 'hidden', 'aria-expanded', 'aria-hidden']` ——
+只有這幾個名字會觸發,成本可控,而且順便涵蓋自繪的 accordion。
+
+## BH. 背景取不到時,依文字亮度挑一個(不要固定用淺色底)
+
+回報:「ARK 的選色也有點怪怪的,不是選藍底嗎?」附圖是深藍底的橫幅上
+冒出一塊淺藍色方塊配橘字。
+
+那是 §4.1 的降級路徑:`resolveBackground()` 遇到 `background-image` 就回
+`risk: true`(底下是圖,不知道那塊像素是什麼顏色),於是套用標註樣式 ——
+固定的淺藍底 + 褐字。
+
+那條規則的理由是「不要猜」。但**固定用淺色底本身就是一種猜**,
+而且是最糟的那種:它假設整個網頁世界是淺色的。深色橫幅、深色模式、
+彩色卡片上全部猜錯。
+
+**文字顏色是我們確定知道的東西,而它必然與背景有對比。**
+白字 → 底一定是深的;深字 → 底一定是淺的。所以取不到背景時,
+依 `color` 的亮度挑一個對比底(`backgroundForText()`)。
+這個推論比「假設頁面是淺色」可靠得多。
+
+標註樣式保留給它真正該在的地方:使用者明確勾選的 `forceAnnotation`,
+以及按住 Alt 的掃視。
+
+## BI. Gmail 的第二輪:log 說了三件事
+
+build 30 在 Gmail 上的診斷 log:
+
+```
+inner-scroll     每 0.5 秒一筆,units 10–13    ← 內層捲動偵測有效
+position-drift   dy 最大 1440                  ← 座標稽核有效
+origin-offset    0 筆                          ← 原點沒問題
+scan {"found":0} **每秒兩次**                  ← 純浪費
+```
+
+前三件是好消息:BD / BE 的機制都在動。第四件是新發現的問題。
+
+**掃描節流。** 應用程式的 DOM 一直在動,每一次變動都觸發一次全樹 walk +
+getComputedStyle。掃描是為了「發現新內容」,那件事不需要 60fps ——
+兩次掃描之間至少隔 400ms。重新量測(flush 的其餘部分)才需要即時,
+所以**只節流掃描,不節流 flush**。被節流掉的掃描會補一次延後的 flush,
+不然安靜的頁面會永遠等不到。
+
+## BJ. `role="heading"` 掛在 inline 元素上時,祖先會撿走它的文字
+
+回報:Gmail 左欄的「Labels」還是被翻成「標籤」。
+
+§BD 已經加了「非 heading 標籤 + `role="heading"` + 24 字以內 = UI 標籤」,
+但那條檢查在 `isUiLabel()` 裡,而 `isUiLabel()` **只在元素「像 block」時
+才會被問到**。Gmail 的寫法是:
+
+```html
+<div class="aAw"><span role="heading">Labels</span><div role="button"/></div>
+```
+
+inline 的 `<span>` 在 blockish 判斷就 `return false` 了,於是外層的 `<div>`
+撿走「Labels」變成翻譯單元。
+
+修法和 sr-only 一模一樣:認出來之後**登記到 srOnly 集合**再 return,
+讓祖先扣掉它的文字。只是 return false 永遠只是把問題往上搬一層 ——
+這個坑在這個檔案裡已經踩過兩次(sr-only 的 stretched link、
+分享按鈕的 `<span hidden>`),這是第三次。
+
+## BK. 藏起來是對的,每個 frame 又放出來是錯的
+
+build 32 的診斷 log 終於把機制完整攤開。一次甩動捲動的原始紀錄:
+
+```
+01:32:38.440  inner-scroll  units 59
+01:32:38.457  scroll-drift  dy=3    u21
+01:32:38.491  scroll-drift  dy=113  u21
+01:32:38.524  scroll-drift  dy=259  u20
+01:32:38.557  scroll-drift  dy=386  u17
+01:32:38.591  scroll-drift  dy=427  u12
+01:32:38.624  scroll-drift  dy=323  u8
+01:32:38.658  scroll-drift  dy=93   u2
+```
+
+**每 33ms(一個 frame)一筆。** 每一筆都走完
+「偵測到漂移 → 全部藏起來 → 重新量 → 再顯示」,而下一個 frame 又漂了 ——
+甩動時一個 frame 可以捲 400px。
+
+所以疊層每 16ms 出現一次,**每次都晚一幀**。這就是「滑動」的體感,
+而且是我自己做出來的:BE 那條不變式(不顯示已知錯位的疊層)沒錯,
+錯在 flush 每次都無條件把 `.stale` 清掉,等於每個 frame 又放出來一次。
+
+**藏起來是對的,每個 frame 又放出來是錯的。**
+
+改成:內層捲動期間 `innerScrollActive = true`,而
+
+- flush 用 `layer.setStale(u, innerScrollActive)` —— 捲動期間一直藏著
+- `scrollSync()` 在捲動期間直接 return —— 已經藏起來了,不必每個 frame
+  再量 59 個單元的 rect,結論永遠是「還在動」
+- 60ms 沒有新的捲動事件 → `innerScrollActive = false` + 量一次 + 一次顯示
+
+行為變成:**捲動 → 疊層消失(看得到原文)→ 停下來 → 一次到位。**
+這正是 BD 當初設計的樣子,只是被「每次 flush 都放出來」抵銷掉了。
+
+## BL. 掃不到東西就退
+
+同一份 log 的第二件事:
+
+```
+01:32:42.9 → 01:32:51.5   scan {"found":0}  ×18,每 500ms 一次
+單元數從頭到尾都是 59
+```
+
+BI 加的 400ms 節流有生效,但 400ms 對「一直為了自己的理由變動 DOM」的
+應用程式來說還是太密。掃描是為了發現新內容;**連續掃不到就代表這一頁
+的內容穩定了**,所以退避:400 → 800 → 1600 → 3000ms 封頂。
+
+一旦真的掃到新東西就立刻回到 400ms —— 無限捲動的頁面要能馬上跟上。
+換頁、手動按翻譯、停用重啟也都重設。
+
+`scan` 的診斷多印一個 `gapMs`,下次看 log 就知道退到哪一階。
+
+## BM. 打了四輪地鼠之後:換成一個判準
+
+build 33 的 log 顯示 BK 的修法只解決了一半。`inner-scroll` 確實變成
+一次捲動一筆了,但 `position-drift` 仍然一秒兩三筆、dy 最大 **4255**,
+而每一筆都跑完「藏起來 → 量 → 放出來」。那就是閃爍。
+
+原因很簡單也很難堪:**有三條路各自決定要不要把疊層放出來**——
+捲動事件、座標稽核、內層沉澱。只要有一條在還在動的時候決定「好了」,
+使用者就看到一次錯位。我修了三輪,每一輪都只修其中一條。
+
+log 還揭露一個我沒想到的情況:`inner-scroll {"units":0}` ——
+Gmail 有巢狀捲動容器,**捲的那一個不一定是我們追蹤的單元的祖先**,
+於是「只藏這個容器裡的單元」什麼都沒藏到。
+
+改成一個概念:
+
+```ts
+const MOTION_SETTLE_MS = 200;
+let lastMotionAt = -1e9;
+function settled(): boolean { return performance.now() - lastMotionAt >= MOTION_SETTLE_MS; }
+```
+
+任何一種「內容在動」的訊號(內層捲動事件、哨兵漂移、稽核漂移)
+都只做一件事:**蓋上時間戳**。而疊層的顯示只有一個判準:`settled()`。
+誰偵測到的不重要,偵測到幾次也不重要。
+
+- `flush()` → `layer.setStale(u, !settled())`
+- `scrollSync()` / `auditPositions()` → `if (!settled()) return`
+  (還在動的時候量到的一定是漂移,而處置已經做了)
+- 靜下來時由一個 timer 量一次、**一次**顯示
+
+**教訓**:同一個決策散在三個地方,就等於有三個地方會做錯。
+這在這個專案裡不是第一次 —— §BF 的量測公式、§AX 的去重位置都是同一種病:
+**把一個判斷放在錯的層級,然後在每個出錯的地方各補一次。**
+
+## BN. 破版:疊層要跟著容器一起被裁
+
+BM 之後捲動不再滑動(log 裡 `position-drift` 從一秒兩三筆掉到
+**整段 3.5 分鐘只有 1 筆**),剩下的是破版 —— 附圖裡譯文浮在 Gmail 的
+搜尋列、工具列、Reply 按鈕上面。
+
+使用者直接講出了正解:「破版有辦法量 inner 的上下嗎?可以保守一點。」
+
+**對,而且該量的不只上下,是四邊,而且不只一層。**
+
+這是「疊在頁面外面」的最後一個代價:內容捲出捲動容器時,**頁面會把它裁掉**,
+而我們的疊層在 z-index 2147483000,不受任何祖先的 `overflow` 影響 ——
+於是畫到完全無關的地方。
+
+修法和 §「跑到 header」完全一樣,連機制都共用:算出可見矩形,
+用 `clip-path: inset()` 裁掉。`setClip()` 從兩個參數(上下)擴成四個。
+
+三個細節:
+
+- **可見矩形 = 固定頁首帶 ∩ 每一層 `overflow != visible` 的祖先**。
+  Gmail 有巢狀捲動容器,所以要一路交集上去。
+- **裁切祖先只找一次就快取**(`clippersOf`)。結構不會因為捲動而改變,
+  只有 relayout 才重算 —— 否則是 59 個單元 × 十幾層 getComputedStyle。
+- **保守的方向是寧可多裁**:交集為空就整塊不見,不留半條邊。
+  原文完全看不到的時候,譯文露出一條邊比整塊消失更容易被當成 bug。
+
+`clipInsets()` 抽進 `cover.ts`(只有 type import),四支測試蓋住
+「裁上緣」「四邊都裁」「完全看不到」「完全看得到」。
+
+`checkOcclusion()` 的「整個落在裁切框外就藏起來」保留 ——
+現在多半是冗餘的,但它另外還擋掉輪播的重複 DOM,那不是裁切問題。
+
+## BO. 三件事,其中兩件是同一個上限
+
+### 「選了也沒有翻」
+
+功能有實作(§AZ),但 hover 與選取**兩條路共用同一個 240 字上限**,
+而回報的那段 Note 是 400 字 —— 兩條路都在同一個地方被靜靜擋掉。
+使用者看到的是「這功能沒做」。
+
+上限提到 500(26em 寬、13px 的貼片大約十行,可以讀),
+而且**被擋掉要留下痕跡**:`selection-skipped` 會寫 why 與字數。
+靜靜地什麼都不做是這一輪最貴的錯 —— 它讓一個能用的功能看起來不存在。
+
+### 那段 Note 為什麼從來沒被翻過
+
+Gmail 在每個含圖片的 `<p>` 裡塞一個下載按鈕:
+
+```html
+<p><img 圖表><div class="a6S">…<div role="tooltip" aria-hidden="true">Download</div></div><span>Note: …</span></p>
+```
+
+`hasContainerChild()` 用 `textContent` 判斷「這個 block 子孫有沒有文字」,
+而 `textContent` 把 aria-hidden 的 tooltip 一起吃進來 →
+判定那個 `<p>` 是容器 → 整段註解不建立單元。
+
+更糟的是 `ownText()` **也**沒有扣掉排除清單,所以 `div.a6S` 自己變成一個
+內容是「Download」的翻譯單元。
+
+**這是 sr-only 那個坑的第四次**(stretched link、`<span hidden>`、
+inline `role="heading"`、現在是 aria-hidden 的 tooltip),而每一次的教訓
+都一樣:**認出來還不夠,祖先也要扣掉。** 這次直接修在 `ownText()` 裡,
+`hasContainerChild()` 改用它 —— 一個來源,不再各自實作一次。
+
+### 圖文混排
+
+修好上面之後那個 `<p>` 會變成單元 —— 而它的 bounding box 包含整張圖表,
+不透明的疊層會把圖蓋掉。§3.5 只處理了**浮動**圖片,不浮動的一樣會被蓋。
+
+新增 `hasMediaChild()`:底下有面積 ≥ 20×20 的 img / video / canvas / svg
+就不建立單元。行內小圖示不受影響。那段 Note 因此改由 hover / 選取取得 ——
+這正是加翻層存在的理由。
+
+### 下面超出的部分
+
+`chromeBand()` 只在**畫面正中央**取一次樣。而 Gmail 的 Reply / Forward 列
+只佔左半邊,正中央那一點打到的是它右邊的空白 → 量到 0 → 不裁。
+
+改成取樣 25% / 50% / 75% 三個 x,取最大的帶。
+同時 `clip-to-container` 的診斷多印 `noClipper` ——
+如果那個數字很大,代表我根本沒找到捲動容器,而不是「裁了但不夠」。
