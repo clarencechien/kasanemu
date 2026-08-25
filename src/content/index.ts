@@ -399,6 +399,8 @@ function scheduleFlush(alsoScan = false): void {
  */
 function auditPositions(full = true): void {
   if (!layer || !running) return;
+  // 還在動就別量了:量到的一定是漂移,而處置已經做了(藏起來 + 等靜下來)
+  if (!settled()) return;
   applyChromeClip();
   if (full) checkOcclusion();
   // 用**疊層畫在哪**來決定要驗誰,而不是來源元素現在在哪:
@@ -420,7 +422,10 @@ function auditPositions(full = true): void {
     if (dx > 1 || dy > 1 || dw > 1 || dh > 1) {
       diag('info', 'position-drift', { id: u.id, dx, dy, dw, dh });
       // 一個錯得離譜就代表這一批都不能信(多半是共同的祖先動了)
-      if (Math.max(dx, dy) > GROSS_DRIFT_PX) markAllStale();
+      if (Math.max(dx, dy) > GROSS_DRIFT_PX) {
+        markAllStale();
+        noteMotion();
+      }
       flushNow();
       return;
     }
@@ -529,8 +534,8 @@ function flush(): void {
      * 沒有這條的話,收折起來的問答會把譯文留在原地,疊到別人身上。
      */
     layer.setCovered(u, !isRendered(u.el) || u.rect.width < 1 || u.rect.height < 1);
-    // 捲動期間一直藏著(座標每個 frame 都在變);停下來才放出來
-    layer.setStale(u, innerScrollActive);
+    // 還在動就一直藏著(座標每個 frame 都在變);靜下來才放出來
+    layer.setStale(u, !settled());
   }
   const hidden = [...units].filter((u) => u.box && !isRendered(u.el)).length;
   if (hidden !== lastHiddenCount) {
@@ -1883,12 +1888,8 @@ function driftOf(u: Unit): { dx: number; dy: number } {
 function scrollSync(): void {
   scrollRaf = 0;
   if (!layer || !running) return;
-  /*
-   * 內層捲動期間疊層已經藏起來了,不必每個 frame 再量一次 ——
-   * 那是 59 個單元 × 每秒 60 次的 layout 讀取,而結論永遠是「還在動」。
-   * 沉澱之後統一量一次就好。
-   */
-  if (innerScrollActive) return;
+  // 還在動的時候疊層已經藏起來了,不必每個 frame 再量 —— 結論永遠是「還在動」
+  if (!settled()) return;
   // 疊層本身由瀏覽器跟著頁面捲(document 座標),JS 不碰位置。
   // 這裡只處理「被固定頁首蓋住的那一段要跟著消失」。
   applyChromeClip();
@@ -1904,7 +1905,10 @@ function scrollSync(): void {
    * **別人的內容**上,那才是「破版」—— 先藏起來再說。
    * 門檻分開是為了不讓 parallax / sticky 那種長期小幅漂移一直閃。
    */
-  if (off > GROSS_DRIFT_PX) markAllStale();
+  if (off > GROSS_DRIFT_PX) {
+    markAllStale();
+    noteMotion();
+  }
   flushNow();
 }
 
@@ -1948,28 +1952,42 @@ function noteDrift(id: string, d: { dx: number; dy: number }): void {
  * 內層容器捲動之後多久重新量(ms)。
  * 太短會在慣性捲動中反覆重排,太長會讓疊層消失得很明顯。
  */
-const INNER_SCROLL_SETTLE_MS = 60;
-let innerSettleTimer = 0;
 /**
- * 內層容器正在捲動。
+ * 「頁面靜下來了」的單一判準。
  *
- * 診斷 log 顯示的真相:捲動中每一個 frame 都是
- * 「偵測到漂移 → 全部藏起來 → 重新量 → 再顯示」,而下一個 frame 又漂了
- * (甩動時一個 frame 可以捲 400px,log 裡 dy 最大 427)。
- * 於是疊層每 16ms 出現一次、每次都晚一幀 —— 那就是「滑動」的體感。
+ * 前四輪是打地鼠:捲動事件一條路、座標稽核一條路、內層沉澱一條路,
+ * 每一條都各自決定要不要把疊層放出來 —— 於是總有一條會在還在動的時候
+ * 把它放出來。log 裡 position-drift 一秒兩三筆、dy 最大 4255,
+ * 每一筆都代表「藏起來 → 量 → 放出來」跑了一遍。那就是閃爍。
  *
- * 藏起來是對的,**每個 frame 又放出來**是錯的。捲動期間就一直藏著,
- * 停下來(60ms 沒有新的捲動事件)再量好、再一次顯示。
+ * 改成**一個概念**:任何一種「內容在動」的訊號都只做一件事 ——
+ * 蓋上時間戳。疊層只在「距離最後一次動超過 200ms」時才顯示。
+ * 誰偵測到的不重要,偵測到幾次也不重要。
  */
-let innerScrollActive = false;
+const MOTION_SETTLE_MS = 200;
+let lastMotionAt = -1e9;
+let settleTick = 0;
 
-/**
- * 這次捲動是不是發生在頁面內部的容器裡。
- *
- * 視窗捲動時瀏覽器自己搬疊層(document 座標),零延遲、零問題。
- * 內層容器捲動時 document 沒動 —— 疊層留在原地,原文從底下滑走。
- * Gmail、Slack、任何 app shell 都是這樣,而回報的「layer 會滑動」就是它。
- */
+function settled(): boolean {
+  return performance.now() - lastMotionAt >= MOTION_SETTLE_MS;
+}
+
+function checkSettled(): void {
+  const left = MOTION_SETTLE_MS - (performance.now() - lastMotionAt);
+  if (left > 0) {
+    settleTick = window.setTimeout(checkSettled, left);
+    return;
+  }
+  settleTick = 0;
+  // 靜下來了:量一次,一次顯示
+  flushNow();
+}
+
+function noteMotion(): void {
+  lastMotionAt = performance.now();
+  if (settleTick === 0) settleTick = window.setTimeout(checkSettled, MOTION_SETTLE_MS);
+}
+
 function innerScrollerOf(e: Event): Element | null {
   const t = e.target;
   if (!(t instanceof Element)) return null;
@@ -1980,31 +1998,19 @@ function innerScrollerOf(e: Event): Element | null {
 function onScroll(e: Event): void {
   lastScrollAt = performance.now();
   /*
-   * 追不上就先藏起來:錯位的疊層比暫時看原文更糟。
-   * 只藏在這個容器裡的單元 —— 輪播捲一下不該讓整頁疊層閃一次。
-   * 每一輪捲動只標記一次(timer 是 0 才做),不然 scroll 事件會把
-   * O(單元數) 的迴圈跑上百次。
+   * 內層容器捲動 —— 疊層在 document 座標,不會跟著動。
+   *
+   * **不**再逐一檢查哪些單元在這個容器裡:log 裡出現過
+   * `inner-scroll {"units":0}`,因為 Gmail 有巢狀捲動容器,
+   * 捲的那一個不一定是我們追蹤的單元的祖先。動了就是動了,
+   * 全部先藏起來,靜下來再一次顯示。
    */
-  const scroller = layer && running ? innerScrollerOf(e) : null;
-  if (scroller) {
-    if (!innerScrollActive) {
-      innerScrollActive = true;
-      let touched = 0;
-      for (const u of units) {
-        if (!u.box || !scroller.contains(u.el)) continue;
-        layer!.setStale(u, true);
-        touched++;
-      }
-      diag('info', 'inner-scroll', { units: touched });
+  if (layer && running && innerScrollerOf(e)) {
+    if (settled()) {
+      markAllStale();
+      diag('info', 'inner-scroll', { units: units.size });
     }
-    clearTimeout(innerSettleTimer);
-    innerSettleTimer = window.setTimeout(() => {
-      innerSettleTimer = 0;
-      innerScrollActive = false;
-      // 直接進 flush,不走 scheduleFlush 的 120ms debounce ——
-      // 那 120ms 全部會被使用者看成「疊層慢半拍」
-      flushNow();
-    }, INNER_SCROLL_SETTLE_MS);
+    noteMotion();
   }
 
   /*
@@ -2064,9 +2070,9 @@ function stop(): void {
   motionTimer = 0;
   clearTimeout(hoverRetryTimer);
   hoverRetryTimer = undefined;
-  clearTimeout(innerSettleTimer);
-  innerSettleTimer = 0;
-  innerScrollActive = false;
+  clearTimeout(settleTick);
+  settleTick = 0;
+  lastMotionAt = -1e9;
   clearTimeout(rescanTimer);
   rescanTimer = 0;
   lastScanAt = -1e9;
