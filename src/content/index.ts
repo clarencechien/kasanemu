@@ -165,8 +165,20 @@ let settleTimer = 0;
 /** 應用程式外殼的快速座標檢查(document 本身不捲時才開) */
 let driftTimer = 0;
 /** 只在數量變化時記錄,否則每次重排都記一筆會把 log 洗掉 */
-/** 兩次掃描之間至少隔這麼久(ms)—— 應用程式的 DOM 變動不該變成全樹掃描 */
+/**
+ * 兩次掃描之間至少隔這麼久(ms),而且**掃不到東西就往上退**。
+ *
+ * 診斷 log 顯示 Gmail 上 `scan {"found":0}` 每 500ms 一次、持續整段時間 ——
+ * 單元數從頭到尾都是 59,一次新的都沒有。應用程式的 DOM 為了自己的理由
+ * 一直在動,而每一次都被我們翻譯成一次全樹 walk + getComputedStyle。
+ *
+ * 掃描是為了「發現新內容」。連續掃不到就代表這一頁的內容已經穩定了,
+ * 退到 3 秒一次;一旦真的掃到新東西就立刻回到 400ms(無限捲動的頁面
+ * 要能馬上跟上)。
+ */
 const MIN_SCAN_GAP_MS = 400;
+const MAX_SCAN_GAP_MS = 3000;
+let scanGapMs = MIN_SCAN_GAP_MS;
 let lastScanAt = -1e9;
 let rescanTimer = 0;
 let lastOverflowCount = -1;
@@ -235,6 +247,7 @@ function onRouteChange(): void {
   lastProblem = '';
   emptyScans = 0;
   firstPaintMs = -1;
+  scanGapMs = MIN_SCAN_GAP_MS;
   // 上一頁的貼片與標籤單元不屬於這一頁
   closeChip(true);
   selectionUnit = null;
@@ -309,8 +322,11 @@ function scan(): void {
     }
   }
   scanLabels();
+  // 掃到新東西就回到最快的節奏,連續掃不到就退 —— 見 scanGapMs 的說明
+  scanGapMs = found.length > 0 ? MIN_SCAN_GAP_MS : Math.min(scanGapMs * 2, MAX_SCAN_GAP_MS);
   dbg('scan', { found: found.length, total: units.size });
   diag(units.size === 0 ? 'warn' : 'info', 'scan', {
+    gapMs: scanGapMs,
     found: found.length,
     total: units.size,
     pipeline: effective,
@@ -476,7 +492,7 @@ function flush(): void {
    * 空掃重試(emptyScans)期間不節流 —— 那時候正在等內容出現。
    */
   const now = performance.now();
-  const doScan = pendingScan && (emptyScans > 0 || now - lastScanAt >= MIN_SCAN_GAP_MS);
+  const doScan = pendingScan && (emptyScans > 0 || now - lastScanAt >= scanGapMs);
   if (doScan) {
     lastScanAt = now;
     pendingScan = false;
@@ -485,7 +501,7 @@ function flush(): void {
     rescanTimer = window.setTimeout(() => {
       rescanTimer = 0;
       scheduleFlush();
-    }, MIN_SCAN_GAP_MS);
+    }, scanGapMs);
   }
   prune();
   if (doScan) scan();
@@ -513,8 +529,8 @@ function flush(): void {
      * 沒有這條的話,收折起來的問答會把譯文留在原地,疊到別人身上。
      */
     layer.setCovered(u, !isRendered(u.el) || u.rect.width < 1 || u.rect.height < 1);
-    // 量完了,座標又可信了
-    layer.setStale(u, false);
+    // 捲動期間一直藏著(座標每個 frame 都在變);停下來才放出來
+    layer.setStale(u, innerScrollActive);
   }
   const hidden = [...units].filter((u) => u.box && !isRendered(u.el)).length;
   if (hidden !== lastHiddenCount) {
@@ -1867,6 +1883,12 @@ function driftOf(u: Unit): { dx: number; dy: number } {
 function scrollSync(): void {
   scrollRaf = 0;
   if (!layer || !running) return;
+  /*
+   * 內層捲動期間疊層已經藏起來了,不必每個 frame 再量一次 ——
+   * 那是 59 個單元 × 每秒 60 次的 layout 讀取,而結論永遠是「還在動」。
+   * 沉澱之後統一量一次就好。
+   */
+  if (innerScrollActive) return;
   // 疊層本身由瀏覽器跟著頁面捲(document 座標),JS 不碰位置。
   // 這裡只處理「被固定頁首蓋住的那一段要跟著消失」。
   applyChromeClip();
@@ -1928,6 +1950,18 @@ function noteDrift(id: string, d: { dx: number; dy: number }): void {
  */
 const INNER_SCROLL_SETTLE_MS = 60;
 let innerSettleTimer = 0;
+/**
+ * 內層容器正在捲動。
+ *
+ * 診斷 log 顯示的真相:捲動中每一個 frame 都是
+ * 「偵測到漂移 → 全部藏起來 → 重新量 → 再顯示」,而下一個 frame 又漂了
+ * (甩動時一個 frame 可以捲 400px,log 裡 dy 最大 427)。
+ * 於是疊層每 16ms 出現一次、每次都晚一幀 —— 那就是「滑動」的體感。
+ *
+ * 藏起來是對的,**每個 frame 又放出來**是錯的。捲動期間就一直藏著,
+ * 停下來(60ms 沒有新的捲動事件)再量好、再一次顯示。
+ */
+let innerScrollActive = false;
 
 /**
  * 這次捲動是不是發生在頁面內部的容器裡。
@@ -1953,18 +1987,20 @@ function onScroll(e: Event): void {
    */
   const scroller = layer && running ? innerScrollerOf(e) : null;
   if (scroller) {
-    if (innerSettleTimer === 0) {
+    if (!innerScrollActive) {
+      innerScrollActive = true;
       let touched = 0;
       for (const u of units) {
         if (!u.box || !scroller.contains(u.el)) continue;
         layer!.setStale(u, true);
         touched++;
       }
-      if (touched > 0) diag('info', 'inner-scroll', { units: touched });
+      diag('info', 'inner-scroll', { units: touched });
     }
     clearTimeout(innerSettleTimer);
     innerSettleTimer = window.setTimeout(() => {
       innerSettleTimer = 0;
+      innerScrollActive = false;
       // 直接進 flush,不走 scheduleFlush 的 120ms debounce ——
       // 那 120ms 全部會被使用者看成「疊層慢半拍」
       flushNow();
@@ -2030,9 +2066,11 @@ function stop(): void {
   hoverRetryTimer = undefined;
   clearTimeout(innerSettleTimer);
   innerSettleTimer = 0;
+  innerScrollActive = false;
   clearTimeout(rescanTimer);
   rescanTimer = 0;
   lastScanAt = -1e9;
+  scanGapMs = MIN_SCAN_GAP_MS;
   if (scrollRaf) cancelAnimationFrame(scrollRaf);
   scrollRaf = 0;
   emptyScans = 0;
