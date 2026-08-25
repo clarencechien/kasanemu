@@ -8,17 +8,38 @@ import {
   isSerifStack,
   lightText,
   parseColor,
+  resetColorCache,
   rgbToCss,
   targetWeight,
+  unparsedColors,
 } from '../src/content/styleprobe.ts';
 import { cacheKey, maxCharsBucket } from '../src/shared/hash.ts';
 
-test('parseColor 認得 rgb / rgba / transparent,認不得的回 null', () => {
+test('parseColor 的快路徑認得 rgb / rgba / transparent', () => {
   assert.deepEqual(parseColor('rgb(255, 255, 255)'), { r: 255, g: 255, b: 255, a: 1 });
   assert.deepEqual(parseColor('rgba(0, 0, 0, 0.5)'), { r: 0, g: 0, b: 0, a: 0.5 });
   assert.deepEqual(parseColor('transparent'), { r: 0, g: 0, b: 0, a: 0 });
-  assert.equal(parseColor('color(srgb 1 0 0)'), null);
+});
+
+/*
+ * lab() / oklch() / color-mix() 走 canvas 慢路徑,在 node 裡沒有 canvas
+ * 所以回 null —— 這裡驗的是「沒有 canvas 也不會炸、也不會亂猜」。
+ * 真正的轉換由瀏覽器負責,人工驗收見 docs/acceptance.md。
+ */
+test('新式顏色語法在沒有 canvas 的環境安全地回 null,並且被記下來', () => {
+  resetColorCache();
+  assert.equal(parseColor('lab(88.8292% 0 -.0000119209)'), null);
   assert.equal(parseColor('oklch(0.7 0.1 200)'), null);
+  assert.equal(parseColor('這根本不是顏色'), null);
+  const bad = unparsedColors();
+  assert.ok(bad.includes('oklch(0.7 0.1 200)'), `應該記下來,實得 ${JSON.stringify(bad)}`);
+});
+
+test('rgb 快路徑不會被記成解析失敗', () => {
+  resetColorCache();
+  parseColor('rgb(1, 2, 3)');
+  parseColor('transparent');
+  assert.deepEqual(unparsedColors(), []);
 });
 
 test('§4.1 背景一律以完整不透明度套用', () => {

@@ -1935,3 +1935,43 @@ background-color: rgba(255, 255, 255, 0.1);
 而混合長度正是「這不是選單」的證據。
 
 三項以下不算數:樣本太小,不足以推翻長度門檻。
+
+## BY. 顏色不是字串:別用正規表示式追 CSS 的顏色語法
+
+§BV 修完合成之後,使用者回報「還是白色啊」。同一頁、同一個症狀,
+但根因完全不同 —— 而且螢幕截圖裡就有答案:**標題是對的,內文是白的**。
+差別不在版面,在顏色的寫法。
+
+ClickHouse 用 Tailwind v4,它會為廣色域螢幕多輸出一份 `lab()`:
+
+```css
+.rich-text-light { --heading-color: #fff; --paragraph-color: #dfdfdf; }
+@supports (color: lab(0% 0 0)) {
+  .rich-text-light { --paragraph-color: lab(88.8292% 0 -.0000119209); }
+}
+```
+
+標題留在 `#fff`,內文變成 `lab(...)`。`parseColor()` 的正規表示式只認得
+`rgb()` / `rgba()`,於是內文的 `color` 解析失敗 →
+`lightText()` 回 false → 判定「這是淺色頁面」→ 挑白底,
+配上頁面自己的淺灰字,整段看不見。標題因為還是 `#fff` 所以正常。
+
+三件事值得記下來:
+
+1. **`getComputedStyle()` 不保證回 `rgb()`。** `lab` / `oklab` / `oklch` /
+   `color()` / `color-mix()` / 相對顏色都會原樣保留,而且清單還會再長。
+   用正規表示式追這個清單是一場追不完的比賽。瀏覽器本來就會算 —— 問它就好:
+   1×1 canvas 畫一次、讀一個像素,任何它認得的顏色都變成 sRGB。
+   (rgb/rgba 保留快路徑,慢路徑的結果記在 Map 裡;一頁的相異顏色是個位數。)
+
+2. **解析失敗必須留下痕跡。** 舊的 `parseColor()` 回 null 之後,
+   上層安安靜靜地走 fallback,畫面照畫、只是選錯色。沒有任何 log、
+   沒有任何計數 —— 只能等使用者截圖。這和 §BD「靜靜地什麼都不做,
+   會讓一個能用的功能看起來不存在」是同一個病:
+   **沉默的降級等於沒有診斷。** 現在解析不了的字串會列進診斷報告。
+
+3. **node 的測試看不到這一段。** canvas、CSS 串接、computed value 都要真瀏覽器。
+   於是加了 `scripts/probe-colors.mjs`:用 Playwright 開一份 fixture,
+   對每個元素跑 `probeStyle()`,斷言「深色頁面不得挑淺底」。
+   §BV 與 §BY 兩次災情各對應 fixture 裡的一列。
+   playwright 不列為 devDependency(太大,只有這支用得到),沒裝就跳過。

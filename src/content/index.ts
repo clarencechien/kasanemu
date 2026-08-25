@@ -51,7 +51,14 @@ import {
 } from './upgrade';
 import { mask, protectedFragments } from './mask';
 import { OverlayLayer, type ChipItem } from './overlay';
-import { hintColor, parseColor, probeStyle, resetHintColor } from './styleprobe';
+import {
+  hintColor,
+  parseColor,
+  probeStyle,
+  resetColorCache,
+  resetHintColor,
+  unparsedColors,
+} from './styleprobe';
 import { clearMeasureCache } from './measure';
 import { activeText, hasText, type Unit } from './unit';
 import { dedupeByText, labelBudget } from './annotate';
@@ -1694,6 +1701,7 @@ function pageStats(): PageStats {
     },
     device: device ?? undefined,
     l0Timing: l0?.timing(),
+    unparsedColors: unparsedColors(),
     swapsOffscreen,
     swapsTotal,
   };
@@ -1716,6 +1724,7 @@ async function start(): Promise<void> {
   firstPaintMs = -1;
   await probePackagedFonts();
   resetHintColor();
+  resetColorCache();
   clearMeasureCache();
 
   // 整頁的字集要在掃描之前定案:日文 / 韓文頁面的純漢字標題不能被當成

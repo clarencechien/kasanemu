@@ -13,7 +13,8 @@
     "test": "node --experimental-strip-types --test 'tests/*.test.ts'",
     "check": "npm run typecheck && npm test && npm run build",
     "zip": "node scripts/zip.mjs",
-    "package": "npm run build && npm run zip"
+    "package": "npm run build && npm run zip",
+    "probe:colors": "node scripts/probe-colors.mjs"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.268",

@@ -29,21 +29,116 @@ export interface ProbedStyle {
   backgroundRisk: boolean;
 }
 
+/*
+ * `getComputedStyle()` 不保證回 rgb()。
+ *
+ * 這一條是在 ClickHouse 部落格上學到的,而且代價是一整輪。Tailwind v4 會
+ * 針對廣色域螢幕多輸出一份 `lab()`:
+ *
+ *   .rich-text-light { --heading-color: #fff; --paragraph-color: #dfdfdf; }
+ *   @supports (color: lab(0% 0 0)) {
+ *     .rich-text-light { --paragraph-color: lab(88.8292% 0 -.0000119209); }
+ *   }
+ *
+ * 標題留在 `#fff`,內文變成 `lab(...)`。舊的 parseColor 只認得 rgb/rgba,
+ * 於是內文的 color 解析失敗 → `lightText()` 回 false → 判定「這是淺色頁面」
+ * → 挑了白底,配上頁面自己的淺灰字,整段看不見。
+ * **同一頁的標題正常、內文全白**,而那個對比正是線索:差別不在版面,
+ * 在顏色的寫法。
+ *
+ * 教訓:別用正規表示式去追 CSS 的顏色語法(lab / oklab / oklch / color() /
+ * color-mix() / 相對顏色…,而且還會再增加)。瀏覽器本來就會算,問它就好。
+ * 1×1 canvas 畫一次讀一個像素,任何它認得的顏色都能轉成 sRGB。
+ */
+const colorMemo = new Map<string, Rgb | null>();
+let probeCtx: CanvasRenderingContext2D | null | undefined;
+
+function colorProbe(): CanvasRenderingContext2D | null {
+  if (probeCtx !== undefined) return probeCtx;
+  probeCtx = null;
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1;
+    canvas.height = 1;
+    probeCtx = canvas.getContext('2d', { willReadFrequently: true });
+  } catch {
+    probeCtx = null;
+  }
+  return probeCtx;
+}
+
+/**
+ * 認不得的字串會讓 `fillStyle` **保持原值**,而不是丟錯 ——
+ * 所以用兩個哨兵色:兩次都「沒變」才是真的認不得
+ * (輸入剛好等於某一個哨兵的情況會被另一個抓到)。
+ */
+function paintable(ctx: CanvasRenderingContext2D, input: string): boolean {
+  for (const sentinel of ['#ff00ff', '#00ff00']) {
+    ctx.fillStyle = sentinel;
+    ctx.fillStyle = input;
+    if (ctx.fillStyle !== sentinel) return true;
+  }
+  return false;
+}
+
+function parseViaCanvas(input: string): Rgb | null {
+  const ctx = colorProbe();
+  if (!ctx) return null;
+  try {
+    if (!paintable(ctx, input)) return null;
+    ctx.clearRect(0, 0, 1, 1);
+    ctx.fillStyle = input;
+    ctx.fillRect(0, 0, 1, 1);
+    const d = ctx.getImageData(0, 0, 1, 1).data;
+    const a = (d[3] ?? 0) / 255;
+    if (a === 0) return { r: 0, g: 0, b: 0, a: 0 };
+    return { r: d[0] ?? 0, g: d[1] ?? 0, b: d[2] ?? 0, a };
+  } catch {
+    return null;
+  }
+}
+
 export function parseColor(input: string): Rgb | null {
   const s = input.trim();
   if (s === 'transparent') return { r: 0, g: 0, b: 0, a: 0 };
   const m = /^rgba?\(([^)]+)\)$/.exec(s);
-  if (!m) return null;
-  const parts = m[1]!.split(/[\s,/]+/).filter(Boolean);
-  if (parts.length < 3) return null;
-  const num = (v: string, scale: number): number =>
-    v.endsWith('%') ? (Number.parseFloat(v) / 100) * scale : Number.parseFloat(v);
-  const r = num(parts[0]!, 255);
-  const g = num(parts[1]!, 255);
-  const b = num(parts[2]!, 255);
-  const a = parts[3] === undefined ? 1 : num(parts[3]!, 1);
-  if ([r, g, b, a].some((v) => Number.isNaN(v))) return null;
-  return { r, g, b, a };
+  if (m) {
+    const parts = m[1]!.split(/[\s,/]+/).filter(Boolean);
+    if (parts.length >= 3) {
+      const num = (v: string, scale: number): number =>
+        v.endsWith('%') ? (Number.parseFloat(v) / 100) * scale : Number.parseFloat(v);
+      const r = num(parts[0]!, 255);
+      const g = num(parts[1]!, 255);
+      const b = num(parts[2]!, 255);
+      const a = parts[3] === undefined ? 1 : num(parts[3]!, 1);
+      if (![r, g, b, a].some((v) => Number.isNaN(v))) return { r, g, b, a };
+    }
+  }
+  // 慢路徑:交給瀏覽器。同一頁不同的顏色字串數量有限,記下來就好
+  const hit = colorMemo.get(s);
+  if (hit !== undefined) return hit;
+  const out = parseViaCanvas(s);
+  // 一頁裡不同的顏色字串是個位數到數十個;上限只是防呆
+  if (colorMemo.size < 500) colorMemo.set(s, out);
+  if (out === null) unparsed.add(s);
+  return out;
+}
+
+/**
+ * 連瀏覽器都不認得(或這個環境沒有 canvas)的顏色字串。
+ * 診斷報告會帶上這一份 —— 「顏色解析失敗」原本是完全沉默的失敗,
+ * 而沉默的失敗要靠使用者截圖才看得見。
+ */
+const unparsed = new Set<string>();
+
+export function unparsedColors(): string[] {
+  return [...unparsed].slice(0, 8);
+}
+
+export function resetColorCache(): void {
+  colorMemo.clear();
+  unparsed.clear();
+  probeCtx = undefined;
 }
 
 export function rgbToCss(c: Rgb, alpha = 1): string {

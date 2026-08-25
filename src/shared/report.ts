@@ -92,6 +92,8 @@ export function buildReport(i: ReportInput): string {
           `CPU 微基準 ${d.cpuMs}ms(越小越快)· ${d.platform}`,
       );
     }
+    const bad = i.stats.unparsedColors ?? [];
+    if (bad.length > 0) lines.push(`- **顏色解析失敗 ${bad.length} 種**:${bad.join(' · ')}`);
     if (i.stats.stalled) lines.push(`- **停滯 ${Math.round(i.stats.stalledMs / 1000)} 秒:L1 一個都沒回來**`);
     lines.push('');
   } else {
