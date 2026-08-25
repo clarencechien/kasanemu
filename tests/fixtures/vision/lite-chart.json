@@ -1,0 +1,78 @@
+{
+ "_": "真實 API 回應(2026-08-25,scripts/probe-vision.mjs)。模型 gemini-3.5-flash-lite,素材:clickhouse bar chart。不要手改 —— 這是模型實際會回什麼的證據,改了就變成我猜的樣子。",
+ "model": "gemini-3.5-flash-lite",
+ "nw": 1580,
+ "nh": 530,
+ "blocks": [
+  {
+   "box": [
+    105,
+    442,
+    159,
+    549
+   ],
+   "text": "Storage size",
+   "zh": "儲存空間大小"
+  },
+  {
+   "box": [
+    179,
+    358,
+    235,
+    635
+   ],
+   "text": "of raw (not pre-aggregated) data",
+   "zh": "原始資料（未預先聚合）"
+  },
+  {
+   "box": [
+    278,
+    415,
+    321,
+    477
+   ],
+   "text": "469 GB",
+   "zh": "469 GB"
+  },
+  {
+   "box": [
+    514,
+    521,
+    606,
+    583
+   ],
+   "text": "19 times\nsmaller",
+   "zh": "縮小 19 倍"
+  },
+  {
+   "box": [
+    722,
+    526,
+    765,
+    578
+   ],
+   "text": "25 GB",
+   "zh": "25 GB"
+  },
+  {
+   "box": [
+    823,
+    401,
+    859,
+    494
+   ],
+   "text": "Elasticsearch",
+   "zh": "Elasticsearch"
+  },
+  {
+   "box": [
+    823,
+    511,
+    859,
+    590
+   ],
+   "text": "ClickHouse",
+   "zh": "ClickHouse"
+  }
+ ]
+}

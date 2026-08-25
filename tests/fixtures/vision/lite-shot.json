@@ -1,0 +1,538 @@
+{
+ "_": "真實 API 回應(2026-08-25,scripts/probe-vision.mjs)。模型 gemini-3.5-flash-lite,素材:claude.com UI 截圖。不要手改 —— 這是模型實際會回什麼的證據,改了就變成我猜的樣子。",
+ "model": "gemini-3.5-flash-lite",
+ "nw": 2042,
+ "nh": 1546,
+ "blocks": [
+  {
+   "box": [
+    18,
+    16,
+    60,
+    276
+   ],
+   "text": "Use cases for Legal",
+   "zh": "法務應用情境"
+  },
+  {
+   "box": [
+    94,
+    16,
+    117,
+    391
+   ],
+   "text": "Real workflows to copy, adapt, and make your own.",
+   "zh": "可複製、調整並打造專屬你的真實工作流程。"
+  },
+  {
+   "box": [
+    156,
+    16,
+    172,
+    62
+   ],
+   "text": "General",
+   "zh": "一般"
+  },
+  {
+   "box": [
+    158,
+    84,
+    177,
+    144
+   ],
+   "text": "Marketing",
+   "zh": "行銷"
+  },
+  {
+   "box": [
+    158,
+    166,
+    173,
+    212
+   ],
+   "text": "Product",
+   "zh": "產品"
+  },
+  {
+   "box": [
+    158,
+    234,
+    176,
+    304
+   ],
+   "text": "Engineering",
+   "zh": "工程"
+  },
+  {
+   "box": [
+    158,
+    325,
+    173,
+    343
+   ],
+   "text": "HR",
+   "zh": "人資"
+  },
+  {
+   "box": [
+    158,
+    365,
+    173,
+    410
+   ],
+   "text": "Finance",
+   "zh": "財務"
+  },
+  {
+   "box": [
+    158,
+    432,
+    176,
+    497
+   ],
+   "text": "Operations",
+   "zh": "營運"
+  },
+  {
+   "box": [
+    158,
+    519,
+    173,
+    546
+   ],
+   "text": "Data",
+   "zh": "資料"
+  },
+  {
+   "box": [
+    158,
+    568,
+    176,
+    608
+   ],
+   "text": "Design",
+   "zh": "設計"
+  },
+  {
+   "box": [
+    158,
+    630,
+    176,
+    660
+   ],
+   "text": "Legal",
+   "zh": "法務"
+  },
+  {
+   "box": [
+    158,
+    682,
+    173,
+    712
+   ],
+   "text": "Sales",
+   "zh": "業務"
+  },
+  {
+   "box": [
+    158,
+    734,
+    173,
+    789
+   ],
+   "text": "Research",
+   "zh": "研究"
+  },
+  {
+   "box": [
+    252,
+    16,
+    283,
+    119
+   ],
+   "text": "Claude.ai",
+   "zh": "Claude.ai"
+  },
+  {
+   "box": [
+    355,
+    136,
+    377,
+    192
+   ],
+   "text": "Vendor services agreement - redlined",
+   "zh": "供應商服務合約 - 標註修訂"
+  },
+  {
+   "box": [
+    384,
+    134,
+    414,
+    203
+   ],
+   "text": "19 strategic edits: removed the auto- renewal clause, capped liability at 12 months of fees, kept ownership of your data and custom work.",
+   "zh": "19 項策略性修改：刪除自動續約條款，將責任上限限制在 12 個月的費用，並保留您對資料和客製化工作的擁有權。"
+  },
+  {
+   "box": [
+    494,
+    34,
+    548,
+    221
+   ],
+   "text": "Contract redlining and negotiation",
+   "zh": "合約紅字標註與協商"
+  },
+  {
+   "box": [
+    561,
+    33,
+    572,
+    66
+   ],
+   "text": "15 min",
+   "zh": "15 分鐘"
+  },
+  {
+   "box": [
+    359,
+    459,
+    378,
+    511
+   ],
+   "text": "NDA Review Standards Guide",
+   "zh": "保密協議審查標準指南"
+  },
+  {
+   "box": [
+    386,
+    460,
+    418,
+    532
+   ],
+   "text": "Voice and tone principles, three-part comment structure, severity indicator definitions, and escalation triggers - referenced in every review.",
+   "zh": "語調原則、三部分註解結構、嚴重性指標定義以及升級觸發條件 - 在每次審查中參考。"
+  },
+  {
+   "box": [
+    494,
+    359,
+    548,
+    609
+   ],
+   "text": "Organize your legal workflows using Projects",
+   "zh": "使用 Projects 組織您的法務工作流程"
+  },
+  {
+   "box": [
+    561,
+    359,
+    572,
+    391
+   ],
+   "text": "15 min",
+   "zh": "15 分鐘"
+  },
+  {
+   "box": [
+    351,
+    775,
+    356,
+    785
+   ],
+   "text": "Date",
+   "zh": "日期"
+  },
+  {
+   "box": [
+    354,
+    824,
+    359,
+    836
+   ],
+   "text": "Event",
+   "zh": "事件"
+  },
+  {
+   "box": [
+    368,
+    774,
+    374,
+    797
+   ],
+   "text": "Jan 15, 2023",
+   "zh": "2023年1月15日"
+  },
+  {
+   "box": [
+    371,
+    824,
+    378,
+    855
+   ],
+   "text": "Contract signed",
+   "zh": "合約已簽署"
+  },
+  {
+   "box": [
+    386,
+    774,
+    390,
+    785
+   ],
+   "text": "2023",
+   "zh": "2023"
+  },
+  {
+   "box": [
+    389,
+    824,
+    395,
+    847
+   ],
+   "text": "Scope change",
+   "zh": "範圍變更"
+  },
+  {
+   "box": [
+    402,
+    774,
+    406,
+    783
+   ],
+   "text": "2024",
+   "zh": "2024"
+  },
+  {
+   "box": [
+    405,
+    824,
+    411,
+    856
+   ],
+   "text": "Missed milestone",
+   "zh": "錯過里程碑"
+  },
+  {
+   "box": [
+    420,
+    772,
+    426,
+    792
+   ],
+   "text": "Jun 30, 2024",
+   "zh": "2024年6月30日"
+  },
+  {
+   "box": [
+    423,
+    823,
+    429,
+    844
+   ],
+   "text": "Terminated",
+   "zh": "已終止"
+  },
+  {
+   "box": [
+    494,
+    684,
+    548,
+    932
+   ],
+   "text": "Track discovery timelines and analyze patterns",
+   "zh": "追蹤調查時間軸並分析模式"
+  },
+  {
+   "box": [
+    561,
+    684,
+    572,
+    717
+   ],
+   "text": "15 min",
+   "zh": "15 分鐘"
+  },
+  {
+   "box": [
+    666,
+    16,
+    693,
+    187
+   ],
+   "text": "Claude Cowork",
+   "zh": "Claude Cowork"
+  },
+  {
+   "box": [
+    679,
+    906,
+    693,
+    952
+   ],
+   "text": "View all",
+   "zh": "檢視全部"
+  },
+  {
+   "box": [
+    770,
+    136,
+    789,
+    189
+   ],
+   "text": "Acme MSA clause review",
+   "zh": "Acme MSA 條款審查"
+  },
+  {
+   "box": [
+    798,
+    134,
+    829,
+    199
+   ],
+   "text": "Clause-by-clause green, yellow, or red against the playbook, with redlines and rationale for every deviation.",
+   "zh": "逐條比對遊戲規則標示綠色、紅色或黃色，並提供每一項偏離的修訂痕跡與理由。"
+  },
+  {
+   "box": [
+    909,
+    34,
+    936,
+    186
+   ],
+   "text": "Contract redlining",
+   "zh": "合約紅字標註"
+  },
+  {
+   "box": [
+    946,
+    33,
+    958,
+    66
+   ],
+   "text": "15 min",
+   "zh": "15 分鐘"
+  },
+  {
+   "box": [
+    770,
+    458,
+    786,
+    529
+   ],
+   "text": "Research memo - Acme indemnification",
+   "zh": "研究備忘錄 - Acme 賠償"
+  },
+  {
+   "box": [
+    804,
+    461,
+    811,
+    489
+   ],
+   "text": "Thomso...",
+   "zh": "Thomso..."
+  },
+  {
+   "box": [
+    807,
+    500,
+    813,
+    530
+   ],
+   "text": "House m...",
+   "zh": "House m..."
+  },
+  {
+   "box": [
+    821,
+    456,
+    843,
+    532
+   ],
+   "text": "Question presented, short answer, discussion grouped by authority, and open issues - every proposition cited.",
+   "zh": "提出問題、簡短回答、按權威分組的討論以及開放性問題 - 引述了每個命題。"
+  },
+  {
+   "box": [
+    909,
+    359,
+    936,
+    479
+   ],
+   "text": "Legal research",
+   "zh": "法律研究"
+  },
+  {
+   "box": [
+    946,
+    359,
+    958,
+    392
+   ],
+   "text": "10 min",
+   "zh": "10 分鐘"
+  },
+  {
+   "box": [
+    771,
+    785,
+    778,
+    837
+   ],
+   "text": "Project Silvern diligence",
+   "zh": "Project Silvern 盡職調查"
+  },
+  {
+   "box": [
+    793,
+    787,
+    802,
+    814
+   ],
+   "text": "Categori...",
+   "zh": "分類..."
+  },
+  {
+   "box": [
+    797,
+    826,
+    807,
+    848
+   ],
+   "text": "Flagged",
+   "zh": "已標記"
+  },
+  {
+   "box": [
+    816,
+    781,
+    828,
+    858
+   ],
+   "text": "Change-of-control, assignment, and consent provisions, every line cited to source.",
+   "zh": "控制權變更、讓與和同意條款，每一行皆引述至來源。"
+  },
+  {
+   "box": [
+    909,
+    684,
+    936,
+    809
+   ],
+   "text": "M&A diligence",
+   "zh": "併購盡職調查"
+  },
+  {
+   "box": [
+    946,
+    684,
+    958,
+    717
+   ],
+   "text": "15 min",
+   "zh": "15 分鐘"
+  }
+ ]
+}

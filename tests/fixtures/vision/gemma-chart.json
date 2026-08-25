@@ -1,0 +1,78 @@
+{
+ "_": "真實 API 回應(2026-08-25,scripts/probe-vision.mjs)。模型 gemma-4-31b-it,素材:clickhouse bar chart。不要手改 —— 這是模型實際會回什麼的證據,改了就變成我猜的樣子。",
+ "model": "gemma-4-31b-it",
+ "nw": 1580,
+ "nh": 530,
+ "blocks": [
+  {
+   "box": [
+    103,
+    443,
+    163,
+    556
+   ],
+   "text": "Storage size",
+   "zh": "儲存大小"
+  },
+  {
+   "box": [
+    186,
+    361,
+    246,
+    638
+   ],
+   "text": "of raw (not pre-aggregated) data",
+   "zh": "原始（未預先聚合）數據"
+  },
+  {
+   "box": [
+    283,
+    412,
+    343,
+    478
+   ],
+   "text": "469 GB",
+   "zh": "469 GB"
+  },
+  {
+   "box": [
+    507,
+    520,
+    617,
+    587
+   ],
+   "text": "19 times\nsmaller",
+   "zh": "小 19 倍"
+  },
+  {
+   "box": [
+    723,
+    523,
+    783,
+    582
+   ],
+   "text": "25 GB",
+   "zh": "25 GB"
+  },
+  {
+   "box": [
+    823,
+    402,
+    883,
+    496
+   ],
+   "text": "Elasticsearch",
+   "zh": "Elasticsearch"
+  },
+  {
+   "box": [
+    823,
+    507,
+    883,
+    594
+   ],
+   "text": "ClickHouse",
+   "zh": "ClickHouse"
+  }
+ ]
+}
