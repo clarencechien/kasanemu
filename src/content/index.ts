@@ -1005,15 +1005,25 @@ function makeLabelUnit(el: Element, src: string, register = true): Unit {
  * 和 scan() 一樣是增量的 —— 頁面上的導覽列不會變,但無限捲動會帶來新的卡片,
  * 而卡片上的 CTA 也是 label。
  */
+/**
+ * 這個元素的文字已經被某個內文疊層蓋住了嗎?
+ *
+ * 只比對元素本身是不夠的:單元常常建在**祖先**上。段落裡夾一個
+ * 「docs」連結,單元在 `<p>` 上;圖表儲存格 `<td><a>Link</a><img></td>`
+ * 的單元在 `<td>` 上。兩種情況下那個 `<a>` 都還是會被加翻層收走,
+ * 於是同一段文字既有常駐疊層、又有 hover 貼片 —— 重複,而且多送一次 API。
+ */
+function covered(el: Element): boolean {
+  for (let n: Element | null = el; n && n !== document.body; n = n.parentElement) {
+    if (unitByEl.has(n)) return true;
+  }
+  return false;
+}
+
 function scanLabels(): void {
   if (!settings.annotate) return;
   if (labels.size >= ANNOTATION_CAP) return;
-  const found = findLabels(
-    document.body,
-    ANNOTATION_CAP,
-    // 已經有內文疊層的元素不要再做一份貼片(captureInlineText 會把 <a> 收成內文)
-    (el) => labelByEl.has(el) || unitByEl.has(el),
-  );
+  const found = findLabels(document.body, ANNOTATION_CAP, (el) => labelByEl.has(el) || covered(el));
   let added = 0;
   for (const c of found) {
     if (labels.size >= ANNOTATION_CAP) break;

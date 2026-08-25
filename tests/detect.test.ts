@@ -770,3 +770,49 @@ test('頁首裡的標籤仍然滑得到 —— 不畫疊層不等於整棵消失
   assert.deepEqual(findCandidates(root, () => false), []);
   assert.deepEqual(findLabels(root, 50).map((c) => c.src), ['Products', 'Pricing']);
 });
+
+/* -------- 圖文儲存格:同一張表不能兩種行為 -------- */
+
+test('圖片自己佔一行時,短連結不再被判成 UI 標籤', () => {
+  /*
+   * ClickHouse 的圖表表格:<th>Storage size</th> 翻了,同一張表的
+   * <td><a>Link</a><span><img></span></td> 沒翻 —— 因為後者的文字
+   * 全部來自一個連結。UI 標籤那條規則的理由是幾何(緊湊導覽列),
+   * 而 mediaSplit 的存在本身就證明這裡不是那種版面。
+   */
+  const root = mount(
+    '<table><thead><tr><th>Storage size</th></tr></thead>' +
+      '<tbody><tr><td><a href="#x">Link</a>' +
+      '<span style="display:flex"><img alt="" src="x.png"></span></td></tr></tbody></table>',
+  );
+  // jsdom 沒有 layout:媒體的面積門檻要自己餵一個真的矩形進去
+  const img = root.querySelector('img')!;
+  img.getBoundingClientRect = () =>
+    ({ top: 20, left: 0, width: 400, height: 200, bottom: 220, right: 400 }) as DOMRect;
+  const got = findCandidates(root, () => false);
+  const texts = got.map((c) => c.src);
+  assert.ok(texts.includes('Storage size'));
+  assert.ok(texts.includes('Link'), `圖文儲存格也該翻,實得 ${JSON.stringify(texts)}`);
+  assert.equal(got.find((c) => c.src === 'Link')?.mediaSplit?.tagName, 'SPAN');
+});
+
+test('沒有圖片的短連結還是 UI 標籤 —— 規則本身沒有變鬆', () => {
+  const root = mount('<div><a href="#a">Docs</a><a href="#b">Pricing</a><a href="#c">Blog</a></div>');
+  assert.deepEqual(findCandidates(root, () => false).map((c) => c.src), []);
+});
+
+test('沒有可見文字的互動子孫不佔長度預算', () => {
+  /*
+   * 放大按鈕的名稱在 aria-label 上,畫面一個字都沒有。
+   * 把它算進來會讓預算憑空多 24 字 —— 預算要跟著文字走,不是跟著節點走。
+   */
+  const root = mount(
+    '<div><a href="#x">A fairly long link label that is content</a>' +
+      '<button aria-label="Enlarge image"></button></div>',
+  );
+  const texts = findCandidates(root, () => false).map((c) => c.src);
+  assert.ok(
+    texts.some((t) => t.includes('fairly long link label')),
+    `實得 ${JSON.stringify(texts)}`,
+  );
+});

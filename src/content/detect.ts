@@ -225,7 +225,17 @@ export function isUiLabel(el: Element, skip?: ReadonlySet<Element>): boolean {
    * 自己不是互動元素,但文字**全部**來自互動子孫 —— 那是按鈕列 / 連結列,
    * 不是段落。段落裡夾一個行內連結不會命中:那時連結外面還有文字。
    */
-  const actives = el.querySelectorAll(INTERACTIVE_SELECTOR);
+  /*
+   * 只算**看得見文字的**互動子孫。
+   *
+   * ClickHouse 的圖片儲存格裡有一顆放大按鈕,它的無障礙名稱在
+   * `aria-label` 上、畫面上一個字都沒有。把它算進來會讓長度預算
+   * 憑空多 24 字(`UI_LABEL_MAX_CHARS * actives.length`),
+   * 而它連一個字都沒有貢獻 —— 預算應該跟著文字走,不是跟著節點走。
+   */
+  const actives = [...el.querySelectorAll(INTERACTIVE_SELECTOR)].filter(
+    (a) => visibleTextOf(a, skip).length > 0,
+  );
   if (actives.length === 0) return false;
   const total = visibleTextOf(el, skip);
   if (total.length > UI_LABEL_MAX_CHARS * actives.length) return false;
@@ -706,8 +716,19 @@ function walk(el: Element, ctx: WalkCtx, pinned = false): boolean {
 
   const text = normalizeText(ownText(el, skip));
   if (!isMeaningfulText(text)) return false;
-  // 互動元素裡的短文字是 UI 標籤,不是內容(長度只算看得見的字)
-  if (isUiLabel(el, ctx.srOnly)) return false;
+  /*
+   * 互動元素裡的短文字是 UI 標籤,不是內容(長度只算看得見的字)。
+   *
+   * **但有 mediaSplit 的元素不算。** 那條規則的理由是幾何:譯文比原文短,
+   * 蓋在緊湊的導覽列上要嘛吃掉項目間距、要嘛讓原文從右邊露出來。
+   * 而 mediaSplit 的存在本身就證明了這裡不是那種版面 —— 圖片自己佔一行,
+   * 表示文字也自己佔一行,蓋上去很安全。
+   *
+   * 實例是 ClickHouse 的圖表表格:`<th>Storage size</th>` 翻了,
+   * 同一張表的 `<td><a>Link</a><span><img></span></td>` 沒翻,
+   * 因為後者的文字全部來自一個連結。同一張表兩種行為。
+   */
+  if (!split && isUiLabel(el, ctx.srOnly)) return false;
   // 最後一道防線:段落不會有一千字
   if (text.length > MAX_UNIT_CHARS) return false;
   if (looksLikeTargetLang(text)) return false;
@@ -890,6 +911,9 @@ export function explainCandidate(el: Element): string[] {
   const blockish = BLOCK_TAGS.has(el.tagName) || BLOCKISH_DISPLAY.has(cs.display);
   if (!blockish) return [`不是 block 級 (display: ${cs.display}),文字會併進最近的 block 祖先`];
   if (hasContainerChild(el)) return ['底下還有帶文字的 block —— 這是容器不是段落,單元會建在更裡面'];
+  if (!mediaSplitOf(el) && hasMediaChild(el)) {
+    return ['圖文混排且圖片沒有自己佔一行 —— 疊層一定會蓋到圖,整段跳過'];
+  }
 
   const text = normalizeText(ownText(el));
   if (!isMeaningfulText(text)) return [`文字沒有意義:${JSON.stringify(text.slice(0, 40))}`];
@@ -897,5 +921,15 @@ export function explainCandidate(el: Element): string[] {
   if (looksLikeTargetLang(text)) return ['判定為已是目標語言 (CJK 比例 > 30%)'];
   if (el.getClientRects().length === 0) return ['沒有繪製面積 (getClientRects 為空)'];
   if (isScreenReaderOnly(el, cs)) return ['螢幕閱讀器專用標籤(sr-only:1×1 + clip),視覺上不存在'];
+  /*
+   * isUiLabel 要放在最後、而且**不能漏**。
+   *
+   * 漏掉的代價是這支工具會說謊:查 ClickHouse 圖表儲存格為什麼不翻,
+   * 它回「符合所有規則 —— 應該會成為翻譯單元」,而實際上是被這一關擋掉的。
+   * 會說謊的儀表比沒有儀表更糟,因為它讓人往錯的方向找。
+   */
+  if (!mediaSplitOf(el) && isUiLabel(el)) {
+    return ['判定為 UI 標籤(互動元素裡 24 字以內的文字)—— 交給加翻層,滑上去會顯示貼片'];
+  }
   return ['符合所有規則 —— 應該會成為翻譯單元'];
 }

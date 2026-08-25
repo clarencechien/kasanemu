@@ -50,7 +50,13 @@ const got = await page.evaluate(() => {
   const seen = new Set();
   const blocks = D.findCandidates(document.body, (el) => seen.has(el));
   for (const c of blocks) seen.add(c.el);
-  const labels = D.findLabels(document.body, 200, (el) => seen.has(el));
+  // 內文層的單元常常建在祖先上(<p> 包連結、<td> 包連結),
+  // 所以「已經處理過」要往上找,不能只比對元素本身
+  const covered = (el) => {
+    for (let n = el; n && n !== document.body; n = n.parentElement) if (seen.has(n)) return true;
+    return false;
+  };
+  const labels = D.findLabels(document.body, 200, covered);
   return {
     blocks: blocks.map((c) => ({
       src: c.src, tag: c.el.tagName, media: !!c.mediaSplit, pinned: c.pinned === true,
@@ -91,6 +97,14 @@ noBlock('Latency dropped', '行內圖片');
 for (const frag of ['ClickHouse SQL query', 'Elasticsearch ESQL query']) {
   needBlock(frag, '長項目底下的短連結');
 }
+
+// 圖表儲存格:表頭與儲存格必須同一種行為
+needBlock('Storage size', '圖表表頭');
+const cell = got.blocks.find((b) => b.src === 'Link');
+if (!cell) problems.push('圖表儲存格的連結沒翻 —— 同一張表兩種行為');
+else if (!cell.media) problems.push('圖表儲存格沒帶 mediaSplit,疊層會蓋到圖');
+// 同一段文字不能既是疊層又是貼片
+if (got.labels.includes('Link')) problems.push('圖表儲存格被重複處理:疊層 + 貼片各一份');
 
 // sticky 的 <nav> 目次:兩條舊規則(§3.5 與 EXCLUDE_TAGS)各擋了它一次
 const pinned = got.blocks.filter((b) => b.inNav && !b.inMenu);
