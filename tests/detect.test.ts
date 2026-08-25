@@ -581,16 +581,25 @@ test('隱形的注入元素不該讓段落被當成容器,文字也不該外洩�
   ]);
 });
 
-test('圖文混排的段落不建立單元 —— 蓋下去會把圖蓋掉', () => {
+test('圖文混排:圖不翻,圖旁邊的文字翻(在媒體處切段)', () => {
+  /*
+   * 舊版整段放棄 —— 而那是維基百科的日常:一段文字裡夾三個行內公式,
+   * 於是整段一個字都不翻。放棄的粒度錯了:該放棄的是媒體節點,
+   * 不是它前後的文字。段的聯集矩形蓋到媒體時仍然放棄(probe 有反例)。
+   */
   const body = mount(`
     <p id="fig"><img id="chart" /><span>Note: cost decline percentages are rounded to the nearest 5%.</span></p>
     <p>Drone delivery is scaling rapidly in the United States this year.</p>
   `);
-  // jsdom 沒有 layout,手動給圖表一個面積
+  // jsdom 沒有 layout,手動給圖表一個面積(mount 的假 rect 在 0,0~300,20,
+  // 把圖放到不相交的位置)
   const chart = body.querySelector('#chart')!;
   chart.getBoundingClientRect = () =>
-    ({ width: 450, height: 300 }) as unknown as DOMRect;
-  assert.deepEqual(ids(body), ['Drone delivery is scaling rapidly in the United States this year.']);
+    ({ top: 100, left: 0, width: 450, height: 300, bottom: 400, right: 450 }) as unknown as DOMRect;
+  assert.deepEqual(ids(body), [
+    'Note: cost decline percentages are rounded to the nearest 5%.',
+    'Drone delivery is scaling rapidly in the United States this year.',
+  ]);
 });
 
 test('行內小圖示不算圖文混排', () => {
@@ -898,7 +907,8 @@ test('圖片夾在段落中間 —— 切成前後兩段,而不是整段放棄',
   assert.ok(ranged[1]!.startsWith('As discussed'));
 });
 
-test('真正的行內圖片仍然整段放棄 —— 一段文字裡夾著圖,矩形一定蓋到它', () => {
+test('段的聯集矩形蓋到媒體 → 那一段放棄(不蓋圖是底線)', () => {
+  // mount 的假 Range rect 在 0,0~300,20;把圖放在同一塊 → 相交 → 放棄
   const root = mount('<p><img id="i" alt="" src="c.png">Note: percentages are rounded to 5%.</p>');
   const img = root.querySelector('#i')!;
   img.getBoundingClientRect = () =>

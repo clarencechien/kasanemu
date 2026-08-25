@@ -1,0 +1,46 @@
+# 台灣讀者常看的外文內容頁。一行一個網址,# 開頭是註解。
+# 選「文章頁」而不是首頁:偵測的難點在內文版型,不在入口頁。
+
+## 美國:新聞與評論
+https://www.bbc.com/news/articles/c0k3700zljjo
+https://edition.cnn.com/2025/01/20/tech/openai-stargate-project
+https://www.theverge.com/2024/1/24/24049343/apple-vision-pro-review
+https://arstechnica.com/gadgets/2024/06/what-i-learned-from-using-a-raspberry-pi-5-as-my-main-computer-for-two-weeks/
+https://www.reuters.com/technology/
+https://apnews.com/hub/technology
+https://www.engadget.com/
+https://www.wired.com/story/how-to-back-up-your-digital-life/
+
+## 美國:CS / 技術
+https://news.ycombinator.com/
+https://news.ycombinator.com/item?id=30019818
+https://stackoverflow.com/questions/11227809/why-is-processing-a-sorted-array-faster-than-processing-an-unsorted-array
+https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/reduce
+https://github.blog/engineering/
+https://blog.cloudflare.com/how-we-built-pingora-the-proxy-that-connects-cloudflare-to-the-internet/
+https://go.dev/blog/loopvar-preview
+https://react.dev/learn/thinking-in-react
+https://kubernetes.io/docs/concepts/overview/
+https://www.rust-lang.org/
+https://pytorch.org/blog/
+https://lwn.net/Articles/985926/
+https://en.wikipedia.org/wiki/Transformer_(deep_learning_architecture)
+https://martinfowler.com/articles/patterns-of-distributed-systems/
+https://stripe.com/guides/atlas/business-plan
+https://aws.amazon.com/blogs/aws/
+https://medium.com/@copyconstruct/testing-in-production-the-safe-way-18ca102d0ef1
+
+## 日本:新聞與生活
+https://www3.nhk.or.jp/news/
+https://news.yahoo.co.jp/
+https://www.itmedia.co.jp/news/
+https://www.4gamer.net/
+https://kakakumag.com/
+https://dailyportalz.jp/
+
+## 日本:CS / 技術
+https://qiita.com/jesus_isao/items/63557eba36819faa4ad9
+https://zenn.dev/mizchi/articles/all-in-on-json-rpc
+https://note.com/ruiu/n/n173e9f08d51e
+https://engineering.mercari.com/blog/
+https://techblog.lycorp.co.jp/ja/

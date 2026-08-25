@@ -28,10 +28,15 @@
     <span class="imgwrap"><img alt="chart" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="></span>
   </p>
 
-  <!-- 行內圖片:混在文字行裡,照舊整段跳過 -->
+  <!-- 行內圖片:圖不翻,圖旁邊的文字在媒體處切段照翻 -->
   <p id="withinlineimg">Latency dropped
     <img class="inline-img" alt="badge" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==">
     by a factor of five in the tests we ran.</p>
+
+  <!-- 反例:段落折行後,後段的聯集矩形會蓋回圖 → 那一段要放棄 -->
+  <p id="wrapunion" style="width:230px">Before the badge there is text
+    <img class="inline-img" alt="badge" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==">
+    and after it this sentence definitely wraps onto the next line so the union rectangle covers the image.</p>
   <!-- 每個連結都短,但項目本身是一整段:整份還是內容清單 -->
   <ul id="querylist">
     <li><p><strong>Query 1</strong>: a full data scan aggregating the whole data set.</p>
@@ -86,6 +91,36 @@
   舊規則把 aria-hidden 當成「不是內容」,於是整頁最大的那行字不翻。
 -->
 <h1 id="hero" aria-label="Anthropic's approach to teaching and learning AI"><span class="word" aria-hidden="true" style="opacity: 1; visibility: inherit;">Anthropic's</span> <span class="word" aria-hidden="true" style="opacity: 1; visibility: inherit;">approach</span> <span class="word" aria-hidden="true" style="opacity: 1; visibility: inherit;">to</span> <span class="word" aria-hidden="true" style="opacity: 1; visibility: inherit;">teaching</span> <span class="word" aria-hidden="true" style="opacity: 1; visibility: inherit;">and</span> <span class="word" aria-hidden="true" style="opacity: 1; visibility: inherit;">learning</span> <span class="word" aria-hidden="true" style="opacity: 1; visibility: inherit;">AI</span></h1>
+
+<!-- display:contents 的版面包裝(MDN 的 <main>):自己沒有盒子,子孫照常渲染 -->
+<main style="display:contents">
+  <div style="display:contents">
+    <h1 id="dc-h1">Understanding the reduce method in JavaScript</h1>
+    <p id="dc-p">The reduce method executes a reducer callback on each element of the array.</p>
+  </div>
+</main>
+
+<!-- 標題裡的錨點連結圖示(react.dev):24×24 的 svg 不是圖,整行要翻 -->
+<h2 id="icon-heading">Start with the mockup design first
+  <a href="#icon-heading"><svg width="24" height="24" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/></svg></a>
+</h2>
+
+<!-- 文章自己的 header(Wired):標題與日期是內容,不是站台外殼 -->
+<article>
+  <header id="art-header">
+    <h1>How to Back Up Your Digital Life Properly</h1>
+    <div>Backups are boring, but they will save your bacon eventually.</div>
+  </header>
+  <p>Article body continues here with more advice about backups.</p>
+  <footer id="art-footer"><p>Reporting contributed by the entire backup desk team.</p></footer>
+</article>
+
+<!-- 電子報表單(github.blog):控件不翻,說明文字滑上去要翻得到(貼片) -->
+<form id="newsletter">
+  <h3>We do newsletters, too</h3>
+  <p>Discover tips, technical guides, and best practices in our monthly letter.</p>
+  <input type="email" placeholder="you@example.com"><button>Subscribe</button>
+</form>
 
 <!-- 反面:aria-hidden 而且真的看不見的提示框,照舊不能翻 -->
 <p id="tipwrap">Download the dataset from the archive mirror before running any of the queries.<span role="tooltip" aria-hidden="true" style="display:none">Download this file</span></p>

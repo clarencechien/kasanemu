@@ -121,8 +121,10 @@ const withImg = got.blocks.find((b) => b.src.startsWith('A common use case'));
 if (!withImg) problems.push('圖片自己佔一行的段落沒被翻');
 else if (!withImg.media) problems.push('圖片自己佔一行的段落沒帶 mediaSplit,疊層會蓋到圖');
 
-// 行內圖片 → 照舊整段跳過(疊層一定會蓋到圖)
-noBlock('Latency dropped', '行內圖片');
+// 行內圖片:圖不翻,圖旁的文字在媒體處切段照翻
+needBlock('by a factor of five in the tests', '行內圖片旁的文字');
+// 折行後聯集矩形蓋回圖的那一段,要放棄 —— 不蓋圖是底線
+noBlock('definitely wraps onto the next line', '折行蓋圖的段');
 
 // 每個連結都短、但項目本身是一整段 —— 整份仍然是內容清單
 for (const frag of ['ClickHouse SQL query', 'Elasticsearch ESQL query']) {
@@ -143,6 +145,26 @@ for (const frag of ['ClickHouse SQL query', 'Elasticsearch ESQL query']) {
 // 反面:aria-hidden 而且 display:none 的提示框,照舊擋得住
 noBlock('Download this file', 'aria-hidden 且看不見的提示框');
 needBlock('Download the dataset', 'aria-hidden 提示框的外層段落');
+
+// display:contents 的包裝沒有盒子,但子孫是活生生的內容
+needBlock('Understanding the reduce method', 'display:contents 底下的標題');
+needBlock('The reduce method executes', 'display:contents 底下的段落');
+
+// 標題裡的 24×24 錨點圖示不算圖 —— 整行要翻
+{
+  const h = got.blocks.find((b) => b.src.includes('Start with the mockup'));
+  if (!h) problems.push('標題帶錨點圖示:整行沒翻');
+  else if (h.media) problems.push('標題帶錨點圖示:被誤判成圖文混排');
+}
+
+// <article> 裡的 header / footer 是文章的頭尾,不是站台外殼
+needBlock('How to Back Up Your Digital Life', '文章 header 裡的標題');
+needBlock('Backups are boring', '文章 header 裡的副標');
+needBlock('Reporting contributed by', '文章 footer 裡的署名');
+
+// 表單:控件不翻,說明文字降到貼片層(不是整段消失)
+noBlock('We do newsletters', '表單內文不畫疊層');
+noBlock('you@example.com', '表單控件');
 
 // 沒有元素包著的鬆散文字要換錨點(Range),而且一段一個
 for (const frag of ['ClickHouse requires 12 times', 'When the data set is pre-aggregated']) {
