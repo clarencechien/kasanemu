@@ -103,6 +103,11 @@ worker → 先吃快取 → 過保險絲與 token bucket → 呼叫 Gemini → i
 | 加翻層 | UI 標籤、選單、按鈕、導覽、頁尾 | hover / 選取時旁邊的貼片,**不覆蓋** |
 | 不翻 | `code` / `pre`、`contenteditable`、`translate="no"`、`.notranslate`、分享 widget | — |
 
+**詞表**(`docs/plan-glossary.md`):`原文 → 譯法` 固定譯法、只寫原文 = 不翻。
+做法是送出前換成私用區佔位符、翻完再換成指定說法 —— **模型從頭到尾沒看到那個詞**,
+所以每個檔位都有效,連沒有 prompt 的 L0 都有效。全域 + 具名詞表 + host pattern 綁定,
+有自己的匯出匯入(快取那組不含詞表)。
+
 沒有元素包著的鬆散文字、以及被行內圖片/公式切開的段落,用 `Range` 當錨點,
 在媒體處切段;**段的聯集矩形只要蓋到圖就整段放棄 —— 不蓋圖是底線。**
 
@@ -127,7 +132,7 @@ node scripts/audit-coverage.mjs <url>     # 單頁詳細
 
 ```bash
 npm run typecheck
-npm test          # 203 個測試(node:test + jsdom)
+npm test          # 217 個測試(node:test + jsdom)
 npm run build     # 也會回報 dist 體積對 §10.2 的 1.5 MB 預算
 npm run check     # typecheck + test + build + 三支 probe ← 提交前跑這個
 npm run zip       # dist/ → release/kasanemu-<version>.zip(自己寫的 zip,無外部依賴)
@@ -141,7 +146,8 @@ jsdom 沒有 layout,所以**凡是牽涉幾何的規則都用真瀏覽器驗**(p
 npm run probe:detect     # 選取規則(scripts/fixtures/detect.html)
 npm run probe:colors     # 背景與前景色解析(lab / oklch / 半透明疊色)
 npm run probe:snapshot   # 匯出的 HTML 快照能不能疊、能不能看原文
-GEMINI_API_KEY=... npm run probe:gemma   # 模型行為:thinking、schema、echo 對位
+GEMINI_API_KEY=... npm run probe:gemma       # 模型行為:thinking、schema、echo 對位
+GEMINI_API_KEY=... node scripts/probe-glossary.mjs   # 詞表遵循率 + 速度品質對打
 ```
 
 fixture 裡刻意裝著**會弄壞它的東西**(`docs/lessons.md` §2):`display:contents`
@@ -153,6 +159,7 @@ fixture 裡刻意裝著**會弄壞它的東西**(`docs/lessons.md` §2):`display
 src/
   manifest.json
   shared/   types · models(三檔與牌價)· settings · hash · log · diag · report · messages
+            glossary(詞表解析:純函式,content 與 worker 共用同一份判斷)
   content/  detect(選取規則)· cover/geometry/measure/bleed(幾何)· styleprobe(顏色)
             overlay(closed shadow DOM)· annotate(加翻層)· snapshot(匯出)
             l0(Translator API)· queue(L0 併發池)· mask(佔位符)· lang · motion
@@ -163,10 +170,10 @@ src/
   popup/    啟用、管線、檔位、L0 語言包、本頁階層統計、花費、匯出 log / 頁面 / 快取
 scripts/    audit-sites · audit-coverage · probe-{detect,colors,snapshot,gemma}
             fetch-fonts(subset 打包)· zip · sites.txt · fixtures/
-tests/      203 個 node:test
+tests/      217 個 node:test
 docs/       lessons(通則)· deviations(逐件記錄)· acceptance(人工驗收)
             fonts(subset 實測)· plan-annotation(加翻層規格)
-            plan-glossary(詞表規格,未實作)· manual.html(使用說明)
+            plan-glossary(詞表規格 + 模型實測)· manual.html(使用說明)
 feature.md  漸進式翻譯的規格
 ```
 
@@ -184,6 +191,7 @@ PRD Phase 1 §2–§11 全部完成,§12 驗收的自動化只涵蓋選取與協
 | 診斷 log 匯出 | 失敗大多發生在看不到的地方,而 console 分散在兩個 context |
 | `__ksnm.explain()` / `__ksnm.at()` | 「為什麼這塊沒翻」需要一個能問的對象 |
 | 快取匯出 / 匯入 | 譯文不該綁在安裝上,換版本不必整頁重翻 |
+| 詞表(全域 + 具名 + 網域綁定)| 技術站要保護的 `Go` / `Rust`,在新聞站上該照常翻 |
 | 匯出疊好的 HTML | 因為沒改過 DOM,所以不能只是「另存新檔」 |
 | L1 佇列看門狗 + 兩側對帳 | 「排進去了但沒有變 L1」查了三輪,決定讓那個狀態不存在 |
 | 捲動策略 auto / always / strict | Gmail 要藏、長文不要閃,同一個開關兩種答案 |

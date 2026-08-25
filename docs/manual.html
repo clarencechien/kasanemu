@@ -357,6 +357,7 @@ footer {
       <li><a href="#first">第一次使用</a></li>
       <li><a href="#read">怎麼讀畫面</a></li>
       <li><a href="#chips">滑過與選取</a></li>
+      <li><a href="#glossary">詞表</a></li>
       <li><a href="#keys">快捷鍵</a></li>
       <li><a href="#tiers">檔位與帳單</a></li>
       <li><a href="#key">API key 與隱私</a></li>
@@ -673,6 +674,90 @@ footer {
       </div>
     </section>
 
+    <section id="glossary" class="mark-l1">
+      <div class="eyebrow">自訂</div>
+      <h2>詞表:固定某些詞怎麼翻(或不翻)</h2>
+      <div class="stack-block">
+        <p>
+          設定頁的「詞表」可以指定<strong>某個詞一律譯成什麼</strong>,
+          或是<strong>某個詞一律不要翻</strong>。一行一條:
+        </p>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>寫法</th><th>意思</th></tr></thead>
+            <tbody>
+              <tr><td class="keycell"><code>embedding → 嵌入向量</code></td><td>一律譯成「嵌入向量」</td></tr>
+              <tr><td class="keycell"><code>Kasanemu</code></td><td>只寫原文 = <strong>不要翻</strong>,原樣留著</td></tr>
+              <tr><td class="keycell"><code>IT!</code></td><td>結尾加 <code>!</code> = 大小寫要一模一樣才算(縮寫用)</td></tr>
+              <tr><td class="keycell"><code># 這是註解</code></td><td><code>#</code> 開頭的行會被忽略</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="note">
+          <span class="k">請登記完整的名詞片語</span>
+          寫 <code>attention mechanism → 注意力機制</code>,<strong>不要只寫</strong>
+          <code>attention</code>。只登記半個片語的話,剩下那半仍然會被翻一次,
+          結果變成「注意力機制 <strong>機制</strong>」。這是這個做法唯一的代價。
+        </div>
+
+        <h3 style="margin-top:26px">三層:全域、具名詞表、綁定</h3>
+        <ul class="plain">
+          <li><strong>全域詞表</strong> —— 所有網站都生效。放你的名字、產品名、
+            不管在哪裡都不該被翻的東西。</li>
+          <li><strong>具名詞表</strong> —— 用 <code>=== 技術</code> 起一份新的,
+            底下寫那一類的術語。可以有好幾份(技術、財經、遊戲…)。</li>
+          <li><strong>綁定</strong> —— 一行一條 <code>*.qiita.com → 技術</code>,
+            把詞表掛到網域上。<code>example.com</code> 是完全相同,
+            <code>*.example.com</code> 連主網域一起算,<code>*</code> 是全部。
+            一個網域可以掛好幾份,結果是加起來。</li>
+        </ul>
+        <p>
+          <strong>為什麼不是每個網域各一份清單:</strong>
+          <code>kubernetes.io</code>、<code>qiita.com</code>、<code>zenn.dev</code>
+          要保護的是同一批術語。逐一設定等於同一份清單抄很多遍,
+          而且每遇到一個新網站都要從頭再打一次。
+        </p>
+
+        <div class="note">
+          <span class="k">為什麼每個檔位都有效,連 L0 也有效</span>
+          做法是<strong>送出前把那個詞換成一個特殊字元、翻完再換成你指定的說法</strong> ——
+          模型從頭到尾沒看到那個詞,所以它不需要「聽話」。
+          這也是為什麼連沒有指令通道的 L0(本機翻譯)都遵守詞表。
+          <br /><br />
+          設定裡還有一個「把詞表也寫進 prompt」的開關,預設是「依檔位自動」。
+          它是<strong>額外</strong>請模型在句子裡自己安放說法,語法會更順。
+          <strong>關掉不代表詞表失效</strong> —— 上面那條路一直都在。
+        </div>
+
+        <h3 style="margin-top:26px">備份與還原</h3>
+        <p>
+          詞表底下有<strong>「匯出詞表」與「匯入詞表」</strong>兩顆按鈕,
+          存成一個 <code>.json</code>(檔名帶日期)。
+        </p>
+        <ul class="plain">
+          <li><strong>換版、重灌、換機器前先匯出。</strong>快取弄丟了再花一次錢就回得來,
+            <strong>詞表弄丟了只能重打</strong> —— 這是它值得單獨備份的理由。</li>
+          <li><strong>匯入是「同名的以檔案為準,本機獨有的保留」。</strong>
+            還原備份時你要的就是檔案裡那個版本;本機另外加的詞表不會被清掉。</li>
+          <li><strong>和「匯出快取」是兩回事。</strong>快取那組只有譯文,不含詞表;
+            詞表這組只有詞表,不含譯文。兩個都想留就兩個都按。</li>
+        </ul>
+
+        <div class="note">
+          <span class="k">改了詞表之後</span>
+          已經畫在畫面上的譯文<strong>不會自己更新</strong>(那要重新花錢)。
+          按 <kbd>Alt</kbd>+<kbd>R</kbd> 重翻這一頁就會套用新的詞表。
+          快取有跟著詞表分開存,所以重翻不會拿到舊的那份。
+        </div>
+
+        <p style="color:var(--muted); font-size:14px">
+          popup 上會顯示這個網域命中了哪幾份詞表、共幾條 ——
+          「設了沒生效」和「網域沒對上」看起來一模一樣,所以那一行要看得到。
+        </p>
+      </div>
+    </section>
+
     <section id="keys" class="mark-l1">
       <div class="eyebrow">操作</div>
       <h2>快捷鍵</h2>
@@ -779,11 +864,25 @@ footer {
           <p>這是最需要回報的類型。請截圖 + 匯出 log,並且說一下當下在做什麼(剛捲動?剛展開選單?)。</p>
         </div>
         <div class="card">
-          <span class="k">換版、重灌之前先備份譯文</span>
+          <span class="k">換版、重灌之前先備份</span>
           <p>
-            <strong>設定 → 快取 → 匯出快取</strong>,存成一個 <code>.json</code>。
-            裝好新版之後按<strong>匯入快取</strong>倒回去,已經翻過的就不必再翻一次。
-            匯入是<strong>只補不覆蓋</strong>,所以倒回舊檔不會蓋掉你剛翻好的東西。
+            <strong>兩個東西要分開備份,而且合併方式相反。</strong>
+          </p>
+          <ul class="plain" style="margin-top:8px">
+            <li>
+              <strong>設定 → 快取 → 匯出快取</strong>(譯文)。匯入是
+              <strong>只補不覆蓋</strong> —— 現有的譯文不會比較差,
+              倒回舊檔不該蓋掉你剛翻好的。
+            </li>
+            <li>
+              <strong>設定 → 詞表 → 匯出詞表</strong>(你自己整理的術語)。匯入是
+              <strong>同名的以檔案為準</strong> —— 還原備份時你要的就是檔案裡那個版本。
+            </li>
+          </ul>
+          <p style="margin-top:8px">
+            快取弄丟了再花一次錢就回得來,<strong>詞表弄丟了只能重打</strong> ——
+            所以詞表其實比快取更值得先按那顆按鈕。詳見
+            <a href="#glossary">詞表</a>那一節。
           </p>
         </div>
         <div class="card">
@@ -882,6 +981,7 @@ footer {
           <li><strong>還有哪裡滑上去不會翻</strong>:網址 + 那段文字,這是現在最想知道的。</li>
           <li><strong>日文 / 韓文站</strong>:有翻嗎?來源語言判對了嗎?(log 裡的 <code>sourceLang</code> 會寫)</li>
           <li><strong>哪些站完全不能用</strong>:網址就好。</li>
+          <li><strong>詞表</strong>:有哪個詞你設了卻沒生效?(popup 上那行「詞表 … N 條」有顯示嗎?)</li>
         </ul>
       </div>
     </section>
