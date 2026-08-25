@@ -102,15 +102,34 @@ test('§12.2 code / pre / kbd / samp 區塊不得被翻譯', () => {
   assert.deepEqual(ids(body), ['Call compute() before rendering.']);
 });
 
-test('§3.1 aria-hidden / contenteditable / translate=no / .notranslate 一律排除', () => {
+test('§3.1 contenteditable / translate=no / .notranslate 一律排除', () => {
   const body = mount(
-    '<p aria-hidden="true">Decorative text here</p>' +
+    '<p aria-hidden="true" style="display:none">Decorative text here</p>' +
       '<p contenteditable="">Editable text here</p>' +
       '<p translate="no">Brand Name Here</p>' +
       '<p class="notranslate">Do not touch this</p>' +
       '<p>Translate this one.</p>',
   );
   assert.deepEqual(ids(body), ['Translate this one.']);
+});
+
+test('aria-hidden 但畫面上看得到 → 照翻', () => {
+  /*
+   * 逐字進場動畫的標準寫法(anthropic.com 的主標題):整句放 aria-label
+   * 給螢幕閱讀器,畫面上真正看得到的每個字標 aria-hidden 免得讀兩次。
+   * 舊規則把 aria-hidden 當成「不是內容」,於是整頁最大的那行字不翻 ——
+   * 使用者的話是「這看起來是有點搞笑」。
+   *
+   * aria-hidden 是「對輔助技術隱藏」,不是「看不見」;而這個擴充疊的是
+   * 眼睛看到的東西。看不看得見由 CSS 回答,上一個測試就是那一半。
+   */
+  const body = mount(
+    '<h1 aria-label="Anthropic approach to teaching and learning AI">' +
+      '<span aria-hidden="true">Anthropic</span> <span aria-hidden="true">approach</span> ' +
+      '<span aria-hidden="true">to</span> ' +
+      '<span aria-hidden="true">teaching and learning AI</span></h1>',
+  );
+  assert.deepEqual(ids(body), ['Anthropic approach to teaching and learning AI']);
 });
 
 test('§3.1 純數字、純符號、長度 < 2 一律排除', () => {

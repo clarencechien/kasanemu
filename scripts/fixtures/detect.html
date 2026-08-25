@@ -80,6 +80,16 @@
 
 <script>window.__between_sections = 1;</script>
 
+<!--
+  逐字進場動畫的標題(anthropic.com)。整句話在 aria-label 上,
+  畫面上看得到的每一個字都被標成 aria-hidden,免得螢幕閱讀器讀兩次。
+  舊規則把 aria-hidden 當成「不是內容」,於是整頁最大的那行字不翻。
+-->
+<h1 id="hero" aria-label="Anthropic's approach to teaching and learning AI"><span class="word" aria-hidden="true" style="opacity: 1; visibility: inherit;">Anthropic's</span> <span class="word" aria-hidden="true" style="opacity: 1; visibility: inherit;">approach</span> <span class="word" aria-hidden="true" style="opacity: 1; visibility: inherit;">to</span> <span class="word" aria-hidden="true" style="opacity: 1; visibility: inherit;">teaching</span> <span class="word" aria-hidden="true" style="opacity: 1; visibility: inherit;">and</span> <span class="word" aria-hidden="true" style="opacity: 1; visibility: inherit;">learning</span> <span class="word" aria-hidden="true" style="opacity: 1; visibility: inherit;">AI</span></h1>
+
+<!-- 反面:aria-hidden 而且真的看不見的提示框,照舊不能翻 -->
+<p id="tipwrap">Download the dataset from the archive mirror before running any of the queries.<span role="tooltip" aria-hidden="true" style="display:none">Download this file</span></p>
+
 <!-- 真的選單:每一項都短,維持外殼待遇 -->
 <nav id="menu"><ul>
   <li><a href="#m1">Products</a></li>

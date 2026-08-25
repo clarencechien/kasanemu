@@ -2657,3 +2657,110 @@ Alt 加上別的鍵是和弦,不是「我想看原文」。
 
 「翻譯這一頁」也一併認得卡住:那五塊的 `l1Queued` 旗標早就過期了,
 使用者親手按的動作不該被它擋下來(`unstuck` 進 diag)。
+
+## CR. 診斷工具自己在說謊
+
+使用者:「清了 cache 再翻一次,還是有 L0,只是換不同點了。」
+
+我打開那份 log,看到五次 `queue-l1` 只有兩次配得到 worker 的 `enqueued`,
+差點就把它當成「訊息掉了」的鐵證寫進修正裡。**那個推論是錯的。**
+
+### CR-1. 兩個 realm 共用一個環狀緩衝
+
+`diag()` 的 flush 是「讀 → 合併 → 寫」,而 content script 與 service worker
+是兩個不同的 JS realm,寫同一個 `chrome.storage.session` 的 key:
+
+```
+content: get(diag) → [A,B]        worker: get(diag) → [A,B]
+content: set([A,B,C,D])
+                                  worker: set([A,B,X])     ← C、D 沒了
+```
+
+同一個 context 裡也會自己蓋自己(700ms 的 debounce 一多就重疊)。
+**匯出的 log 少了什麼,和發生了什麼完全沒有關係。**
+
+修法:每個 scope 一把鑰匙(`diag:content` / `diag:worker` / `diag:popup`),
+讀的時候合併排序;同一個 context 裡的 flush 串成 promise chain。
+兩邊各自 300 則,不再互相擠掉對方。
+
+### CR-2. 自己的雜訊把自己的訊號擠掉
+
+`clip-to-container` 佔掉了那份 log 300 格裡的 250 格。它的守門條件是
+「`clipped` 變了才寫」,而 `clipped` 每次 flush 都在 2↔12 之間跳 ——
+等於沒有守門。使用者問「為什麼還有 L0」,能回答的那幾行早就被擠掉了。
+
+真正的訊號是 `noClipper`(大 = 根本沒找到捲動容器),它是穩定的。
+改成只有 `noClipper` 變了才進 log,`clipped` 的抖動降級給 `dbg`。
+
+**日誌的容量是有限的,寫進去的每一則都在擠掉別的東西。**
+
+### CR-3. 兩側的佇列並排
+
+`page-status` 這條訊息在協定裡宣告了很久,從來沒有人實作它。現在實作了:
+worker 回報佇列深度,報告把它和內容腳本這一側並排:
+
+```
+- L1 佇列:頁面認為 5 塊在排隊(最舊 132s)· worker 佇列本頁 0 / 全部 0
+  - **兩側對不起來:訊息掉在中間,或譯文送回來時掉了**
+```
+
+一個數字看不出東西,兩個數字擺在一起才有對帳的可能。
+
+## CS. `send()` 的註解是假的
+
+```ts
+chrome.runtime.sendMessage(msg).catch(() => {
+  /* service worker 正在回收,下一次動作會重試 */
+});
+```
+
+對 `enqueue` 來說**沒有下一次動作**:`queueUpgrade()` 送出的當下就把區塊
+標成 `l1Queued = true`,訊息掉了就沒有人會再送一次,那一塊從此停在 L0。
+
+而 MV3 的 service worker 閒置 30 秒就回收,回收與喚醒之間
+`chrome.runtime.sendMessage` 會直接 reject —— 這不是罕見狀況,
+是**每一頁安靜幾十秒之後的常態**。§CQ 的看門狗會在 45 秒後接手,
+但那是止血,不是修好。
+
+現在重試三次(300 / 600ms),三次都失敗才記一筆 `send-failed`。
+重試是安全的:`enqueue` 在 worker 端以 id 去重,`reprioritize` 與
+`drop-page` 本來就冪等。
+
+## CT. 缺句補一次
+
+`5 個區塊未通過 id 紀律檢查 (missing-id)` —— 那五塊當場變成 `l1-failed`,
+唯一的出路是使用者自己滑上去重試。於是每一頁都剩下幾塊沒升級,
+而且每次剩的都不一樣:「還是有 L0,只是換不同點了」。
+
+缺的那幾筆原封不動丟回同一個佇列,由排程器和別的區塊重新湊批。
+這**不是** §5.4 說的「縮小 chunk 再戰追缺句」:沒有切小、沒有改協定,
+和「整批回 0 筆就重送」同一個道理。`attempts` 卡上限,只補一次。
+
+對滑(`echo-swap`)不在此列 —— 那是整批不可信,重送也還是不可信。
+
+## CU. `aria-hidden` 不等於看不見
+
+使用者:「像這個標題沒翻……這看起來是有點搞笑。」
+
+```html
+<h1 aria-label="Anthropic's approach to teaching and learning AI">
+  <span class="word" aria-hidden="true">Anthropic's</span>
+  <span class="word" aria-hidden="true">approach</span> …
+```
+
+這是逐字進場動畫的標準寫法:整句話放進 `aria-label` 給螢幕閱讀器,
+畫面上真正看得到的每一個字標成 `aria-hidden`,免得讀兩次。
+而 `EXCLUDE_SELECTOR` 的第一項就是 `[aria-hidden="true"]` ——
+於是**整頁最大的那行字,因為對螢幕閱讀器隱藏,所以對眼睛也不翻了。**
+
+`aria-hidden` 的定義是「對輔助技術隱藏」,Kasanemu 疊的是**眼睛看到的東西**。
+兩者不只是不同,常常剛好相反。真正的「看不見」由 CSS 回答,
+而那個判斷本來就有(`isInvisible` / sr-only / `getClientRects`)。
+
+新規則:`aria-hidden="true"` **而且畫面上沒有繪製面積**才排除。
+Gmail 那個 `<div role="tooltip" aria-hidden="true">Download</div>` 是
+display:none 的,照樣擋得住 —— 原本要擋的那一半一個都沒放掉。
+
+fixture 兩個方向都放了(§CM):看得見的逐字標題要翻成**一塊**,
+display:none 的提示框不能翻。把規則改回舊版,probe 立刻報
+`aria-hidden 逐字標題:整行沒翻`。

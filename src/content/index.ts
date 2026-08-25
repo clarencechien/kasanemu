@@ -11,7 +11,7 @@ import type {
 import { setDebug, dbg } from '../shared/log';
 import { diag, setDiagScope } from '../shared/diag';
 import {
-  EXCLUDE_SELECTOR,
+  inExcluded,
   INTERACTIVE_SELECTOR,
   explainCandidate,
   findCandidates,
@@ -234,6 +234,7 @@ let lastOverflowCount = -1;
 let lastHiddenCount = -1;
 /** 被容器裁到的疊層數 */
 let lastClippedCount = -1;
+let lastNoClipper = -1;
 let lastShiftBucket = '';
 let lastTopBand = -1;
 let lastBottomBand = -1;
@@ -318,9 +319,32 @@ function onRouteChange(): void {
   updateHud();
 }
 
-function send(msg: ToWorker): void {
-  chrome.runtime.sendMessage(msg).catch(() => {
-    /* service worker 正在回收,下一次動作會重試 */
+/**
+ * 送給 worker 的訊息。**會重試。**
+ *
+ * 原本這裡是 `.catch(() => {})`,註解寫「service worker 正在回收,
+ * 下一次動作會重試」—— 那句話對 `enqueue` 是假的:**沒有下一次動作**。
+ * `queueUpgrade` 送出的當下就把區塊標成 `l1Queued = true`,
+ * 訊息掉了就沒有人會再送一次,那一塊從此停在 L0。
+ *
+ * 而 MV3 的 service worker 閒置 30 秒就會被回收,回收與喚醒之間
+ * `chrome.runtime.sendMessage` 會直接 reject(「Could not establish
+ * connection」)—— 這不是罕見狀況,是**每一頁安靜幾十秒之後的常態**。
+ *
+ * 重試是安全的:`enqueue` 在 worker 端以 id 去重、`reprioritize`
+ * 與 `drop-page` 本來就是冪等的。三次都失敗才記一筆 error,
+ * 因為那時候看門狗會接手,但總要有人說出「訊息根本沒送出去」。
+ */
+function send(msg: ToWorker, left = 3): void {
+  chrome.runtime.sendMessage(msg).catch((e: unknown) => {
+    if (left > 1) {
+      window.setTimeout(() => send(msg, left - 1), (4 - left) * 300);
+      return;
+    }
+    diag('error', 'send-failed', {
+      kind: msg.type,
+      err: String((e as Error)?.message ?? e),
+    });
   });
 }
 
@@ -1202,7 +1226,7 @@ function adhocLabelAt(target: EventTarget | null): Unit | null {
     if (adhocRejected.has(el)) continue;
     if (labels.size >= ANNOTATION_CAP) return null;
     // 排除清單(.notranslate、分享 widget…)對臨時加翻同樣有效
-    if (el.closest(EXCLUDE_SELECTOR)) {
+    if (inExcluded(el)) {
       adhocRejected.add(el);
       continue;
     }
@@ -1894,9 +1918,26 @@ function pageStats(): PageStats {
       innerScroll: sawInnerScroll,
       pinned: pinnedCount,
     },
+    l1Queue: l1QueueView(),
+    pageKey,
     swapsOffscreen,
     swapsTotal,
   };
+}
+
+/** 內容腳本認為還在 L1 佇列裡的區塊 —— 拿去和 worker 的數字對 */
+function l1QueueView(): { queued: number; oldestMs: number; retried: number } {
+  const now = Date.now();
+  let queued = 0;
+  let oldest = 0;
+  let retried = 0;
+  for (const u of units) {
+    if (u.l1Retries) retried++;
+    if (!u.l1Queued || u.l1Text !== undefined) continue;
+    queued++;
+    oldest = Math.max(oldest, now - (u.upgradeQueuedAt ?? now));
+  }
+  return { queued, oldestMs: Math.round(oldest), retried };
 }
 
 /* ------------------------------------------------------------ 生命週期 */
@@ -2282,8 +2323,21 @@ function applyChromeClip(): void {
     lastClippedCount = clipped;
     let noClipper = 0;
     for (const u of units) if (u.box && clippers(u).length === 0) noClipper++;
-    // noClipper 大 = 我根本沒找到那個捲動容器,而不是「裁了但不夠」
-    diag('info', 'clip-to-container', { clipped, noClipper, total: units.size });
+    /*
+     * **只有 noClipper 變了才寫進診斷 log。**
+     *
+     * `clipped` 每次 flush 都在 2↔12 之間跳(捲一下就變),於是這一則
+     * 在上一份 log 的 300 格環狀緩衝裡佔掉了 250 格 —— 使用者問
+     * 「為什麼還有 L0」,而唯一能回答的那幾行早就被自己的雜訊擠掉了。
+     *
+     * 真正的訊號是 noClipper:大 = 我根本沒找到那個捲動容器。
+     * clipped 的抖動留給 dbg,devtools 開著才看得到。
+     */
+    dbg('clip-to-container', clipped, noClipper, units.size);
+    if (noClipper !== lastNoClipper) {
+      lastNoClipper = noClipper;
+      diag('info', 'clip-to-container', { clipped, noClipper, total: units.size });
+    }
   }
 }
 
