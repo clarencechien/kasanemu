@@ -79,3 +79,6 @@ footer { display: flex; justify-content: space-between; border-top: 1px solid va
 #by-pipeline td:first-child { color: var(--dim); }
 
 .ver { color: var(--dim); font-size: 10px; margin-left: auto; font-variant-numeric: tabular-nums; }
+
+label.check { display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; }
+label.check input { margin: 0; }

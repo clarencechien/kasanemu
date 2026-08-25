@@ -191,6 +191,52 @@ function makePageKey(): string {
   return `${location.origin}${location.pathname}`;
 }
 
+/**
+ * 換頁的偵測用 href,不是 page key。
+ *
+ * page key 只到 pathname —— 那是給 §8 的成本計數用的,粒度刻意粗。
+ * 但「使用者跳到另一個頁面了」這件事要更敏感:`?page=2` 的分頁、
+ * hash 路由的 SPA 都是新內容,不該沿用上一頁按下的「翻譯這一頁」。
+ */
+let lastHref = location.href;
+
+/**
+ * 換頁了。
+ *
+ * 回報:「在啟用的情況下,在同一頁點超連結跳轉後會開始自動翻譯新的內容」。
+ * SPA 換路由時 content script 不會重載,於是上一頁按下的 manualArmed
+ * 一路帶到新頁面 —— 使用者按的是「翻**這一頁**」,不是「從今以後每一頁」。
+ *
+ * 整頁重新載入沒有這個問題(content script 是新的),所以這裡只處理
+ * 同一份 document 內的換頁。
+ */
+function onRouteChange(): void {
+  const href = location.href;
+  if (href === lastHref) return;
+  lastHref = href;
+  const key = makePageKey();
+  if (key !== pageKey) {
+    send({ type: 'drop-page', pageKey });
+    pageKey = key;
+    unlockScales(units); // §4.4 規則 3
+  }
+  // 新頁面要重新表達意圖;開了自動翻譯的人不受影響(intake 自己會判斷)
+  manualArmed = false;
+  lastProblem = '';
+  emptyScans = 0;
+  firstPaintMs = -1;
+  // 上一頁的貼片與標籤單元不屬於這一頁
+  closeChip(true);
+  selectionUnit = null;
+  for (const u of labels) unitById.delete(u.id);
+  labels.clear();
+  labelByEl = new WeakMap<Element, Unit>();
+  labelMemo.clear();
+  labelQueuedText.clear();
+  diag('info', 'route-change', { pageKey, autoTranslate: settings.autoTranslate });
+  updateHud();
+}
+
 function send(msg: ToWorker): void {
   chrome.runtime.sendMessage(msg).catch(() => {
     /* service worker 正在回收,下一次動作會重試 */
@@ -1484,13 +1530,7 @@ async function start(): Promise<void> {
     for (const r of records) {
       if (r.target instanceof Element && r.target.id === 'kasanemu-root') return;
     }
-    // SPA 換路由後 pathname 會變,重新起一個 page key(§8 第 3 層的計數跟著換頁)
-    const key = makePageKey();
-    if (key !== pageKey) {
-      send({ type: 'drop-page', pageKey });
-      pageKey = key;
-      unlockScales(units); // §4.4 規則 3
-    }
+    onRouteChange();
     scheduleFlush(true);
   });
   mo.observe(document.body, { childList: true, characterData: true, subtree: true });
@@ -1507,6 +1547,9 @@ async function start(): Promise<void> {
   // 但 capture 階段會經過 document —— 沒有這個,輪播一捲整排疊層就錯位
   document.addEventListener('scroll', onScroll, { passive: true, capture: true });
   window.addEventListener('pagehide', onPageHide);
+  // 上一頁 / 下一頁與 hash 路由不一定改動 DOM,MutationObserver 打不到
+  window.addEventListener('popstate', onRouteChange);
+  window.addEventListener('hashchange', onRouteChange);
   // 入場動畫結束 → 位置定了,重新量一次
   document.addEventListener('transitionend', onMotionEnd, true);
   document.addEventListener('animationend', onMotionEnd, true);
@@ -1731,6 +1774,8 @@ function stop(): void {
   window.removeEventListener('resize', relayout);
   document.removeEventListener('scroll', onScroll, { capture: true } as EventListenerOptions);
   window.removeEventListener('pagehide', onPageHide);
+  window.removeEventListener('popstate', onRouteChange);
+  window.removeEventListener('hashchange', onRouteChange);
   document.removeEventListener('transitionend', onMotionEnd, true);
   document.removeEventListener('animationend', onMotionEnd, true);
   document.removeEventListener('load', onResourceLoad, true);
@@ -1763,6 +1808,7 @@ function stop(): void {
   labelMemo.clear();
   labelQueuedText.clear();
   labelByEl = new WeakMap<Element, Unit>();
+  lastHref = location.href;
   // nextId 刻意不重置:worker 佇列裡可能還有已送出的舊 id,
   // 重新從 u1 開始會讓那些結果套到完全不同的區塊上 —— 自己製造 id 對滑。
   // §6.1 說 id 是「本頁單調遞增的穩定 id」,跨 stop/start 也維持單調。

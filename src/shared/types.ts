@@ -154,7 +154,15 @@ export const DEFAULT_SETTINGS: Settings = {
   l0SourceLang: 'en',
   upgradeDwellMs: 1500,
   noTranslateTerms: [],
-  autoTranslate: true,
+  /*
+   * 預設**不**自動翻。
+   *
+   * 競品多半一進站就整頁翻,但使用者的原話是「我沒有要每頁都翻,
+   * 也不是這樣燒 token 的」。啟用 = 這個網域我要用 Kasanemu;
+   * 真的要翻是另一個動作(popup 的按鈕 / Alt+Shift+R)。
+   * 想要競品那種行為的人把這個打開就有。
+   */
+  autoTranslate: false,
   hud: true,
   overlayBleedPx: 2,
   occlusionCheck: true,
