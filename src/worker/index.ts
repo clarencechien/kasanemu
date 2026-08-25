@@ -90,7 +90,7 @@ chrome.runtime.onMessage.addListener((raw: ToWorker, sender, reply) => {
         }
         case 'cache-probe': {
           // feature.md §4.6 / D23:純讀,不碰保險絲也不排佇列
-          reply(await cacheProbe(raw.tier, raw.units));
+          reply(await cacheProbe(raw.tier, raw.units, raw.pageKey ?? ''));
           break;
         }
         case 'reprioritize': {

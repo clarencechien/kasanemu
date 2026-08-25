@@ -1,3 +1,4 @@
+import type { Glossary, Term } from './glossary';
 import type { Tier } from './models';
 
 export type DisplayMode = 'full' | 'peek';
@@ -98,8 +99,25 @@ export interface Settings {
   l0SourceLang: string;
   /** feature.md §4.2 第 2 條:可見區停留超過這個時間才排入 L1 (D21) */
   upgradeDwellMs: number;
-  /** feature.md §3.4 不翻清單(公司名、產品名、人名),以佔位符保護 */
+  /**
+   * feature.md §3.4 不翻清單 —— **舊欄位,已被詞表取代**(`plan-glossary.md` §9)。
+   * 讀取時搬進 `globalGlossary`,保留一輪相容,下一版拿掉。
+   */
   noTranslateTerms: string[];
+  /** 一律生效的詞,不需要掛網域 */
+  globalGlossary: Term[];
+  /** 具名詞表。key 是穩定 id,不是 name —— 改名不該讓網域綁定失效 */
+  glossaries: Record<string, Glossary>;
+  /** host pattern → 詞表 id[]。pattern 支援前綴 `*.` */
+  glossaryBinding: Record<string, string[]>;
+  /**
+   * 路徑 B:把詞表也寫進 system prompt。
+   * 'auto' = 依檔位的 `glossaryPrompt` 能力旗標決定(`plan-glossary.md` §5)。
+   *
+   * **關掉不代表詞表失效** —— 詞表一律以佔位符生效,
+   * 這個開關只決定要不要額外請模型配合。
+   */
+  glossaryPrompt: 'auto' | 'on' | 'off';
   /**
    * 啟用後是否自動翻譯可見區(PRD §7.1 的行為)。
    * 關掉就必須按 popup 的「翻譯這一頁」或 Alt+R 才開始 ——
@@ -164,6 +182,10 @@ export const DEFAULT_SETTINGS: Settings = {
   l0SourceLang: 'en',
   upgradeDwellMs: 1500,
   noTranslateTerms: [],
+  globalGlossary: [],
+  glossaries: {},
+  glossaryBinding: {},
+  glossaryPrompt: 'auto',
   /*
    * 預設**不**自動翻。
    *

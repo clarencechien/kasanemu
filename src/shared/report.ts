@@ -123,6 +123,14 @@ export function buildReport(i: ReportInput): string {
         lines.push('  - **兩側對不起來:訊息掉在中間,或譯文送回來時掉了**');
       }
     }
+    const gl = i.stats.glossary;
+    if (gl && (gl.terms > 0 || gl.names.length > 0)) {
+      lines.push(
+        `- 詞表:${gl.terms} 條生效` +
+          (gl.names.length > 0 ? ` · 命中「${gl.names.join('」「')}」` : ' · 只有全域') +
+          ` · prompt ${gl.inPrompt ? '開' : '關(仍以佔位符生效)'}`,
+      );
+    }
     const big = i.stats.oversized ?? [];
     if (big.length > 0) {
       lines.push(`- **太長被擋掉 ${big.length} 塊**(疑似容器誤判):`);

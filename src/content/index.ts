@@ -54,6 +54,8 @@ import {
   translationPhase,
 } from './upgrade';
 import { mask, protectedFragments } from './mask';
+import { matchedGlossaries, resolveGlossary, type Term } from '../shared/glossary';
+import { TIERS } from '../shared/models';
 import { HOST_ID, OverlayLayer, type ChipItem } from './overlay';
 import {
   hintColor,
@@ -131,6 +133,11 @@ function lookaheadPx(): number {
 const host = location.hostname;
 
 let settings: Settings;
+/**
+ * 這個網域實際生效的詞表(`docs/plan-glossary.md` §3)。
+ * 設定一改就重算 —— 不要每個區塊各算一次,那是每頁幾百次的重複工作。
+ */
+let glossary: Term[] = [];
 let state: DomainState;
 let layer: OverlayLayer | null = null;
 
@@ -791,6 +798,7 @@ async function probeCache(list: Unit[]): Promise<Map<string, string>> {
     type: 'cache-probe',
     tier: state.tier,
     units: list.map((u) => ({ id: u.id, src: u.src, maxChars: u.maxChars })),
+    pageKey,
   });
   for (const h of res?.hits ?? []) out.set(h.id, h.t);
   return out;
@@ -813,7 +821,7 @@ async function runL0(list: Unit[]): Promise<void> {
       if (u.l1Text !== undefined) return;
       u.l0Tries = (u.l0Tries ?? 0) + 1;
       // §3.4 送出前把行內 code 與不翻清單換成佔位符
-      const masked = mask(u.src, protectedFragments(u.el, settings.noTranslateTerms));
+      const masked = mask(u.src, protectedFragments(u.el, glossary));
       // 距視窗中心越近越先翻 —— 捲到新一屏時會插隊到預翻的遠處區塊前面
       // 優先度傳 thunk,不傳數字 —— 佇列在出隊時才問「現在離視窗多遠」。
       // 傳數字的話,捲動之前入隊的區塊會帶著過期的順序卡在佇列深處(見 l0.ts slot())
@@ -1459,7 +1467,7 @@ async function translateLabel(u: Unit): Promise<void> {
   adoptMemo(u);
   if (u.tier !== 'pending') return;
   if (!usesL0(effective) || !l0) return;
-  const masked = mask(u.src, protectedFragments(u.el, settings.noTranslateTerms));
+  const masked = mask(u.src, protectedFragments(u.el, glossary));
   // 使用者正指著它 —— 優先度最高,插到所有預翻的區塊前面
   const raw = await l0.translate(masked.text, -1);
   if (u.tier !== 'pending') return; // 期間快取或 L1 已經回來了
@@ -1967,6 +1975,13 @@ function pageStats(): PageStats {
     },
     l1Queue: l1QueueView(),
     pageKey,
+    glossary: {
+      names: matchedGlossaries(host, settings),
+      terms: glossary.length,
+      inPrompt:
+        settings.glossaryPrompt === 'on' ||
+        (settings.glossaryPrompt !== 'off' && TIERS[state.tier].glossaryPrompt),
+    },
     swapsOffscreen,
     swapsTotal,
   };
@@ -3069,7 +3084,14 @@ chrome.storage.onChanged.addListener((changes, area) => {
       const next = await ask<Settings>({ type: 'get-settings' });
       if (!next) return;
       settings = next;
+      glossary = resolveGlossary(host, settings);
       setDebug(settings.debug);
+      /*
+       * 詞表改了 → 已經翻好的譯文是用舊詞表翻的。
+       * 快取 key 帶了詞表指紋(§6),所以重翻不會拿到舊的;
+       * 但已經畫在畫面上的那些不會自己更新 —— 那是使用者按
+       * 「翻譯這一頁」的守備範圍,不在設定變更時自動重翻(要花錢)。
+       */
       // weightOffset / hintLine 之類的改動要整頁重算
       for (const u of units) u.style = probeStyle(u.el, settings.weightOffset);
       relayout();
@@ -3086,6 +3108,7 @@ async function boot(): Promise<void> {
   const d = await ask<DomainState>({ type: 'get-domain-state', host });
   if (!s || !d) return; // worker 還沒起來,storage.onChanged 會再叫一次
   settings = s;
+  glossary = resolveGlossary(host, settings);
   state = d;
   setDebug(settings.debug);
   if (state.enabled) await start();

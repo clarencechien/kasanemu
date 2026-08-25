@@ -25,7 +25,13 @@ export type ToWorker =
    * feature.md §4.6 / D23:快取命中時跳過 L0,直接以 L1 譯文渲染,
    * 所以 L0 之前要先便宜地問一次快取。這條路徑不碰保險絲、不碰 token bucket。
    */
-  | { type: 'cache-probe'; tier: Tier; units: Array<{ id: string; src: string; maxChars: number }> }
+  | {
+      type: 'cache-probe';
+      tier: Tier;
+      units: Array<{ id: string; src: string; maxChars: number }>;
+      /** 詞表以網域為範圍,所以快取 key 也要知道是哪一頁 */
+      pageKey?: string;
+    }
   /** feature.md §4.2 使用者捲動時重排佇列;已送出的請求不取消 */
   | { type: 'reprioritize'; pageKey: string; priorities: Record<string, number> }
   | { type: 'drop-page'; pageKey: string }
@@ -125,6 +131,11 @@ export interface PageStats {
   l1Queue?: { queued: number; oldestMs: number; retried: number };
   /** 這一頁在 worker 佇列裡的鍵 —— popup 要拿它去問對面的深度 */
   pageKey?: string;
+  /**
+   * 這個網域命中的詞表。沒有這一行的話,「我明明設了」與
+   * 「pattern 沒對上」看起來一模一樣(`docs/plan-glossary.md` §8)。
+   */
+  glossary?: { names: string[]; terms: number; inPrompt: boolean };
   /** feature.md §2.2「L0 讀完就沒再看 L1」:替換時該區塊已離開可見區的次數 */
   swapsOffscreen: number;
   swapsTotal: number;

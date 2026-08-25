@@ -1,3 +1,5 @@
+import type { Term } from '../shared/glossary';
+
 /**
  * feature.md §3.4 L0 的過濾前處理。
  *
@@ -15,7 +17,7 @@ const PUA_END = 0xf8ff;
 export interface Masked {
   /** 送去翻譯的文字 */
   text: string;
-  /** 被保護的片段,依佔位符順序 */
+  /** 每個佔位符還原成什麼,依佔位符順序 */
   tokens: string[];
   /**
    * 把譯文裡的佔位符換回原文片段。
@@ -39,23 +41,59 @@ export function hasPua(text: string): boolean {
 }
 
 /**
- * 以佔位符保護 `protect` 裡的片段。
- * 長的先換,否則短片段會先把長片段切碎(例如同時保護 "Chrome" 與 "Chrome OS")。
+ * 全部取代。大小寫不敏感時在小寫化的副本上找位置,但**切原字串** ——
+ * 不能拿小寫化的結果當輸出,那會把句子裡其他字的大小寫一起改掉。
  */
-export function mask(src: string, protect: readonly string[]): Masked {
-  const wanted = [...new Set(protect.map((s) => s.trim()).filter((s) => s.length > 0))].sort(
-    (a, b) => b.length - a.length,
-  );
+function replaceAll(text: string, from: string, to: string, cs: boolean): string {
+  if (cs) return text.split(from).join(to);
+  const hay = text.toLowerCase();
+  const needle = from.toLowerCase();
+  let out = '';
+  let i = 0;
+  for (;;) {
+    const at = hay.indexOf(needle, i);
+    if (at < 0) return out + text.slice(i);
+    out += text.slice(i, at) + to;
+    i = at + from.length;
+  }
+}
+
+/**
+ * 以佔位符保護 / 替換 `protect` 裡的詞。
+ *
+ * 長的先換,否則短片段會先把長片段切碎(同時保護 "Chrome" 與 "Chrome OS")。
+ *
+ * **「不翻」與「譯成 B」是同一個機制**,只差 restore 時填什麼:
+ * `to` 省略就填回原字串(舊的 noTranslateTerms 行為),
+ * 有 `to` 就填目標字串。模型從頭到尾沒看到那個詞,所以這條路
+ * 對所有檔位、甚至對沒有 prompt 的 L0 都成立(`plan-glossary.md` §2)。
+ */
+export function mask(src: string, protect: readonly Term[]): Masked {
+  const seen = new Set<string>();
+  const wanted: Term[] = [];
+  for (const t of protect) {
+    const from = t.from.trim();
+    if (from.length === 0) continue;
+    const key = `${t.cs === true ? 'S' : 'i'} ${from.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    wanted.push({ ...t, from });
+  }
+  wanted.sort((a, b) => b.from.length - a.from.length);
+
   const tokens: string[] = [];
   let text = src;
 
   if (!hasPua(src)) {
-    for (const frag of wanted) {
+    for (const t of wanted) {
       if (tokens.length >= PUA_END - PUA_START) break;
-      if (!text.includes(frag)) continue;
+      const cs = t.cs === true;
+      const hit = cs ? text.includes(t.from) : text.toLowerCase().includes(t.from.toLowerCase());
+      if (!hit) continue;
       const ph = placeholder(tokens.length);
-      text = text.split(frag).join(ph);
-      tokens.push(frag);
+      text = replaceAll(text, t.from, ph, cs);
+      // 還原成目標字串;沒有 to 就是原字串(= 不翻)
+      tokens.push(t.to ?? t.from);
     }
   }
 
@@ -79,19 +117,16 @@ export function mask(src: string, protect: readonly string[]): Masked {
  * 行內 code / kbd / samp / var(Phase 1 §3.1 只擋掉獨立的 code / pre 區塊,
  * 段落中的行內 code 還在),加上使用者維護的不翻清單。
  */
-export function protectedFragments(el: Element, terms: readonly string[]): string[] {
-  const out: string[] = [];
+export function protectedFragments(el: Element, terms: readonly Term[]): Term[] {
+  const out: Term[] = [];
   // translate="no" / .notranslate 是「留在句子裡但不要翻」,
   // 與行內 code 同一類問題,所以走同一條佔位符路徑
   for (const node of el.querySelectorAll(
     'code,kbd,samp,var,tt,abbr[title],[translate="no"],.notranslate',
   )) {
     const t = (node.textContent ?? '').replace(/\s+/g, ' ').trim();
-    if (t.length > 0) out.push(t);
+    // 這些是「原樣保留」,永遠大小寫敏感 —— 程式碼片段不能被當成同一個詞
+    if (t.length > 0) out.push({ from: t, cs: true });
   }
-  const src = (el.textContent ?? '').replace(/\s+/g, ' ');
-  for (const term of terms) {
-    if (term.trim().length > 0 && src.includes(term)) out.push(term);
-  }
-  return out;
+  return [...out, ...terms];
 }

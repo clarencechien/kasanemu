@@ -105,6 +105,16 @@ function renderL0(): void {
   }
 }
 
+/**
+ * 詞表這一行。**設了沒生效與 pattern 沒對上長得一模一樣**,
+ * 所以要說出「這個網域命中了誰、共幾條」(`docs/plan-glossary.md` §8)。
+ */
+function glossaryLine(g: PageStats['glossary']): string {
+  if (!g || g.terms === 0) return '';
+  const who = g.names.length > 0 ? g.names.join('、') : '全域';
+  return `\n詞表 ${who} · ${g.terms} 條${g.inPrompt ? '' : '(佔位符)'}`;
+}
+
 function renderPageTiers(): void {
   const el = $('page-tiers');
   const warn = $('page-warn');
@@ -118,7 +128,8 @@ function renderPageTiers(): void {
   el.textContent =
     `L0 ${c.l0} · L1 ${c.l1} · 失敗 ${c.failed + c['l1-failed']} · ` +
     `待譯 ${c.pending + c['l0-failed']} · 跳過 ${c.skipped}\n首屏 ${first}` +
-    (stats.swapsTotal > 0 ? ` · 替換 ${stats.swapsTotal}(離屏 ${stats.swapsOffscreen})` : '');
+    (stats.swapsTotal > 0 ? ` · 替換 ${stats.swapsTotal}(離屏 ${stats.swapsOffscreen})` : '') +
+    glossaryLine(stats.glossary);
   // feature.md §5.2:L1 = 0 且佇列非空超過 10 秒就要明確警示,不要靜靜地不動
   if (stats.stalled) {
     warn.textContent = `L1 一個都沒回來,已等 ${Math.round(

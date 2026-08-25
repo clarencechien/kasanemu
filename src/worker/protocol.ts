@@ -1,4 +1,5 @@
 import type { UnitFailure, UnitRequest, UnitResult } from '../shared/types';
+import type { Term } from '../shared/glossary';
 
 /** 粗估 token 數,只用來卡 batch 的輸入軟上限 (§5.4),寧可高估 */
 const CJK_RANGE = /[\u3000-\u303f\u3400-\u9fff\uf900-\ufaff\uff00-\uffef]/;
@@ -26,9 +27,18 @@ const SYSTEM_PROMPT = [
   '7. 輸入有幾筆就輸出幾筆,不得漏、不得多。',
 ].join('\n');
 
-export function systemPrompt(targetLang: string): string {
+/**
+ * @param glossary 路徑 B 的詞表(`docs/plan-glossary.md` §4.2)。
+ *   只放**有 `to` 而且這一批真的用得到**的詞 —— 呼叫端用 `promptTerms()`
+ *   篩過了。沒有 `to` 的詞已經被佔位符處理掉,再寫進來只是浪費 token,
+ *   又稀釋前面七條 id 紀律的規則,而那對 free 檔是不能動的東西。
+ */
+export function systemPrompt(targetLang: string, glossary: readonly Term[] = []): string {
   const langName = targetLang === 'zh-TW' ? '繁體中文(台灣用語)' : targetLang;
-  return `${SYSTEM_PROMPT}\n8. 目標語言:${langName}。`;
+  const base = `${SYSTEM_PROMPT}\n8. 目標語言:${langName}。`;
+  if (glossary.length === 0) return base;
+  const lines = glossary.map((t) => `   ${t.from} → ${t.to ?? t.from}`).join('\n');
+  return `${base}\n9. 詞表(遇到左邊的詞,譯文一律採用右邊的說法,不要自己另譯):\n${lines}`;
 }
 
 export function userPayload(units: UnitRequest[]): string {

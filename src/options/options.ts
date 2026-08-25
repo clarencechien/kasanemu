@@ -2,6 +2,12 @@ import type { ToWorker } from '../shared/messages';
 import { TIERS, TIER_ORDER, type Tier } from '../shared/models';
 import type { Settings } from '../shared/types';
 import type { CacheDump } from '../worker/cache';
+import {
+  formatTerms,
+  parseTerms,
+  type Glossary,
+  type Term,
+} from '../shared/glossary';
 
 interface ModelCheck {
   at: number;
@@ -119,24 +125,176 @@ function renderCheck(check: ModelCheck | undefined): void {
   }
 }
 
-/** feature.md §3.4 不翻清單:一行一個,存成陣列 */
-function bindNoTranslate(): void {
-  const box = document.querySelector<HTMLTextAreaElement>('#no-translate');
-  if (!box) return;
-  box.value = settings.noTranslateTerms.join('\n');
-  box.addEventListener('change', () => {
-    const terms = box.value
-      .split('\n')
-      .map((t) => t.trim())
-      .filter((t) => t.length > 0);
-    void save({ noTranslateTerms: terms });
+/**
+ * 詞表(`docs/plan-glossary.md`)。三個 textarea:全域、具名、綁定。
+ *
+ * 具名詞表用 `=== 名字` 分段。用文字而不是一堆增刪按鈕,是因為
+ * 這種東西的實際維護方式是**貼進去、整段改** —— 一次改一條的 UI
+ * 在真的要整理五十個術語時反而礙事。
+ */
+function bindGlossary(): void {
+  const g = document.querySelector<HTMLTextAreaElement>('#global-glossary');
+  const named = document.querySelector<HTMLTextAreaElement>('#glossaries');
+  const bind = document.querySelector<HTMLTextAreaElement>('#glossary-binding');
+  if (!g || !named || !bind) return;
+
+  g.value = formatTerms(settings.globalGlossary);
+  named.value = formatGlossaries(settings.glossaries);
+  bind.value = formatBinding(settings.glossaries, settings.glossaryBinding);
+
+  g.addEventListener('change', () => void save({ globalGlossary: parseTerms(g.value) }));
+  const saveNamed = (): void => {
+    const glossaries = parseGlossaries(named.value);
+    void save({
+      glossaries,
+      // 綁定寫的是名字,存的是 id —— 詞表改名時綁定要跟著走,所以一起重算
+      glossaryBinding: parseBinding(bind.value, glossaries),
+    });
+  };
+  named.addEventListener('change', saveNamed);
+  bind.addEventListener('change', saveNamed);
+}
+
+/** `=== 名字` 起一份新的;id 由名字推導,穩定且看得懂 */
+function parseGlossaries(text: string): Record<string, Glossary> {
+  const out: Record<string, Glossary> = {};
+  let name = '';
+  let buf: string[] = [];
+  const flush = (): void => {
+    if (name === '') return;
+    out[idOf(name)] = { name, terms: parseTerms(buf.join('\n')) };
+    buf = [];
+  };
+  for (const line of text.split('\n')) {
+    const m = /^\s*===\s*(.+?)\s*$/.exec(line);
+    if (m) {
+      flush();
+      name = m[1] ?? '';
+      continue;
+    }
+    buf.push(line);
+  }
+  flush();
+  return out;
+}
+
+function formatGlossaries(gs: Record<string, Glossary>): string {
+  return Object.values(gs)
+    .map((g) => `=== ${g.name}\n${formatTerms(g.terms)}`)
+    .join('\n\n');
+}
+
+function idOf(name: string): string {
+  return `g:${name.trim().toLowerCase()}`;
+}
+
+/** 綁定的 UI 是名字,存的是 id */
+function parseBinding(text: string, gs: Record<string, Glossary>): Record<string, string[]> {
+  const byName = new Map(Object.entries(gs).map(([id, g]) => [g.name.trim(), id]));
+  const out: Record<string, string[]> = {};
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (line.length === 0 || line.startsWith('#')) continue;
+    const m = /^(.*?)\s*(?:→|->)\s*(.*)$/.exec(line);
+    if (!m) continue;
+    const pattern = (m[1] ?? '').trim();
+    const ids = (m[2] ?? '')
+      .split(/[,、]/)
+      .map((n) => byName.get(n.trim()))
+      .filter((x): x is string => x !== undefined);
+    if (pattern.length > 0 && ids.length > 0) out[pattern] = ids;
+  }
+  return out;
+}
+
+function formatBinding(
+  gs: Record<string, Glossary>,
+  binding: Record<string, string[]>,
+): string {
+  return Object.entries(binding)
+    .map(([pattern, ids]) => {
+      const names = ids.map((id) => gs[id]?.name).filter((n): n is string => n !== undefined);
+      return names.length > 0 ? `${pattern} → ${names.join(', ')}` : '';
+    })
+    .filter((l) => l.length > 0)
+    .join('\n');
+}
+
+interface GlossaryDump {
+  v: 1;
+  at: number;
+  globalGlossary: Term[];
+  glossaries: Record<string, Glossary>;
+  glossaryBinding: Record<string, string[]>;
+}
+
+/**
+ * 詞表的匯出匯入。**和快取那組分開**,因為兩者的價值不一樣:
+ * 快取弄丟了再花一次錢就回得來,詞表弄丟了只能重打。
+ */
+function bindGlossaryIO(): void {
+  const note = document.querySelector<HTMLElement>('#glossary-note');
+  const file = document.querySelector<HTMLInputElement>('#glossary-file');
+  const exportBtn = document.querySelector<HTMLButtonElement>('#export-glossary');
+  const importBtn = document.querySelector<HTMLButtonElement>('#import-glossary');
+  if (!note || !file || !exportBtn || !importBtn) return;
+
+  exportBtn.addEventListener('click', () => {
+    const dump: GlossaryDump = {
+      v: 1,
+      at: Date.now(),
+      globalGlossary: settings.globalGlossary,
+      glossaries: settings.glossaries,
+      glossaryBinding: settings.glossaryBinding,
+    };
+    const json = JSON.stringify(dump, null, 2);
+    const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `kasanemu-glossary-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    const n = Object.keys(dump.glossaries).length;
+    note.textContent = `已匯出:全域 ${dump.globalGlossary.length} 條 · 具名 ${n} 份`;
+  });
+
+  importBtn.addEventListener('click', () => file.click());
+  file.addEventListener('change', () => {
+    const f = file.files?.[0];
+    file.value = ''; // 同一個檔連續匯入兩次也要觸發 change
+    if (!f) return;
+    void (async () => {
+      let dump: GlossaryDump;
+      try {
+        dump = JSON.parse(await f.text()) as GlossaryDump;
+        if (dump.v !== 1) throw new Error('版本不符');
+      } catch {
+        note.textContent = '讀不懂這個檔 —— 需要匯出時產生的 .json';
+        return;
+      }
+      /*
+       * **同名的以檔案為準,本機獨有的保留。**
+       * 快取那邊是「只補不覆蓋」,理由是現有的譯文不會比較差;
+       * 詞表相反 —— 還原備份時你要的就是檔案裡的那個版本。
+       */
+      const glossaries = { ...settings.glossaries, ...(dump.glossaries ?? {}) };
+      await save({
+        globalGlossary: dump.globalGlossary ?? settings.globalGlossary,
+        glossaries,
+        glossaryBinding: { ...settings.glossaryBinding, ...(dump.glossaryBinding ?? {}) },
+      });
+      bindGlossary(); // 三個 textarea 重畫
+      note.textContent =
+        `已匯入:全域 ${settings.globalGlossary.length} 條 · 具名 ${Object.keys(glossaries).length} 份`;
+    })();
   });
 }
 
 async function main(): Promise<void> {
   settings = await ask<Settings>({ type: 'get-settings' });
   renderSimpleFields();
-  bindNoTranslate();
+  bindGlossary();
+  bindGlossaryIO();
   renderTiers();
   const stored = await chrome.storage.local.get('modelCheck');
   renderCheck(stored['modelCheck'] as ModelCheck | undefined);

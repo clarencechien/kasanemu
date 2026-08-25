@@ -26,24 +26,24 @@ const PH0 = '';
 const PH1 = '';
 
 test('§3.4 佔位符是單一私用區字元,不是 __CODE_1__(開放問題 3)', () => {
-  const m = mask('Run npm install before the build.', ['npm install']);
+  const m = mask('Run npm install before the build.', [{ from: 'npm install' }]);
   assert.equal(m.text, `Run ${PH0} before the build.`);
   assert.equal(m.tokens.length, 1);
   assert.ok(!/[A-Za-z_]/.test(PH0));
 });
 
 test('還原:譯文裡的佔位符換回原文片段', () => {
-  const m = mask('Run npm install first.', ['npm install']);
+  const m = mask('Run npm install first.', [{ from: 'npm install' }]);
   assert.equal(m.restore(`請先執行 ${PH0}。`), '請先執行 npm install。');
 });
 
 test('佔位符遺失 → 回 null,不交出少了程式碼的譯文', () => {
-  const m = mask('Run npm install first.', ['npm install']);
+  const m = mask('Run npm install first.', [{ from: 'npm install' }]);
   assert.equal(m.restore('請先執行安裝指令。'), null);
 });
 
 test('長片段先換,短片段不會把長片段切碎', () => {
-  const m = mask('Chrome OS and Chrome differ.', ['Chrome', 'Chrome OS']);
+  const m = mask('Chrome OS and Chrome differ.', [{ from: 'Chrome' }, { from: 'Chrome OS' }]);
   // Chrome OS 先被換掉,剩下的 Chrome 才換
   assert.equal(m.tokens[0], 'Chrome OS');
   assert.equal(m.text, `${PH0} and ${PH1} differ.`);
@@ -51,14 +51,14 @@ test('長片段先換,短片段不會把長片段切碎', () => {
 });
 
 test('同一片段出現多次都會被保護,還原時全部換回', () => {
-  const m = mask('git push, then git push again.', ['git push']);
+  const m = mask('git push, then git push again.', [{ from: 'git push' }]);
   assert.equal(m.text, `${PH0}, then ${PH0} again.`);
   assert.equal(m.restore(`先 ${PH0},再 ${PH0} 一次。`), '先 git push,再 git push 一次。');
 });
 
 test('來源本來就含私用區字元 → 放棄保護,不製造撞號', () => {
   assert.equal(hasPua(`weird ${PH0} text`), true);
-  const m = mask(`weird ${PH0} npm install`, ['npm install']);
+  const m = mask(`weird ${PH0} npm install`, [{ from: 'npm install' }]);
   assert.equal(m.tokens.length, 0);
   assert.equal(m.text, `weird ${PH0} npm install`);
   // 沒有佔位符要還原,原樣回傳
@@ -76,8 +76,34 @@ test('§3.4 行內 code / kbd / samp 自動納入保護,加上不翻清單', () 
     '<!doctype html><body><p>Call <code>refreshOrigin()</code> then press <kbd>Alt+T</kbd> in Kasanemu.</p></body>',
   );
   const p = dom.window.document.querySelector('p')!;
-  const frags = protectedFragments(p, ['Kasanemu']);
-  assert.deepEqual(frags, ['refreshOrigin()', 'Alt+T', 'Kasanemu']);
+  const frags = protectedFragments(p, [{ from: 'Kasanemu' }]);
+  // 行內 code 那些一律大小寫敏感 —— 程式碼片段不能被當成同一個詞
+  assert.deepEqual(frags, [
+    { from: 'refreshOrigin()', cs: true },
+    { from: 'Alt+T', cs: true },
+    { from: 'Kasanemu' },
+  ]);
+});
+
+test('詞表:「譯成 B」和「不翻」是同一個機制,只差還原時填什麼', () => {
+  /*
+   * 模型從頭到尾沒看到那個詞 —— 它看到的是一個 PUA 字元。
+   * 所以這條路對所有檔位、甚至對沒有 prompt 的 L0 都成立
+   * (docs/plan-glossary.md §2 路徑 A)。
+   */
+  const m = mask('The embedding table is large.', [{ from: 'embedding', to: '嵌入向量' }]);
+  assert.ok(!m.text.includes('embedding'), '送出去的文字裡沒有那個詞');
+  assert.equal(m.restore(m.text.replace('table is large', '表格很大')), 'The 嵌入向量 表格很大.');
+});
+
+test('詞表:預設大小寫不敏感,但取代時不能把句子其他部分小寫化', () => {
+  const m = mask('The Embedding Table Is Large.', [{ from: 'embedding', to: '嵌入向量' }]);
+  assert.equal(m.restore(m.text), 'The 嵌入向量 Table Is Large.');
+});
+
+test('詞表:cs 開了就只認一模一樣的大小寫', () => {
+  const m = mask('An it department and IT policy.', [{ from: 'IT', to: '資訊科技', cs: true }]);
+  assert.equal(m.restore(m.text), 'An it department and 資訊科技 policy.');
 });
 
 /* ------------------------------------------------ 來源 / 目標語言 */
