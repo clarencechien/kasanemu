@@ -123,6 +123,8 @@ let probed = new WeakSet<Unit>();
 let pageKey = makePageKey();
 let hovered: Unit | null = null;
 let altScan = false;
+/** Alt+Shift+H:整層收起來(譯文留著,再按一次立刻回來) */
+let hiddenAll = false;
 
 /* ---------------------------------------------------------------- 加翻層 */
 /*
@@ -1224,7 +1226,7 @@ function armChipL1(u: Unit): void {
 }
 
 function openChip(u: Unit, immediate = false): void {
-  if (!settings.annotate || !running) return;
+  if (!settings.annotate || !running || hiddenAll) return;
   // 選取是明確的「我要這一段」,不受「只在 Alt 時顯示」與捲動靜默的限制
   if (!immediate) {
     if (settings.annotateAltOnly && !altScan) return;
@@ -1374,6 +1376,29 @@ function onKeyDown(e: KeyboardEvent): void {
     e.preventDefault();
     toggleDebugPanel();
   }
+  if (e.altKey && e.shiftKey && (e.key === 'H' || e.key === 'h')) {
+    e.preventDefault();
+    toggleHiddenAll();
+  }
+}
+
+/**
+ * 整層收起來 / 放回去。
+ *
+ * 使用者的原話:「目前有熱鍵是全拿掉 layer 嗎?」——
+ * 有 `Alt+Shift+T` 的點閱模式(滑過才顯示),但那不是「拿掉」。
+ * 這個是真的拿掉,連提示線都收,像沒裝這個擴充一樣。
+ *
+ * **刻意不停止翻譯**:譯文留在記憶體裡,再按一次立刻全部回來。
+ * 用 Alt+T 停用網域也能達到目的,但那會把整頁的成果丟掉,
+ * 想再看譯文就得重翻一次(而且要重新花錢)。
+ */
+function toggleHiddenAll(): void {
+  hiddenAll = !hiddenAll;
+  layer?.setHiddenAll(hiddenAll);
+  if (hiddenAll) closeChip(true);
+  diag('info', 'hidden-all', { on: hiddenAll });
+  updateHud();
 }
 
 function onKeyUp(e: KeyboardEvent): void {
@@ -1478,6 +1503,10 @@ function updateHud(): void {
     else farPending++;
   }
 
+  if (hiddenAll) {
+    layer.setHud('疊 · 疊層已收起 —— Alt+Shift+H 放回來', 'idle');
+    return;
+  }
   if (lastProblem) {
     layer.setHud(`疊 · ${lastProblem}`, 'warn');
     return;
@@ -2250,6 +2279,7 @@ function stop(): void {
   for (const u of units) layer?.drop(u);
   layer?.hideHud();
   manualArmed = false;
+  hiddenAll = false;
   lastProblem = '';
   units.clear();
   unitById.clear();

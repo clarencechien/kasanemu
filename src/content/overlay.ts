@@ -99,6 +99,15 @@ const LAYER_CSS = `
   border-radius: 5px;
 }
 .layer.alt-scan .box { opacity: 1; }
+/*
+ * 全部收起來(Alt+Shift+H)。
+ *
+ * 和「點閱模式」不一樣:點閱是滑過才顯示,這個是**整層完全不在**,
+ * 連提示線都收掉,像沒裝這個擴充一樣。用在「這一頁我想直接讀原文」。
+ *
+ * 刻意不停止翻譯:譯文留在記憶體裡,再按一次立刻全部回來,不必重翻。
+ */
+.layer.hidden-all { display: none; }
 /* 來源元素其實看不見(被裁切、隱藏的重複 DOM)→ 疊層也不該出現 */
 .box.covered, .hint.covered { display: none; }
 /*
@@ -413,6 +422,10 @@ export class OverlayLayer {
     unit.hint?.classList.toggle('covered', covered);
   }
 
+  setHiddenAll(on: boolean): void {
+    this.layer.classList.toggle('hidden-all', on);
+  }
+
   setAltScan(on: boolean): void {
     this.layer.classList.toggle('alt-scan', on);
   }
@@ -433,7 +446,20 @@ export class OverlayLayer {
     const s = unit.style;
     const box = unit.box;
     const annot = unit.annotation || settings.forceAnnotation;
-    box.className = `box${unit.singleLine ? ' single' : ''}${annot ? ' annotate' : ''}`;
+    /*
+     * 狀態 class 不能被重畫洗掉。
+     *
+     * `hovered`(正在看原文)、`covered`(來源看不見)、`stale`(座標還在動)
+     * 是**執行期狀態**,不是重畫的產物。整個 className 重指派會把它們清掉,
+     * 而 covered / stale 在 flush 迴圈裡緊接著被重設,只有 hovered 沒有 ——
+     * 於是 Gmail 上「滑上去只閃一下原文就蓋回來」:那裡 flush 一直在跑,
+     * 而滑鼠不動就不會再有 mouseover 事件把 hovered 加回去。
+     * 一般網頁 flush 很少,所以看不出來。
+     */
+    const keep = (box.className.match(/\b(?:hovered|covered|stale)\b/g) ?? []).join(' ');
+    box.className =
+      `box${unit.singleLine ? ' single' : ''}${annot ? ' annotate' : ''}` +
+      (keep ? ` ${keep}` : '');
     box.textContent = text;
     box.dataset['geom'] =
       `${Math.round(unit.rect.width)}×${Math.round(unit.rect.height)}` +
