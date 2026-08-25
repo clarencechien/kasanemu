@@ -5,6 +5,7 @@ import {
   MAX_UNIT_CHARS,
   findCandidates,
   findLabels,
+  findSvgTexts,
   hiddenByDisclosure,
   isMeaningfulText,
   looksLikeTargetLang,
@@ -985,4 +986,83 @@ test('自繪 UI 的 role="heading" 仍然是 UI 標籤', () => {
   // 上一條的反面:24 字門檻是為了 Gmail 左欄那種 <div role="heading"> 調的
   const body = mount('<div><div role="heading" aria-level="2">Labels</div><a href="#l">Starred</a></div>');
   assert.deepEqual(ids(body), []);
+});
+
+/* ------------------------------------------------ foreign element(svg / math) */
+
+/**
+ * jsdom 的 `getBoundingClientRect()` 一律回 0 —— 而 svg 走的是尺寸分流
+ * (行內圖示 vs 圖表)。給指定元素一個真的尺寸。
+ */
+function sized(body: Element, selector: string, w: number, h: number): void {
+  for (const el of body.querySelectorAll(selector)) {
+    el.getBoundingClientRect = () =>
+      ({ top: 0, left: 0, width: w, height: h, bottom: h, right: w }) as DOMRect;
+    el.getClientRects = () =>
+      [{ top: 0, left: 0, width: w, height: h }] as unknown as DOMRectList;
+  }
+}
+
+/*
+ * 這四條全部來自同一個病根:SVG / MathML 是 foreign element,`tagName`
+ * 保留原始大小寫,所以 `EXCLUDE_TAGS` / `NON_TEXT_TAGS` 裡大寫的
+ * 'SVG'、'MATH' **從來沒有比對成功過**(`docs/deviations.md` §DE)。
+ * 症狀有四種,看起來毫不相干 —— 所以四條都要留著。
+ */
+
+test('行內 svg 不該把段落切成兩半 —— 前半句不可以消失', () => {
+  const body = mount(
+    '<p>Throughput reached <svg viewBox="0 0 40 16"><text>99%</text></svg>' +
+      ' during the sustained load test run.</p>',
+  );
+  sized(body, 'svg', 40, 16); // 徽章尺寸:面積過了 400,但高度只有 16
+  const got = ids(body);
+  assert.equal(got.length, 1, '一個段落就是一個單元');
+  assert.ok(got[0]!.startsWith('Throughput reached'), `前半句不見了:${got[0]}`);
+  assert.ok(got[0]!.includes('sustained load'), '後半句也要在');
+});
+
+test('圖示 svg 的 <title> 是 tooltip,不是句子的一部分', () => {
+  const body = mount(
+    '<p>Click the <svg viewBox="0 0 16 16"><title>Settings icon</title></svg>' +
+      ' button to open settings for your workspace.</p>',
+  );
+  sized(body, 'svg', 16, 16);
+  const got = ids(body);
+  assert.equal(got.length, 1);
+  assert.ok(!got[0]!.includes('Settings icon'), `無障礙描述漏進句子:${got[0]}`);
+});
+
+test('圖表 svg 不成為內文單元 —— 圖上文字歸 findSvgTexts,不重複覆蓋', () => {
+  const body = mount(
+    '<div><svg viewBox="0 0 620 200">' +
+      '<text>Ingest pipeline</text><text>Merge tree</text><text>Query engine</text>' +
+      '</svg></div>',
+  );
+  sized(body, 'svg', 620, 200);
+  sized(body, 'text', 120, 18);
+  assert.deepEqual(ids(body), [], 'svg 與它的 <text> 都不該是內文單元');
+  assert.deepEqual(
+    findSvgTexts(body, 100).map((c) => c.src),
+    ['Ingest pipeline', 'Merge tree', 'Query engine'],
+    '圖上文字要走 label 貼片(零視覺模型成本)',
+  );
+});
+
+test('行內小 svg 的文字留在句子裡,不被 findSvgTexts 再收一次', () => {
+  const body = mount('<p>Throughput reached <svg viewBox="0 0 40 16"><text>99%</text></svg> today.</p>');
+  sized(body, 'svg', 40, 16);
+  sized(body, 'text', 30, 12);
+  assert.deepEqual(findSvgTexts(body, 100), [], '收兩次就是雙重覆蓋的另一種寫法');
+});
+
+test('MathML 的記號留在句子裡(靠佔位符保護),不被剝掉', () => {
+  const body = mount(
+    '<p>The bound is <math><mi>O</mi><mo>(</mo><mi>n</mi><mo>)</mo></math>' +
+      ' for every input distribution we tested.</p>',
+  );
+  const got = ids(body);
+  assert.equal(got.length, 1);
+  assert.ok(got[0]!.includes('O(n)'), `記號被剝掉,句子破碎:${got[0]}`);
+  assert.ok(got[0]!.includes('every input distribution'), '後半句要在');
 });

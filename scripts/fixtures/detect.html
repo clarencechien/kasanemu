@@ -114,6 +114,42 @@
   <a href="#icon-heading"><svg width="24" height="24" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/></svg></a>
 </h2>
 
+<!-- foreign element(svg / math):tagName 保留原始大小寫,兩條排除清單從來沒生效過 -->
+<!-- 行內徽章 svg:面積過門檻但只有 16px 高 —— 不可以把段落切成兩半 -->
+<p id="svg-inline">Throughput reached
+  <svg width="40" height="16" viewBox="0 0 40 16"><text x="0" y="12" font-size="12">99%</text></svg>
+  during the sustained load test run.</p>
+
+<!-- 圖示 svg 的 <title> 是 tooltip,畫面上不存在:不可以漏進句子 -->
+<p id="svg-title">Click the
+  <svg width="16" height="16" viewBox="0 0 16 16"><title>Settings icon</title><circle cx="8" cy="8" r="7"/></svg>
+  button to open settings for your workspace.</p>
+
+<!-- mermaid 風格的圖表:svg 自己與它的 <text> 都不是內文單元,文字走貼片 -->
+<div id="svg-diagram">
+  <svg width="620" height="200" viewBox="0 0 620 200">
+    <rect x="10" y="60" width="160" height="60" fill="#eef" stroke="#88a"/>
+    <text x="90" y="95" font-size="15" text-anchor="middle">Ingest pipeline</text>
+    <rect x="230" y="60" width="160" height="60" fill="#eef" stroke="#88a"/>
+    <text x="310" y="95" font-size="15" text-anchor="middle">Merge tree</text>
+    <text x="200" y="80" font-size="11">writes</text>
+  </svg>
+</div>
+
+<!-- 行內 MathML:記號留在句子裡靠佔位符保護,剝掉會讓句子破碎 -->
+<p id="mathml">The bound is
+  <math><mi>O</mi><mo>(</mo><mi>n</mi><mo>log</mo><mi>n</mi><mo>)</mo></math>
+  for every input distribution we tested.</p>
+
+<!-- 圖片替代文字:有意義的 alt 走貼片;檔名 alt 不算 -->
+<figure id="alt-good">
+  <img src="data:image/gif;base64,R0lGODlhZABkAIAAAN3d3QAAACH5BAAAAAAALAAAAABkAGQAAAIhhI+py+0Po5y02ouz3rz7D4biSJbmiabqyrbuC8fyTBcAOw==" width="100" height="100" alt="Throughput comparison between the two engines under sustained load">
+  <figcaption>Figure 3: sustained load throughput, higher is better.</figcaption>
+</figure>
+<figure id="alt-filename">
+  <img src="data:image/gif;base64,R0lGODlhZABkAIAAAN3d3QAAACH5BAAAAAAALAAAAABkAGQAAAIhhI+py+0Po5y02ouz3rz7D4biSJbmiabqyrbuC8fyTBcAOw==" width="100" height="100" alt="Elasticsearch_blog1_01.png">
+</figure>
+
 <!-- 文章自己的 header(Wired):標題與日期是內容,不是站台外殼 -->
 <article>
   <header id="art-header">

@@ -121,8 +121,16 @@ export function protectedFragments(el: Element, terms: readonly Term[]): Term[] 
   const out: Term[] = [];
   // translate="no" / .notranslate 是「留在句子裡但不要翻」,
   // 與行內 code 同一類問題,所以走同一條佔位符路徑
+  /*
+   * `math` 與行內 `svg` 和 code 同一類:**留在句子裡,但不要翻**。
+   *
+   * 段落裡的 `<math>` 攤平之後是 `O(nlogn)` —— 那是記號不是句子,
+   * 送去翻會得到「O(n 對數 n)」這種東西。行內 svg 的數字徽章同理。
+   * 剝掉它們則會讓句子破碎(detect.ts 的 NON_TEXT_TAGS 註解),
+   * 所以走佔位符:模型看到的是一個字元,還原時填回原樣。
+   */
   for (const node of el.querySelectorAll(
-    'code,kbd,samp,var,tt,abbr[title],[translate="no"],.notranslate',
+    'code,kbd,samp,var,tt,abbr[title],[translate="no"],.notranslate,math,svg',
   )) {
     const t = (node.textContent ?? '').replace(/\s+/g, ' ').trim();
     // 這些是「原樣保留」,永遠大小寫敏感 —— 程式碼片段不能被當成同一個詞

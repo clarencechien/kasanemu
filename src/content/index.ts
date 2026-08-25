@@ -18,6 +18,7 @@ import {
   explainCandidate,
   findCandidates,
   findLabels,
+  findSvgTexts,
   hasContainerChild,
   hiddenByDisclosure,
   isMeaningfulText,
@@ -1167,14 +1168,21 @@ function covered(el: Element): boolean {
 function scanLabels(): void {
   if (!settings.annotate) return;
   if (labels.size >= ANNOTATION_CAP) return;
-  const found = findLabels(document.body, ANNOTATION_CAP, (el) => labelByEl.has(el) || covered(el));
+  const skip = (el: Element): boolean => labelByEl.has(el) || covered(el);
+  const found = findLabels(document.body, ANNOTATION_CAP, skip);
+  /*
+   * 圖表 svg 裡的 `<text>` 走同一條貼片路(`docs/plan-images.md` §10-1)。
+   * mermaid / d3 的圖上文字是真的文字節點,所以這一份**零視覺模型成本** ——
+   * 圖片階段的第一步刻意先做不用 OCR 的那一半。
+   */
+  const svgTexts = findSvgTexts(document.body, ANNOTATION_CAP - found.length, skip);
   let added = 0;
-  for (const c of found) {
+  for (const c of [...found, ...svgTexts]) {
     if (labels.size >= ANNOTATION_CAP) break;
     makeLabelUnit(c.el, c.src);
     added++;
   }
-  if (added > 0) dbg('scan labels', { added, total: labels.size });
+  if (added > 0) dbg('scan labels', { added, svg: svgTexts.length, total: labels.size });
 }
 
 /**
@@ -1268,6 +1276,52 @@ const ADHOC_HOPS = 6;
  * 沒有這個集合就會一直重跑 ownText 與樣式查詢。
  */
 const adhocRejected = new WeakSet<Element>();
+
+/**
+ * 圖片的替代文字(`docs/plan-images.md` §10-2)。
+ *
+ * 有 alt 的圖**已經有一份現成的描述**,翻它比 OCR 便宜兩個數量級,
+ * 而且不必等視覺模型。滑到圖上就出貼片,走的是導覽列標籤那條路。
+ *
+ * 只收有意義的 alt。三種要濾掉:
+ * - 空字串 —— 那是裝飾圖的**正確**寫法,不是缺漏
+ * - 檔名 —— ClickHouse 的圖 alt 全都是 `Elasticsearch_blog1_01.png`
+ * - `image` / `photo` / `圖` 這種佔位詞
+ */
+const IMG_ALT_MAX_CHARS = 240;
+const FILENAME_ALT = /^[\w .,()\[\]-]+\.(png|jpe?g|gif|webp|avif|svg|bmp)$/i;
+const PLACEHOLDER_ALT = /^(image|img|photo|picture|graphic|icon|logo|thumbnail|screenshot)$/i;
+
+function imageAltAt(target: EventTarget | null): Unit | null {
+  if (!settings.annotate) return null;
+  if (!(target instanceof Element)) return null;
+  const img = target.closest('img,[role="img"]');
+  if (!img) return null;
+  const known = labelByEl.get(img);
+  if (known) return known;
+  if (adhocRejected.has(img)) return null;
+  if (labels.size >= ANNOTATION_CAP) return null;
+  if (inExcluded(img)) {
+    adhocRejected.add(img);
+    return null;
+  }
+  const raw = img.getAttribute('alt') ?? img.getAttribute('aria-label') ?? '';
+  const text = normalizeText(raw);
+  if (
+    text.length === 0 ||
+    text.length > IMG_ALT_MAX_CHARS ||
+    FILENAME_ALT.test(text) ||
+    PLACEHOLDER_ALT.test(text) ||
+    !isMeaningfulText(text) ||
+    looksLikeTargetLang(text) ||
+    img.getClientRects().length === 0
+  ) {
+    adhocRejected.add(img);
+    return null;
+  }
+  diag('info', 'image-alt', { chars: text.length });
+  return makeLabelUnit(img, text);
+}
 
 function adhocLabelAt(target: EventTarget | null): Unit | null {
   if (!settings.annotate) return null;
@@ -1656,7 +1710,9 @@ function onMouseOver(e: Event): void {
    * 加翻層:內文區塊優先(它有自己的畫法),否則試 UI 標籤,
    * 再否則臨時加翻 —— 指到什麼就翻什麼,不讓偵測規則的縫變成「都不會翻」。
    */
-  const label = found ? null : (labelAt(e.target) ?? adhocLabelAt(e.target));
+  const label = found
+    ? null
+    : (labelAt(e.target) ?? imageAltAt(e.target) ?? adhocLabelAt(e.target));
   if (label) openChip(label);
   else if (chipUnit && chipUnit !== selectionUnit) closeChip();
 

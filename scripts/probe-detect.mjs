@@ -64,6 +64,7 @@ const got = await page.evaluate(() => {
     return false;
   };
   const labels = D.findLabels(document.body, 200, covered);
+  const svgTexts = D.findSvgTexts(document.body, 200, covered).map((c) => c.src);
   // 掃描必須收斂:第二輪找不到東西,否則 scan 會永遠停在最短間隔
   const again = D.findCandidates(document.body, (el) => seen.has(el)).length;
   return {
@@ -94,6 +95,7 @@ const got = await page.evaluate(() => {
       });
     }).map((c) => c.src.slice(0, 40)),
     labels: labels.map((c) => c.src),
+    svgTexts,
   };
 });
 await browser.close();
@@ -215,6 +217,35 @@ else if (!pinned.every((b) => b.pinned)) {
 // 真的選單維持外殼待遇:不畫疊層,但滑上去看得到
 if (got.blocks.some((b) => b.inMenu)) problems.push('選單不該有常駐疊層');
 if (!got.labels.includes('Products')) problems.push('選單被踢出加翻層 → 什麼都沒有');
+
+/*
+ * foreign element(svg / math)。這一組只有真瀏覽器驗得了 ——
+ * 分流靠的是 svg 的實際尺寸,jsdom 一律回 0。
+ */
+// 行內徽章 svg:段落是**一個**單元,前後半句都在
+{
+  const seg = got.blocks.filter((b) => b.src.includes('sustained load test'));
+  if (seg.length === 0) problems.push('行內 svg:整段消失了');
+  else if (seg.length > 1) problems.push(`行內 svg 把段落切成 ${seg.length} 段`);
+  else if (!seg[0].src.includes('Throughput reached')) {
+    problems.push(`行內 svg:前半句消失了 —— 「${seg[0].src}」`);
+  }
+}
+// 圖示 svg 的 <title> 不可以漏進句子
+noBlock('Settings icon', '圖示 svg 的 tooltip');
+// mermaid 圖表:svg 與 <text> 都不是內文單元,文字走貼片
+noBlock('Ingest pipeline', '圖表 svg 的文字(該走貼片)');
+for (const frag of ['Ingest pipeline', 'Merge tree', 'writes']) {
+  if (!got.svgTexts.includes(frag)) problems.push(`圖表 svg:貼片層少了「${frag}」`);
+}
+// 行內小 svg 的文字留在句子裡,不可以被 findSvgTexts 再收一次
+if (got.svgTexts.includes('99%')) problems.push('行內 svg 的文字被收了兩次(疊層 + 貼片)');
+// MathML:記號留在句子裡
+{
+  const m = got.blocks.find((b) => b.src.includes('every input distribution'));
+  if (!m) problems.push('MathML:整段消失了');
+  else if (!m.src.includes('O(')) problems.push(`MathML:記號被剝掉 —— 「${m.src}」`);
+}
 
 console.log(JSON.stringify(got, null, 1));
 if (problems.length > 0) {
