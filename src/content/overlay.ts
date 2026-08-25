@@ -23,7 +23,16 @@ const LAYER_CSS = `
   inset: 0;
   /* §2.2 硬性要求:疊層一旦接收 hover 就會無限閃爍。此限制不可協商。 */
   pointer-events: none;
-  z-index: 2147483000;
+  /*
+   * **不要**在這裡放 2147483000。
+   *
+   * 那個值屬於 host(#kasanemu-root),它負責把整個疊層放到頁面最上層。
+   * shadow root **裡面**是另一個世界,只需要決定我們自己這幾個節點的先後。
+   * 先前這裡也放了 2147483000,於是貼片的 z-index: 5 永遠贏不了 ——
+   * 回報的「tip 還是被蓋在 layer 下」就是這個,而我上一輪只加了貼片的
+   * z-index、沒看這一行。
+   */
+  z-index: 0;
 }
 .box, .ghost {
   position: absolute;
@@ -180,6 +189,15 @@ const LAYER_CSS = `
   pointer-events: none;
   opacity: 0;
   transition: opacity 120ms ease;
+  /*
+   * 貼片是「指名要看的東西」,一定要在最上面。
+   *
+   * 先前沒給 z-index,靠的是 shadow root 裡的 DOM 順序(.layer 在前、
+   * 貼片在後)—— 而 .layer 一旦因為原點修正拿到 transform 就變成
+   * 堆疊脈絡,順序就不保證了。回報的「tip 被蓋到」就是這樣。
+   * 明寫比依賴順序可靠。
+   */
+  z-index: 5;
 }
 .chip.show { opacity: 1; }
 /* 左緣階層條:沿用提示線的語彙,L0 斜紋、L1 實線、失敗警示色 */
@@ -213,6 +231,7 @@ const LAYER_CSS = `
  */
 .hud {
   position: fixed;
+  z-index: 4;
   left: 12px;
   bottom: 12px;
   pointer-events: none;
@@ -233,6 +252,7 @@ const LAYER_CSS = `
 .hud.warn::before { content: '✗ '; }
 .panel {
   position: fixed;
+  z-index: 6;
   right: 12px;
   bottom: 12px;
   width: 520px;

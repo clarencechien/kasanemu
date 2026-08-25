@@ -35,7 +35,7 @@ import {
   measureUnit,
   unlockScales,
 } from './geometry';
-import { clipInsets } from './cover';
+import { clipInsets, type Box } from './cover';
 import { probePackagedFonts } from './fonts';
 import { L0Engine, translatorSupported } from './l0';
 import { pageSourceLang, sampleVisibleText, sniffScript, toTranslatorTarget } from './lang';
@@ -1842,20 +1842,70 @@ function clippers(u: Unit): Element[] {
  * 修法和「被固定頁首蓋住」完全一樣:算出可見的矩形,用 clip-path 裁掉。
  * 保守的方向是**寧可多裁**:交集為空就整塊不見。
  */
-function visibleBox(u: Unit): { top: number; right: number; bottom: number; left: number } {
+/**
+ * 被容器限制住時,底邊再往上收這麼多(px)。
+ *
+ * 使用者的原話:「下半部可以再加寬一下,就算最下面有一些內容沒 show layer,
+ * 只要畫面中間有就可以了。」—— 這是對的取捨:容器底邊附近本來就常有
+ * 陰影、漸層、釘住的按鈕列,量得再準也只是勉強擦邊。少蓋一點沒人會發現,
+ * 多蓋一點整頁就髒了。
+ *
+ * **只在真的被容器限制住時才收。** 一般頁面(視窗捲動)的底邊是視窗本身,
+ * 那裡的疊層是合法的、而且下面還有內容 —— 收 32px 會在每一頁的底部
+ * 切出一條看得見的線。
+ */
+const CONTAINER_SAFETY_PX = 32;
+
+function visibleBox(u: Unit): Box {
   let top = lastTopBand;
   let left = 0;
   let right = window.innerWidth;
   let bottom = window.innerHeight - lastBottomBand;
+  let bounded = false;
   for (const p of clippers(u)) {
     const r = p.getBoundingClientRect();
     if (r.width < 1 && r.height < 1) continue; // 祖先自己沒被畫出來,交給別的檢查處理
     if (r.top > top) top = r.top;
     if (r.left > left) left = r.left;
     if (r.right < right) right = r.right;
-    if (r.bottom < bottom) bottom = r.bottom;
+    if (r.bottom < bottom) {
+      bottom = r.bottom;
+      bounded = true;
+    }
   }
+  if (bounded) bottom -= CONTAINER_SAFETY_PX;
   return { top, right, bottom, left };
+}
+
+/** 探測容器底邊時往內縮幾 px */
+const PIN_PROBE_PX = 4;
+
+/**
+ * 捲動容器底部有沒有釘著別的東西。
+ *
+ * Gmail 的 Reply / Forward 列蓋在郵件窗格的底部,而**窗格本身的矩形延伸到
+ * 它底下** —— 所以「裁到容器」還是不夠,回報的「下半部疊到 reply forward
+ * 那欄」就是這個。
+ *
+ * 只對「盒子已經碰到容器底邊」的單元做(通常零到兩個),
+ * 用 `elementFromPoint` 問頁面:這個位置**現在畫的是什麼**?
+ * 打到的東西如果和這個單元無關(既不是祖先也不是子孫),那就是蓋在上面的別人。
+ *
+ * 疊層的 `pointer-events: none` 在這裡第三次派上用場:命中測試打不到我們自己。
+ *
+ * 只認「橫跨大半個容器、而且貼著底邊」的東西 ——
+ * 不然角落一顆小按鈕就會把整塊譯文裁掉。
+ */
+function pinnedBottom(u: Unit, box: Box, overlayBottom: number): number {
+  if (overlayBottom < box.bottom - PIN_PROBE_PX) return box.bottom;
+  const x = Math.round(Math.max(box.left + 4, Math.min(box.right - 4, (box.left + box.right) / 2)));
+  const hit = document.elementFromPoint(x, Math.round(box.bottom - PIN_PROBE_PX));
+  if (!hit || hit === u.el || hit.contains(u.el) || u.el.contains(hit)) return box.bottom;
+  const r = hit.getBoundingClientRect();
+  const wide = r.width >= (box.right - box.left) * 0.5;
+  const atBottom = box.bottom - r.bottom <= PIN_PROBE_PX * 2;
+  // 釘住的橫列也留同樣的餘裕 —— 貼著它的上緣切,邊界看起來還是很緊
+  return wide && atBottom && r.top > box.top ? r.top - CONTAINER_SAFETY_PX : box.bottom;
 }
 
 /**
@@ -1885,10 +1935,9 @@ function applyChromeClip(): void {
       layer.setClip(u, 0, 0, 0, 0);
       continue;
     }
-    const ins = clipInsets(
-      { top: vTop, right: vRight, bottom: vBottom, left: vLeft },
-      visibleBox(u),
-    );
+    const box = visibleBox(u);
+    box.bottom = pinnedBottom(u, box, vBottom);
+    const ins = clipInsets({ top: vTop, right: vRight, bottom: vBottom, left: vLeft }, box);
     if (ins.top > 0 || ins.right > 0 || ins.bottom > 0 || ins.left > 0) clipped++;
     layer.setClip(u, ins.top, ins.right, ins.bottom, ins.left);
   }
