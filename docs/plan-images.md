@@ -257,6 +257,12 @@ kasanemu 選 lite 是基於自己域的實測,防呆(§4)全部照裝,
    (mermaid / d3 的大宗)。
 2. `<img alt>` / `figcaption` / `aria-label`:hover chip 給 alt 譯文。
 
+> **已實作**(2026-08-25)。動手前先量,發現規格這一節的前提是錯的:
+> `NON_TEXT_TAGS` 裡的 `'SVG'` **從來沒有比對成功過**(foreign element 的
+> `tagName` 保留大小寫),所以不是「一刀切掉」而是「混亂地全收」——
+> 連帶三個真 bug:段落前半句消失、圖表雙重覆蓋、MathML 記號被送去翻譯。
+> 病根與修法見 `docs/deviations.md` §DE。
+
 ## 11. 檔案落點
 
 | 檔案 | 動作 |

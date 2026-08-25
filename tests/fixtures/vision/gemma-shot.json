@@ -1,0 +1,358 @@
+{
+ "_": "真實 API 回應(2026-08-25,scripts/probe-vision.mjs)。模型 gemma-4-31b-it,素材:claude.com UI 截圖。不要手改 —— 這是模型實際會回什麼的證據,改了就變成我猜的樣子。",
+ "model": "gemma-4-31b-it",
+ "nw": 2042,
+ "nh": 1546,
+ "blocks": [
+  {
+   "box": [
+    21,
+    15,
+    67,
+    277
+   ],
+   "text": "Use cases for Legal",
+   "zh": "法律用例"
+  },
+  {
+   "box": [
+    90,
+    15,
+    119,
+    394
+   ],
+   "text": "Real workflows to copy, adapt, and make your own.",
+   "zh": "可供複製、調整並建立自己的真實工作流。"
+  },
+  {
+   "box": [
+    156,
+    15,
+    183,
+    65
+   ],
+   "text": "General",
+   "zh": "通用"
+  },
+  {
+   "box": [
+    156,
+    82,
+    183,
+    146
+   ],
+   "text": "Marketing",
+   "zh": "行銷"
+  },
+  {
+   "box": [
+    156,
+    163,
+    183,
+    215
+   ],
+   "text": "Product",
+   "zh": "產品"
+  },
+  {
+   "box": [
+    156,
+    233,
+    183,
+    307
+   ],
+   "text": "Engineering",
+   "zh": "工程"
+  },
+  {
+   "box": [
+    156,
+    325,
+    183,
+    346
+   ],
+   "text": "HR",
+   "zh": "人力資源"
+  },
+  {
+   "box": [
+    156,
+    363,
+    183,
+    413
+   ],
+   "text": "Finance",
+   "zh": "財務"
+  },
+  {
+   "box": [
+    156,
+    431,
+    183,
+    500
+   ],
+   "text": "Operations",
+   "zh": "營運"
+  },
+  {
+   "box": [
+    156,
+    518,
+    183,
+    550
+   ],
+   "text": "Data",
+   "zh": "數據"
+  },
+  {
+   "box": [
+    156,
+    568,
+    183,
+    611
+   ],
+   "text": "Design",
+   "zh": "Design"
+  },
+  {
+   "box": [
+    156,
+    629,
+    183,
+    662
+   ],
+   "text": "Legal",
+   "zh": "Legal"
+  },
+  {
+   "box": [
+    156,
+    680,
+    183,
+    714
+   ],
+   "text": "Sales",
+   "zh": "銷售"
+  },
+  {
+   "box": [
+    156,
+    732,
+    183,
+    790
+   ],
+   "text": "Research",
+   "zh": "研究"
+  },
+  {
+   "box": [
+    251,
+    15,
+    292,
+    120
+   ],
+   "text": "Claude.ai",
+   "zh": "Claude.ai"
+  },
+  {
+   "box": [
+    354,
+    138,
+    436,
+    208
+   ],
+   "text": "Vendor services\nagreement — redlined\n19 strategic edits: removed the auto-\nrenewal clause, capped liability at 12\nmonths of fees, kept ownership of\nyour data and custom work.",
+   "zh": "供應商服務協議 — 修訂版\n19 項策略性編輯：刪除了自動續約條款，將責任上限設定為 12 個月的費用，保留了您的數據和定制工作的所有權。"
+  },
+  {
+   "box": [
+    493,
+    33,
+    553,
+    224
+   ],
+   "text": "Contract redlining and\nnegotiation",
+   "zh": "合約修訂與協商"
+  },
+  {
+   "box": [
+    558,
+    33,
+    582,
+    67
+   ],
+   "text": "15 min",
+   "zh": "15 分鐘"
+  },
+  {
+   "box": [
+    354,
+    458,
+    436,
+    536
+   ],
+   "text": "NDA Review\nStandards Guide\nVoice and tone principles, three-part\ncomment structure, severity indicator\ndefinitions, and escalation triggers —\nreferenced in every review.",
+   "zh": "NDA 審查標準指南\n語調原則、三部分評論結構、嚴重程度指示符定義以及升級觸發條件 — 在每次審查中均被引用。"
+  },
+  {
+   "box": [
+    493,
+    359,
+    553,
+    610
+   ],
+   "text": "Organize your legal workflows\nusing Projects",
+   "zh": "使用 Projects 組織您的法律工作流"
+  },
+  {
+   "box": [
+    558,
+    359,
+    582,
+    393
+   ],
+   "text": "15 min",
+   "zh": "15 分鐘"
+  },
+  {
+   "box": [
+    354,
+    778,
+    436,
+    868
+   ],
+   "text": "Date Event\nJan 15, 2023 Contract signed\n2023 Scope change\n2024 Missed milestone\nJun 30, 2024 Terminated",
+   "zh": "日期 事件\n2023年1月15日 合約簽署\n2023年 範圍變更\n2024年 錯過里程碑\n2024年6月30日 終止"
+  },
+  {
+   "box": [
+    493,
+    685,
+    553,
+    933
+   ],
+   "text": "Track discovery timelines and\nanalyze patterns",
+   "zh": "追蹤發現時間線並分析模式"
+  },
+  {
+   "box": [
+    558,
+    685,
+    582,
+    719
+   ],
+   "text": "15 min",
+   "zh": "15 分鐘"
+  },
+  {
+   "box": [
+    668,
+    15,
+    709,
+    190
+   ],
+   "text": "Claude Cowork",
+   "zh": "Claude Cowork"
+  },
+  {
+   "box": [
+    678,
+    905,
+    705,
+    971
+   ],
+   "text": "View all",
+   "zh": "查看全部"
+  },
+  {
+   "box": [
+    771,
+    131,
+    853,
+    215
+   ],
+   "text": "Acme MSA — clause\nreview\nClause-by-clause green, yellow, or\nred against the playbook, with\nredlines and rationale for every\ndeviation.",
+   "zh": "Acme MSA — 條款審查\n根據指南對條款逐一標記為綠色、黃色或紅色，並為每項偏差提供修訂建議和理由。"
+  },
+  {
+   "box": [
+    911,
+    33,
+    941,
+    187
+   ],
+   "text": "Contract redlining",
+   "zh": "合約修訂"
+  },
+  {
+   "box": [
+    946,
+    33,
+    970,
+    67
+   ],
+   "text": "15 min",
+   "zh": "15 分鐘"
+  },
+  {
+   "box": [
+    771,
+    454,
+    853,
+    538
+   ],
+   "text": "Research memo — Acme\nindemnification\nAuthority Format\nThomso... House m...\nQuestion presented, short answer, discussion\ngrouped by authority, and open issues —\nevery proposition cited.",
+   "zh": "研究備忘錄 — Acme 賠償\n權威 格式\nThomso... House m...\n提出的問題、簡短回答、按權威分組的討論以及未解決的問題 — 每個主張均有引用。"
+  },
+  {
+   "box": [
+    911,
+    359,
+    941,
+    479
+   ],
+   "text": "Legal research",
+   "zh": "法律研究"
+  },
+  {
+   "box": [
+    946,
+    359,
+    970,
+    393
+   ],
+   "text": "10 min",
+   "zh": "10 分鐘"
+  },
+  {
+   "box": [
+    771,
+    778,
+    853,
+    863
+   ],
+   "text": "Project Silvern diligence\nDoc index\nCategor... Flagged\nChange-of-control, assignment, and consent\nprovisions, every line card to source.",
+   "zh": "Project Silvern 盡職調查\n文件索引\n分類... 標記\n控制權變更、轉讓和同意條款，每行均對應至來源。"
+  },
+  {
+   "box": [
+    911,
+    685,
+    941,
+    808
+   ],
+   "text": "M&A diligence",
+   "zh": "M&A 盡職調查"
+  },
+  {
+   "box": [
+    946,
+    685,
+    970,
+    719
+   ],
+   "text": "15 min",
+   "zh": "15 分鐘"
+  }
+ ]
+}

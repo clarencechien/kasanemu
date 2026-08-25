@@ -6,6 +6,29 @@ const BLOCK_TAGS = new Set([
   'DD', 'DT', 'FIGCAPTION', 'TD', 'TH', 'CAPTION', 'SUMMARY',
 ]);
 
+/**
+ * SVG 與 MathML 是 **foreign element**:它們的 `tagName` 保留原始大小寫,
+ * 所以 `<svg>` 的 tagName 是 `'svg'`,不是 `'SVG'`。
+ *
+ * 這件事讓 `EXCLUDE_TAGS` / `NON_TEXT_TAGS` 裡那兩個大寫的 `'SVG'`、`'MATH'`
+ * **從來沒有生效過** —— 不是「一刀切掉」,而是整棵 svg 被當成一般容器走進去:
+ *
+ * - mermaid 圖的六個 `<text>` 各自變成一個單元,`<svg>` 自己**又**變成一個
+ *   把六段串起來的單元 —— 疊層互相蓋
+ * - 段落中間夾一個行內 svg,前半句整段消失(`Throughput reached` 不見了)
+ * - `<math>` 的記號被攤平成 `O(nlogn)` 送去翻譯
+ *
+ * 用命名空間判斷而不是無條件 `toUpperCase()`:HTML 元素佔了 99.9%,
+ * 那條路要維持單純的屬性讀取。
+ */
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const MATHML_NS = 'http://www.w3.org/1998/Math/MathML';
+
+export function tagKey(el: Element): string {
+  const ns = el.namespaceURI;
+  return ns === SVG_NS || ns === MATHML_NS ? el.tagName.toUpperCase() : el.tagName;
+}
+
 /** §3.1 排除清單。script/style/svg 等本來也沒有可讀文字,一併擋掉子樹。 */
 const EXCLUDE_TAGS = new Set([
   'BUTTON', 'SELECT', 'TEXTAREA',
@@ -230,7 +253,7 @@ function listItemText(li: Element, skip?: ReadonlySet<Element>): string {
     if (node.nodeType !== 1 /* ELEMENT_NODE */) continue;
     const kid = node as Element;
     if (kid.tagName === 'UL' || kid.tagName === 'OL') continue;
-    if (NON_TEXT_TAGS.has(kid.tagName)) continue;
+    if (NON_TEXT_TAGS.has(tagKey(kid))) continue;
     if (skip?.has(kid)) continue;
     if (excluded(kid)) continue;
     out += ownText(kid, skip);
@@ -362,9 +385,48 @@ export function isUiLabel(el: Element, skip?: ReadonlySet<Element>): boolean {
  * pre 則相反:它是整塊的程式碼區,混進父段落只會汙染譯文。
  */
 const NON_TEXT_TAGS = new Set([
-  'SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG', 'CANVAS', 'IFRAME',
-  'VIDEO', 'AUDIO', 'MATH', 'SELECT', 'OPTION', 'TEXTAREA', 'INPUT', 'PRE',
+  'SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'CANVAS', 'IFRAME',
+  'VIDEO', 'AUDIO', 'SELECT', 'OPTION', 'TEXTAREA', 'INPUT', 'PRE',
 ]);
+
+/*
+ * SVG 與 MATH 刻意**不在** NON_TEXT_TAGS 裡,和 code / kbd 同一個理由:
+ * 行內的它們是句子的一部分,剝掉會讓句子破碎
+ * (「Throughput reached 99% during…」→「Throughput reached during…」)。
+ * 它們走 `foreignInline()`:文字留在 src 裡,由 mask 的佔位符保護不被翻。
+ *
+ * 兩個例外在 `foreignInline()` 裡:
+ * - `<title>` / `<desc>` / `<metadata>` 是 tooltip 與無障礙描述,畫面上不存在
+ * - 大到是一張圖的 svg(圖表)歸圖片管線,不進句子(見 findSvgTexts)
+ */
+const SVG_INVISIBLE = new Set(['TITLE', 'DESC', 'METADATA']);
+
+/** 這棵 svg 大到是一張圖(而不是行內圖示 / 數字徽章)嗎 */
+function isDiagramSvg(el: Element): boolean {
+  const r = el.getBoundingClientRect();
+  // 圖表兩邊都不會只有 32px;行內的 40×16 徽章也過不了 —— 那是句子的一部分
+  return r.width > ICON_MAX_PX && r.height > ICON_MAX_PX;
+}
+
+/** foreign 子樹裡看得見的文字。整棵是圖的話回空字串(文字歸圖片管線) */
+function foreignInline(el: Element): string {
+  if (tagKey(el) === 'SVG' && isDiagramSvg(el)) return '';
+  let out = '';
+  for (const node of Array.from(el.childNodes)) {
+    if (node.nodeType === 3 /* TEXT_NODE */) { out += node.nodeValue ?? ''; continue; }
+    if (node.nodeType !== 1) continue;
+    const kid = node as Element;
+    if (SVG_INVISIBLE.has(tagKey(kid))) continue;
+    out += foreignInline(kid);
+  }
+  return out;
+}
+
+/** 這個元素是 svg / math 的根(而不是它們裡面的節點) */
+function isForeignRoot(el: Element): boolean {
+  const k = tagKey(el);
+  return k === 'SVG' || k === 'MATH';
+}
 
 const ROLE_BY_TAG: Record<string, UnitRole> = {
   H1: 'heading', H2: 'heading', H3: 'heading', H4: 'heading', H5: 'heading', H6: 'heading',
@@ -418,7 +480,12 @@ export function ownText(el: Element, skip?: ReadonlySet<Element>): string {
     }
     if (node.nodeType !== 1 /* ELEMENT_NODE */) continue;
     const kid = node as Element;
-    if (NON_TEXT_TAGS.has(kid.tagName)) continue;
+    if (NON_TEXT_TAGS.has(tagKey(kid))) continue;
+    // svg / math:只取看得見的字,整棵是圖的話交給圖片管線(見 foreignInline)
+    if (isForeignRoot(kid)) {
+      if (!skip?.has(kid) && !excluded(kid)) out += foreignInline(kid);
+      continue;
+    }
     // 螢幕閱讀器標籤的文字不算數:視覺上不存在的字不該讓祖先變成翻譯單元
     if (skip?.has(kid)) continue;
     /*
@@ -448,7 +515,7 @@ export function ownText(el: Element, skip?: ReadonlySet<Element>): string {
  */
 export function hasContainerChild(el: Element): boolean {
   for (const kid of Array.from(el.querySelectorAll(CONTAINER_TAGS))) {
-    if (EXCLUDE_TAGS.has(kid.tagName)) continue;
+    if (EXCLUDE_TAGS.has(tagKey(kid))) continue;
     if (excluded(kid)) continue;
     if (ownText(kid).trim().length > 0) return true;
   }
@@ -481,13 +548,28 @@ function isRealMedia(r: DOMRect): boolean {
   return r.width > ICON_MAX_PX || r.height > ICON_MAX_PX;
 }
 
-export function hasMediaChild(el: Element, includeSelf = false): boolean {
-  if (includeSelf && el.matches(MEDIA_TAGS)) {
-    if (isRealMedia(el.getBoundingClientRect())) return true;
+/**
+ * 「這個媒體元素大到會把段落切成兩半嗎」。
+ *
+ * svg 用**更嚴**的尺:兩邊都要超過 32px。
+ * 理由是 svg 是唯一routinely 以文字尺寸行內使用的媒體標籤 ——
+ * 圖示、sparkline、數字徽章。實例:`<p>Throughput reached <svg 40×16>99%</svg>
+ * during…</p>`,40×16 過得了「面積 ≥400 且寬 >32」,於是段落被判定為圖文混排
+ * 切開,**前半句整段消失**。真正的圖表不會只有 16px 高。
+ */
+function splitsText(el: Element): boolean {
+  const r = el.getBoundingClientRect();
+  if (tagKey(el) === 'SVG') {
+    return r.width > ICON_MAX_PX && r.height > ICON_MAX_PX && r.width * r.height >= MEDIA_MIN_AREA;
   }
+  return isRealMedia(r);
+}
+
+export function hasMediaChild(el: Element, includeSelf = false): boolean {
+  if (includeSelf && el.matches(MEDIA_TAGS) && splitsText(el)) return true;
   const kids = el.querySelectorAll(MEDIA_TAGS);
   for (let i = 0; i < kids.length && i < 12; i++) {
-    if (isRealMedia(kids[i]!.getBoundingClientRect())) return true;
+    if (splitsText(kids[i]!)) return true;
   }
   return false;
 }
@@ -522,8 +604,8 @@ export function mediaSplitOf(el: Element): Element | null {
     if (n.nodeType !== 1) return false;
     const kid = n as Element;
     // 和 hasMediaChild 同一把尺:圖示不算圖(兩份判準會分岔,§CL)
-    if (kid.matches(MEDIA_TAGS) && isRealMedia(kid.getBoundingClientRect())) return true;
-    return [...kid.querySelectorAll(MEDIA_TAGS)].some((m) => isRealMedia(m.getBoundingClientRect()));
+    if (kid.matches(MEDIA_TAGS) && splitsText(kid)) return true;
+    return [...kid.querySelectorAll(MEDIA_TAGS)].some((m) => splitsText(m));
   };
   const at = kids.map(carries);
   const first = at.indexOf(true);
@@ -571,7 +653,7 @@ function inlineOwnText(el: Element, skip?: ReadonlySet<Element>): string {
     }
     if (node.nodeType !== 1 /* ELEMENT_NODE */) continue;
     const kid = node as Element;
-    if (NON_TEXT_TAGS.has(kid.tagName)) continue;
+    if (NON_TEXT_TAGS.has(tagKey(kid))) continue;
     if (skip?.has(kid)) continue;
     if (excluded(kid)) continue;
     if (kid.matches(CONTAINER_TAGS)) continue;
@@ -803,7 +885,7 @@ interface WalkCtx {
  * 仍然整段一起翻。
  */
 function walk(el: Element, ctx: WalkCtx, pinned = false): boolean {
-  if (EXCLUDE_TAGS.has(el.tagName)) return false;
+  if (EXCLUDE_TAGS.has(tagKey(el))) return false;
   if (excluded(el)) return false;
   // 應用程式外殼:不蓋疊層,但 hover / 選取仍然翻得到(見 CHROME_SELECTOR)
   if (isAppChrome(el)) return false;
@@ -986,7 +1068,7 @@ export function inlineRuns(el: Element): Array<{ range: Range; nodes: Node[] }> 
         flush();
         continue;
       }
-      if (NON_TEXT_TAGS.has(kid.tagName) || excluded(kid)) continue;
+      if (NON_TEXT_TAGS.has(tagKey(kid)) || excluded(kid)) continue;
     } else if (node.nodeType !== 3 /* TEXT_NODE */) {
       continue;
     }
@@ -1134,7 +1216,7 @@ function captureInlineText(el: Element, ctx: WalkCtx, pinned: boolean): boolean 
      * 從父層撿走它 —— 站台導覽因此變成六個內文單元。
      * 走捷徑的路徑要自己補上主路徑的每一道關卡。
      */
-    if (EXCLUDE_TAGS.has(kid.tagName)) continue;
+    if (EXCLUDE_TAGS.has(tagKey(kid))) continue;
     if (excluded(kid) || kid.matches(CHROME_SELECTOR)) continue;
     if (normalizeText(ownText(kid, ctx.srOnly)) !== text) continue;
     if (ctx.made.has(kid) || ctx.seen(kid)) return true;
@@ -1223,6 +1305,48 @@ export function findLabels(
   return out;
 }
 
+/**
+ * 圖表 svg 裡的 `<text>` —— 圖片階段的第一顆低垂果實
+ * (`docs/plan-images.md` §10-1)。
+ *
+ * mermaid、d3、Graphviz 匯出的流程圖在技術文件站是大宗,而它們圖上的字
+ * **是真的文字節點**,不是像素。所以這一條路零視覺模型成本:
+ * 走既有的 label 貼片管線,和導覽列上的按鈕同一條。
+ *
+ * 一個 `<text>` 一個候選,不合併:它們在圖上的位置各自獨立
+ * (節點名、箭頭標籤),合併之後貼片不知道要放哪裡。
+ *
+ * 只收**圖表**尺寸的 svg(`isDiagramSvg`)。行內小 svg 的文字是句子的一部分,
+ * 由 `foreignInline()` 留在 src 裡走疊翻,不該在這裡再收一次 —— 收兩次
+ * 就是 mermaid 那個雙重覆蓋的另一種寫法。
+ */
+export function findSvgTexts(
+  root: Element,
+  cap: number,
+  seen: (el: Element) => boolean = () => false,
+): Candidate[] {
+  const out: Candidate[] = [];
+  for (const svg of Array.from(root.querySelectorAll('svg'))) {
+    if (out.length >= cap) break;
+    if (!isDiagramSvg(svg)) continue;
+    if (inExcluded(svg)) continue;
+    for (const node of Array.from(svg.querySelectorAll('text'))) {
+      if (out.length >= cap) break;
+      if (seen(node)) continue;
+      // <text> 裡可能有 <tspan>,textContent 是對的;但 <title> 不算
+      if (SVG_INVISIBLE.has(tagKey(node))) continue;
+      const text = normalizeText(foreignInline(node));
+      if (text.length === 0 || text.length > UI_LABEL_MAX_CHARS * 4) continue;
+      if (!isMeaningfulText(text)) continue;
+      if (looksLikeTargetLang(text)) continue;
+      // 隱藏的 <text>(mermaid 拿來量字寬的暫存節點)沒有 client rect
+      if (node.getClientRects().length === 0) continue;
+      out.push({ el: node, role: 'label', src: text, geometryRisk: false });
+    }
+  }
+  return out;
+}
+
 export function findCandidates(root: Element, seen: (el: Element) => boolean): Candidate[] {
   const out: Candidate[] = [];
   walk(root, { seen, out, root, srOnly: new Set<Element>(), made: new Set<Element>() });
@@ -1244,7 +1368,7 @@ export function explainCandidate(el: Element): string[] {
 
   // 祖先鏈:被擋掉的祖先會讓整個子樹跳過
   for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
-    if (EXCLUDE_TAGS.has(p.tagName)) reasons.push(`祖先 <${p.tagName.toLowerCase()}> 在排除清單上`);
+    if (EXCLUDE_TAGS.has(tagKey(p))) reasons.push(`祖先 <${p.tagName.toLowerCase()}> 在排除清單上`);
     else if (excluded(p)) reasons.push(`祖先 <${p.tagName.toLowerCase()}> 命中排除選擇器`);
     else {
       const pcs = getComputedStyle(p);
@@ -1253,7 +1377,7 @@ export function explainCandidate(el: Element): string[] {
     if (reasons.length > 0) return reasons;
   }
 
-  if (EXCLUDE_TAGS.has(el.tagName)) return [`<${el.tagName.toLowerCase()}> 在排除清單上`];
+  if (EXCLUDE_TAGS.has(tagKey(el))) return [`<${el.tagName.toLowerCase()}> 在排除清單上`];
   if (el.matches(EXCLUDE_SELECTOR)) return ['命中排除選擇器 (contenteditable / translate=no / .notranslate)'];
   if (ariaHiddenSkip(el)) return ['aria-hidden="true" 而且畫面上沒有繪製面積'];
   if (!(el.textContent ?? '').trim()) return ['沒有文字'];

@@ -3176,3 +3176,81 @@ gh release upload v0.1.0 release/kasanemu-0.1.0.<build>.zip --clobber
 所以 **Re-run all jobs** 就能把檔案補回去 —— 不用重打 tag、
 不用刪 release。冪等的補救步驟在事情出錯的時候才顯出價值,
 這也是當初把那一步改成 `view || create` 的原因(§CX 之後的那次修正)。
+
+## DE. `'SVG'` 從來沒有比對成功過 —— foreign element 的 tagName 保留大小寫
+
+圖片階段第一步(`docs/plan-images.md` §10-1)是「把 mermaid 圖上的 `<text>`
+從 `NON_TEXT_TAGS` 的一刀切裡放出來」。動手前先量,結果**前提整個是錯的**。
+
+### DE-1. 病根:一個大小寫
+
+```js
+svg.tagName    // 'svg'  ← 不是 'SVG'
+math.tagName   // 'math'
+```
+
+HTML 元素的 `tagName` 一律大寫,**foreign element(SVG / MathML)保留原始
+大小寫**。而兩張排除清單都寫大寫:
+
+```ts
+const EXCLUDE_TAGS  = new Set([… 'SVG' …]);   // 從來沒有 has() 成功過
+const NON_TEXT_TAGS = new Set([… 'SVG', 'MATH' …]);
+```
+
+所以不是「SVG 被一刀切掉」,是**整棵 svg 被當成一般容器走進去**。
+註解寫著「script/style/svg 等本來也沒有可讀文字,一併擋掉子樹」——
+那句話從第一天起就是假的,而它看起來太合理,所以沒有人去驗。
+
+### DE-2. 一個病根,四種看起來毫不相干的症狀
+
+合成頁跑一次 `findCandidates` 就全部現形:
+
+| 症狀 | 實際輸出 |
+| --- | --- |
+| **段落前半句消失** | `<p>Throughput reached <svg 40×16>99%</svg> during…</p>` → 單元只有 `during the sustained load test run.` |
+| **圖表雙重覆蓋** | mermaid 圖:6 個 `<text>` 各一個單元,`<svg>` 自己**又**一個把六段串起來 —— 疊層互相蓋 |
+| **記號被送去翻譯** | `<math>` 攤平成 `O(nlogn)` 進 src |
+| (沒事的那個) | 圖示 `<svg><title>` 沒漏進句子 —— 純屬僥倖,`<title>` 剛好不在 `ownText` 走得到的位置 |
+
+前半句消失那條最貴:40×16 的徽章 svg 面積 640 ≥ 400、寬 40 > 32,
+於是 `isRealMedia` 判它是圖 → 段落被當成圖文混排切開 → 前段被
+「疊層會蓋到圖」的保護規則丟掉。**保護規則做對了事,只是餵給它的前提是錯的。**
+
+### DE-3. 修法:三條規則,不是一條
+
+1. **`tagKey(el)`** —— 用 `namespaceURI` 判斷是不是 foreign,是的話才
+   `toUpperCase()`。不無條件轉大寫是因為 HTML 佔 99.9%,那條路要維持
+   單純的屬性讀取。
+2. **`splitsText(el)`** —— svg 用更嚴的尺:**兩邊都**要 > 32px 才算圖。
+   svg 是唯一 routinely 以文字尺寸行內使用的媒體標籤(圖示、sparkline、
+   徽章),圖表不會只有 16px 高。
+3. **svg / math 從 `NON_TEXT_TAGS` 拿掉,改走 `foreignInline()`** ——
+   和行內 `code` 同一個理由:剝掉會讓句子破碎。文字留在 src 裡,
+   由 mask 的佔位符保護不被翻。兩個例外:`<title>`/`<desc>` 是無障礙
+   描述(畫面上不存在),圖表尺寸的 svg 整棵歸圖片管線。
+
+於是 `findSvgTexts()` 收的是**只有圖表 svg** 的 `<text>`,走既有的 label
+貼片管線 —— 零視覺模型成本,而且不會和句子裡的行內 svg 重複。
+
+### DE-4. 為什麼 37 站稽核完全沒看到這件事
+
+改完重跑:**1198 段,一段不差,bucket 一個沒變。**
+
+稽核的語料裡幾乎沒有 inline SVG `<text>`(實測 qiita 5 個 svg、
+github.blog 130 個 svg,`<text>` 都是 0)——圖示用 `<path>`,
+圖表是 `<img>`。技術文件站的 mermaid 圖不在那 37 站裡。
+
+**稽核證明的是「這 37 站沒事」,不是「規則對」。**
+`docs/lessons.md` §9 那條(一次看整片)有它的邊界:整片也有邊界,
+而邊界外的東西一樣會壞。這次是合成的邊界案例頁把它逼出來的 ——
+兩種都要有。
+
+### DE-5. 又一次「先驗再蓋」
+
+規格 §10-1 寫「現在被 `NON_TEXT_TAGS` 的 SVG 一刀切掉了」——
+那句話是我讀了程式碼寫的,**沒有跑過**。要是照著規格直接動手,
+第一件事會是「把 SVG 從清單裡拿掉」,而那條清單根本沒生效,
+改完什麼都不會變,然後開始debug 一個不存在的東西。
+
+§DC-4 剛學過同一課(PUA 佔位符會不會被模型吃掉,補測 9/9),
+這次是同一課的第二遍:**規格裡的每一句「現在的行為是 X」都是待驗的斷言。**

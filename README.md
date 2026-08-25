@@ -161,7 +161,9 @@ src/
   manifest.json
   shared/   types · models(三檔與牌價)· settings · hash · log · diag · report · messages
             glossary(詞表解析:純函式,content 與 worker 共用同一份判斷)
+            imageblocks(圖片區塊:座標防呆 · 字級 · 信心。同樣兩邊共用)
   content/  detect(選取規則)· cover/geometry/measure/bleed(幾何)· styleprobe(顏色)
+            imagegeo(圖片座標:object-fit / position 換算,純函式)
             overlay(closed shadow DOM)· annotate(加翻層)· snapshot(匯出)
             l0(Translator API)· queue(L0 併發池)· mask(佔位符)· lang · motion
             upgrade(升級管線的純判斷)· unit · device · fonts · index(協調)
@@ -171,7 +173,7 @@ src/
   popup/    啟用、管線、檔位、L0 語言包、本頁階層統計、花費、匯出 log / 頁面 / 快取
 scripts/    audit-sites · audit-coverage · probe-{detect,colors,snapshot,gemma}
             fetch-fonts(subset 打包)· zip · sites.txt · fixtures/
-tests/      217 個 node:test
+tests/      248 個 node:test;fixtures/vision/ 是真實 API 回應(地面實況)
 docs/       lessons(通則)· deviations(逐件記錄)· acceptance(人工驗收)
             fonts(subset 實測)· plan-annotation(加翻層規格)
             plan-glossary(詞表規格 + 模型實測)· plan-images(圖片翻譯規格)
