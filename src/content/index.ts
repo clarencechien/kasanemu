@@ -35,6 +35,7 @@ import {
   measureUnit,
   unlockScales,
 } from './geometry';
+import { clipInsets } from './cover';
 import { probePackagedFonts } from './fonts';
 import { L0Engine, translatorSupported } from './l0';
 import { pageSourceLang, sampleVisibleText, sniffScript, toTranslatorTarget } from './lang';
@@ -184,6 +185,8 @@ let rescanTimer = 0;
 let lastOverflowCount = -1;
 /** 來源元素現在沒被畫出來的疊層數(收折的 <details> 等) */
 let lastHiddenCount = -1;
+/** 被容器裁到的疊層數 */
+let lastClippedCount = -1;
 let lastShiftBucket = '';
 let lastTopBand = -1;
 let lastBottomBand = -1;
@@ -477,6 +480,7 @@ function onDisclosureToggle(): void {
 
 function relayout(): void {
   unlockScales(units);
+  for (const u of units) clippersOf.delete(u);
   clearMeasureCache();
   // 幾何變了,還沒送出去的長度預算要跟著重算(已送出的不動,反正回不去了)
   for (const u of units) if (!u.l1Queued) u.maxChars = 0;
@@ -1772,7 +1776,61 @@ function chromeBand(y: number, top: boolean): number {
   return 0;
 }
 
-/** 把被固定頁首 / 頁尾蓋住的那一段從疊層上裁掉,讓它跟原文一樣消失 */
+/**
+ * 會裁切這個單元的祖先(`overflow` 不是 visible 的那些)。
+ *
+ * 找一次就存起來:結構不會因為捲動而改變,只有重排才需要重算。
+ * 每次 flush 重找的話是 59 個單元 × 十幾層 getComputedStyle。
+ */
+const clippersOf = new WeakMap<Unit, Element[]>();
+
+function clippers(u: Unit): Element[] {
+  const hit = clippersOf.get(u);
+  if (hit) return hit;
+  const out: Element[] = [];
+  for (let p = u.el.parentElement; p && p !== document.documentElement; p = p.parentElement) {
+    const cs = getComputedStyle(p);
+    if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') out.push(p);
+  }
+  clippersOf.set(u, out);
+  return out;
+}
+
+/**
+ * 疊層可以畫在視窗的哪一塊(視窗座標)。
+ *
+ * 使用者的話:「破版有辦法量 inner 的上下嗎?可以保守一點。」——
+ * 對,而且該量的不只上下,是**四邊**,而且不只一層。
+ *
+ * 這是「疊在頁面外面」的最後一個代價:內容捲出捲動容器時,頁面會把它裁掉,
+ * 而我們的疊層在最上層,不受任何裁切 —— 於是畫到 Gmail 的搜尋列與
+ * 工具列上面去。附圖裡那些浮在最上方的譯文全部是這樣來的。
+ *
+ * 修法和「被固定頁首蓋住」完全一樣:算出可見的矩形,用 clip-path 裁掉。
+ * 保守的方向是**寧可多裁**:交集為空就整塊不見。
+ */
+function visibleBox(u: Unit): { top: number; right: number; bottom: number; left: number } {
+  let top = lastTopBand;
+  let left = 0;
+  let right = window.innerWidth;
+  let bottom = window.innerHeight - lastBottomBand;
+  for (const p of clippers(u)) {
+    const r = p.getBoundingClientRect();
+    if (r.width < 1 && r.height < 1) continue; // 祖先自己沒被畫出來,交給別的檢查處理
+    if (r.top > top) top = r.top;
+    if (r.left > left) left = r.left;
+    if (r.right < right) right = r.right;
+    if (r.bottom < bottom) bottom = r.bottom;
+  }
+  return { top, right, bottom, left };
+}
+
+/**
+ * 把「頁面自己會裁掉、而我們不會」的部分從疊層上裁掉。
+ *
+ * 兩個來源:固定頁首 / 頁尾(蓋住原文),以及內層捲動容器(裁掉原文)。
+ * 兩者的處置一樣 —— 原文看不到的地方,譯文也不該看得到。
+ */
 function applyChromeClip(): void {
   if (!layer || !running) return;
   const h = window.innerHeight;
@@ -1783,16 +1841,27 @@ function applyChromeClip(): void {
     lastBottomBand = bottom;
     diag('info', 'chrome-band', { top, bottom });
   }
-  // 純算術,不讀 layout:u.rect 是快取值
+  let clipped = 0;
   for (const u of units) {
     if (!u.box) continue;
     const vTop = u.rect.top - window.scrollY - u.bleed.y;
+    const vLeft = u.rect.left - window.scrollX - u.bleed.x;
     const vBottom = vTop + u.rect.height + u.bleed.y * 2;
+    const vRight = vLeft + u.rect.width + u.bleed.x * 2;
     if (vBottom < -50 || vTop > h + 50) {
-      layer.setClip(u, 0, 0);
+      layer.setClip(u, 0, 0, 0, 0);
       continue;
     }
-    layer.setClip(u, Math.max(0, top - vTop), Math.max(0, vBottom - (h - bottom)));
+    const ins = clipInsets(
+      { top: vTop, right: vRight, bottom: vBottom, left: vLeft },
+      visibleBox(u),
+    );
+    if (ins.top > 0 || ins.right > 0 || ins.bottom > 0 || ins.left > 0) clipped++;
+    layer.setClip(u, ins.top, ins.right, ins.bottom, ins.left);
+  }
+  if (clipped !== lastClippedCount) {
+    lastClippedCount = clipped;
+    diag('info', 'clip-to-container', { clipped, total: units.size });
   }
 }
 

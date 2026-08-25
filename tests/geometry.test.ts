@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { coverRect } from '../src/content/cover.ts';
+import { clipInsets, coverRect } from '../src/content/cover.ts';
 import type { Unit } from '../src/content/unit.ts';
 
 /**
@@ -78,4 +78,32 @@ test('元素自己會裁切時不撐開 —— scrollWidth 是沒被畫出來的
   );
   assert.equal(rect.width, 1);
   assert.equal(rect.height, 1);
+});
+
+test('裁切:超出捲動容器的部分要被裁掉,不是照畫', () => {
+  // Gmail 的破版:內容捲出郵件窗格上緣,頁面把它裁掉了,
+  // 而疊層在最上層不受裁切 —— 於是譯文畫到搜尋列與工具列上面。
+  const rect = { top: 60, right: 700, bottom: 140, left: 300 };
+  const vis = { top: 100, right: 900, bottom: 800, left: 0 };
+  assert.deepEqual(clipInsets(rect, vis), { top: 40, right: 0, bottom: 0, left: 0 });
+});
+
+test('裁切:四邊都算,不只上下', () => {
+  const rect = { top: 100, right: 700, bottom: 200, left: 100 };
+  const vis = { top: 120, right: 650, bottom: 180, left: 150 };
+  assert.deepEqual(clipInsets(rect, vis), { top: 20, right: 50, bottom: 20, left: 50 });
+});
+
+test('裁切:完全看不到就整塊裁掉,不要露一條邊', () => {
+  const rect = { top: 10, right: 700, bottom: 90, left: 300 };
+  const vis = { top: 200, right: 900, bottom: 800, left: 0 };
+  const ins = clipInsets(rect, vis);
+  assert.equal(ins.top, 90 - 10, '整塊高度都被裁掉');
+  assert.deepEqual([ins.right, ins.bottom, ins.left], [0, 0, 0]);
+});
+
+test('裁切:完全在可見範圍內就不裁', () => {
+  const rect = { top: 200, right: 700, bottom: 260, left: 300 };
+  const vis = { top: 100, right: 900, bottom: 800, left: 0 };
+  assert.deepEqual(clipInsets(rect, vis), { top: 0, right: 0, bottom: 0, left: 0 });
 });

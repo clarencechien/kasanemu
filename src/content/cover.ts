@@ -61,3 +61,30 @@ export function coverRect(unit: Unit): { rect: DocRect; overflows: boolean } {
   };
 }
 
+
+export interface Box {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
+/**
+ * 疊層要裁掉多少才不會超出可見範圍。回傳 clip-path inset 的四個值。
+ *
+ * `rect` 是疊層畫在哪(視窗座標),`vis` 是「可以畫在哪」——
+ * 固定頁首吃掉的、內層捲動容器裁掉的,都已經交集進去了。
+ *
+ * 交集為空時回傳「整塊裁掉」而不是負值或半條邊:原文完全看不到的時候,
+ * 譯文露出一條邊比整塊不見更難看,而且更容易被誤認成 bug。
+ */
+export function clipInsets(rect: Box, vis: Box): Box {
+  const h = rect.bottom - rect.top;
+  const w = rect.right - rect.left;
+  const top = Math.max(0, vis.top - rect.top);
+  const left = Math.max(0, vis.left - rect.left);
+  const bottom = Math.max(0, rect.bottom - vis.bottom);
+  const right = Math.max(0, rect.right - vis.right);
+  if (top + bottom >= h || left + right >= w) return { top: h, right: 0, bottom: 0, left: 0 };
+  return { top, right, bottom, left };
+}

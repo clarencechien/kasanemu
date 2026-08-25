@@ -363,8 +363,13 @@ export class OverlayLayer {
   }
 
   /** 把盒子上下裁掉一段(px);0 / 0 表示不裁 */
-  setClip(unit: Unit, top: number, bottom: number): void {
-    const v = top <= 0 && bottom <= 0 ? '' : `inset(${Math.max(0, top)}px 0 ${Math.max(0, bottom)}px 0)`;
+  /** 四邊都要:固定頁首吃掉上下,內層捲動容器四邊都會裁 */
+  setClip(unit: Unit, top: number, right: number, bottom: number, left: number): void {
+    const t = Math.max(0, top);
+    const r = Math.max(0, right);
+    const b = Math.max(0, bottom);
+    const l = Math.max(0, left);
+    const v = t <= 0 && r <= 0 && b <= 0 && l <= 0 ? '' : `inset(${t}px ${r}px ${b}px ${l}px)`;
     for (const el of [unit.box, unit.hint]) {
       if (!el || el.dataset['clip'] === v) continue;
       el.dataset['clip'] = v;
