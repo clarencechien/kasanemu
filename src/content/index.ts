@@ -1547,6 +1547,18 @@ function onKeyDown(e: KeyboardEvent): void {
     closeChip(true);
     updateHud();
   }
+  /*
+   * Alt 加上別的鍵 = 那是一個和弦,不是「我想看原文」。
+   *
+   * 「翻譯這一頁」改掛 Alt+R 之後這一條變成必要的:按 Alt+R 時
+   * Alt 會先單獨到達,整層收起來閃一下,直到放開 Alt 才回來。
+   * 收到第二個鍵就把它放回去 —— hold 的意圖只有在 Alt 單獨按住時才成立。
+   */
+  if (hiddenAll && e.key !== 'Alt') {
+    hiddenAll = false;
+    layer?.setHiddenAll(false);
+    updateHud();
+  }
   if (e.altKey && e.shiftKey && (e.key === 'D' || e.key === 'd')) {
     e.preventDefault();
     toggleDebugPanel();
@@ -1752,12 +1764,14 @@ function updateHud(): void {
    * 那不是壞掉,可是也不該讓使用者以為那就是最終品質。
    * 講清楚,而且**告訴他怎麼要**:同一顆按鈕再按一次就全部升級。
    */
-  const onlyL0 = usesL1(effective) ? c.l0 : 0;
+  const onlyL0 = usesL1(effective)
+    ? [...units].filter((u) => u.tier === 'l0' && !u.l1Queued).length
+    : 0;
   const tail =
     hard > 0
       ? ` · ${done}(滑到紅線上重試)`
       : onlyL0 > 0 && phase === 'all-done'
-        ? ` · ${done} · ${onlyL0} 塊只有 L0,Alt+Shift+R 全部升級`
+        ? ` · ${done} · ${onlyL0} 塊只有 L0,Alt+R 全部升級`
         : ` · ${done}`;
   layer.setHud(`疊 · ${parts.join(' · ')}${tail}`, hard > 0 ? 'warn' : 'idle');
 }
@@ -2713,8 +2727,10 @@ async function translatePage(): Promise<void> {
   }
   if (!running) return;
   // 失敗的重來一次:清掉已問過快取的記號,並把狀態退回 pending
+  let retryCount = 0;
   for (const u of units) {
     if (u.tier === 'failed' || u.tier === 'l1-failed' || u.tier === 'l0-failed') {
+      retryCount++;
       u.tier = u.l0Text !== undefined ? 'l0' : 'pending';
       u.l1Queued = false;
       u.failReason = undefined;
@@ -2733,13 +2749,45 @@ async function translatePage(): Promise<void> {
    * 這個動作本來就叫「翻譯這一頁」,而且是使用者親手按的 ——
    * 讓它把工作做完是最不意外的行為,也不需要新的按鈕或快捷鍵。
    */
-  const stillL0 = [...units].filter(
-    (u) => u.tier === 'l0' && !u.l1Queued && u.maxChars > 0 && !hiddenByDisclosure(u.el),
-  );
-  if (stillL0.length > 0) {
-    stillL0.sort((a, b) => priorityOf(a) - priorityOf(b));
-    diag('info', 'upgrade-all', { units: stillL0.length });
-    queueUpgrade(stillL0);
+  const l0Units = [...units].filter((u) => u.tier === 'l0');
+  const stillL0 = l0Units.filter((u) => !u.l1Queued);
+  /*
+   * **收折起來的內容也要升級。**
+   *
+   * 平常的停留門檻不理會收折的 `<details>`(看不見的東西不必花錢),
+   * 上一版把同一條規則抄進這裡 —— 於是使用者按了「翻譯這一頁」,
+   * 而那 12 塊剛好全在收折的 FAQ 裡,按鈕什麼都沒做。
+   * 使用者的原話:「按翻譯這一頁跟 alt+shift+r 沒啥用」。
+   *
+   * 自動的規則可以保守,**使用者親手按的動作不行** ——
+   * 他要的是「這一頁」,不是「這一頁我現在看得到的部分」。
+   */
+  for (const u of stillL0) if (u.maxChars === 0) u.maxChars = computeMaxChars(u);
+  const ready = stillL0.filter((u) => u.maxChars > 0);
+  /*
+   * 這一則**每次都寫**,包括什麼都沒做的時候。
+   *
+   * 上一輪查「按了沒反應」時,log 裡連一行都沒有 —— 只能從缺席去推測,
+   * 而缺席可以是「沒被呼叫」也可以是「呼叫了但集合是空的」,分不出來。
+   * 使用者親手觸發的動作,一定要在 log 裡留下它做了什麼。
+   */
+  diag('info', 'translate-page', {
+    l0: l0Units.length,
+    upgrading: ready.length,
+    alreadyQueued: l0Units.length - stillL0.length,
+    noRoom: stillL0.length - ready.length,
+    retried: retryCount,
+  });
+  if (ready.length > 0) {
+    ready.sort((a, b) => priorityOf(a) - priorityOf(b));
+    queueUpgrade(ready);
+  } else if (retryCount === 0) {
+    // 按了就要有回音 —— 沒事可做也是一種回音
+    lastProblem = l0Units.length > 0 ? '這幾塊已經在升級佇列裡了' : '沒有可以再升級的區塊';
+    window.setTimeout(() => {
+      if (lastProblem !== '') lastProblem = '';
+      updateHud();
+    }, 2500);
   }
   updateHud();
   scheduleFlush(true);

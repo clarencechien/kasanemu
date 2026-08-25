@@ -551,7 +551,7 @@ footer {
           <span class="k">啟用不等於開始翻</span>
           <strong>預設不會自動翻。</strong>啟用只代表「這個網域我要用 Kasanemu」;
           要翻是另一個動作 —— popup 的「翻譯這一頁」或
-          <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd>。
+          <kbd>Alt</kbd>+<kbd>R</kbd>。
           <strong>在同一頁點連結跳轉後也要再按一次</strong>:
           你按的是「翻這一頁」,不是「從今以後每一頁」。
           想要競品那種一進站就整頁翻的行為,popup 上把「每一頁都自動翻」打開。
@@ -684,7 +684,7 @@ footer {
           <tbody>
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>T</kbd></td><td>在這個網域啟用 / 關閉疊層翻譯</td></tr>
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd></td><td>切換「全開」/「點閱」(點閱 = 疊層平常隱藏,滑過才顯示)</td></tr>
-            <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd></td><td>翻譯這一頁;也用來把整頁失敗的區塊全部重試</td></tr>
+            <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>R</kbd></td><td>翻譯這一頁。<strong>再按一次</strong>會把失敗的重試、還停在 L0 的全部升級(包含收折起來的內容)</td></tr>
             <tr><td class="keycell">按住 <kbd>Alt</kbd></td><td><strong>暫時收起整層</strong> —— 想瞄一眼原文就按著,放開就回來</td></tr>
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd></td><td>掃視:疊層切成標註樣式,同時顯示所有 UI 標籤的貼片(除錯用)</td></tr>
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></td><td>抽樣面板:原文 / L0 / L1 三欄並列(需先在設定開 debug mode)</td></tr>
@@ -764,7 +764,7 @@ footer {
       <div class="stack-block">
         <div class="card">
           <span class="k">某幾塊變紅了</span>
-          <p>把滑鼠停在那塊上約半秒,它會自己重排隊重翻(每塊最多兩次)。整頁都要重試就按 <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd>。</p>
+          <p>把滑鼠停在那塊上約半秒,它會自己重排隊重翻(每塊最多兩次)。整頁都要重試就按 <kbd>Alt</kbd>+<kbd>R</kbd>。</p>
         </div>
         <div class="card">
           <span class="k">狀態列說「沒找到可翻譯的區塊」</span>
@@ -815,7 +815,7 @@ footer {
             那是<strong>刻意的</strong>:一個區塊要在畫面上待滿 1.5 秒才會送去 L1,
             純粹捲過去的段落留在 L0,一毛不花(提示線是虛線)。
             <br />
-            想把那幾塊也升上去,<strong>再按一次 <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd></strong>
+            想把那幾塊也升上去,<strong>再按一次 <kbd>Alt</kbd>+<kbd>R</kbd></strong>
             (或 popup 的「翻譯這一頁」)—— 它會把還停在 L0 的全部送去升級。
             狀態列在這種時候會直接寫出來還有幾塊。
           </p>
