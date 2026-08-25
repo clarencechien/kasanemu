@@ -101,6 +101,16 @@ function visibleTextOf(el: Element, skip?: ReadonlySet<Element>): string {
 
 const HEADING_TAGS = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6']);
 
+/**
+ * `role="heading"` 掛在非 heading 標籤上,而且很短 —— 應用程式的區塊標題。
+ * 真正的文章用 `<h1>`–`<h6>`。
+ */
+function isAppHeading(el: Element): boolean {
+  if (el.getAttribute('role') !== 'heading') return false;
+  if (HEADING_TAGS.has(el.tagName)) return false;
+  return normalizeText(el.textContent ?? '').length <= UI_LABEL_MAX_CHARS;
+}
+
 export function isUiLabel(el: Element, skip?: ReadonlySet<Element>): boolean {
   /*
    * `<div role="heading">Mail</div>` —— 應用程式的區塊標題。
@@ -400,6 +410,22 @@ function walk(el: Element, ctx: WalkCtx): boolean {
    * 疊層蓋掉整張圖。實際發生過。
    */
   if (isScreenReaderOnly(el, cs)) {
+    ctx.srOnly.add(el);
+    return false;
+  }
+  /*
+   * 應用程式自繪的區塊標題,而且**祖先也不能繼承它的文字**。
+   *
+   * `isUiLabel()` 已經認得 `<div role="heading">`,但那條檢查只在元素
+   * 「像 block」時才會走到。Gmail 的寫法是
+   *
+   *   <div class="aAw"><span role="heading">Labels</span><div role="button"/></div>
+   *
+   * inline 的 `<span>` 在 blockish 判斷就 return false 了,於是外層的 div
+   * 撿走「Labels」變成翻譯單元 —— 左欄那個「標籤」就是這樣來的。
+   * 和 sr-only 一樣要登記起來,不然只是把問題往上搬一層。
+   */
+  if (isAppHeading(el)) {
     ctx.srOnly.add(el);
     return false;
   }

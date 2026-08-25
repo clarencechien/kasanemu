@@ -119,6 +119,25 @@ function px(v: string): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/**
+ * 取不到不透明背景時,**依文字顏色的亮度**挑一個。
+ *
+ * §4.1 原本的降級是固定的標註樣式(淺藍底 + 褐字)。那條規則的理由是
+ * 「不要猜」—— 但固定用淺色底**本身就是一種猜**,而且在深色版面上猜錯得
+ * 很難看:ARK 電子報的深藍底橫幅上冒出一塊淺藍色方塊配橘字,
+ * 使用者的原話是「選色也有點怪怪的,不是選藍底嗎?」
+ *
+ * 文字顏色是我們**確定**知道的東西,而它必然與背景有對比。
+ * 白字 → 底一定是深的;深字 → 底一定是淺的。這個推論比「假設頁面是淺色」
+ * 可靠得多,而且在深色橫幅、深色模式、彩色卡片上都成立。
+ */
+export function backgroundForText(color: string): string {
+  const c = parseColor(color);
+  if (!c) return 'rgb(255, 255, 255)';
+  const lum = (c.r * 0.299 + c.g * 0.587 + c.b * 0.114) / 255;
+  return lum > 0.6 ? 'rgb(20, 24, 29)' : 'rgb(246, 248, 250)';
+}
+
 export function probeStyle(el: Element, weightOffset: number): ProbedStyle {
   const cs = getComputedStyle(el);
   const fontSizePx = px(cs.fontSize) || 16;
@@ -140,7 +159,8 @@ export function probeStyle(el: Element, weightOffset: number): ProbedStyle {
     padding: [px(cs.paddingTop), px(cs.paddingRight), px(cs.paddingBottom), px(cs.paddingLeft)],
     border: [px(cs.borderTopWidth), px(cs.borderRightWidth), px(cs.borderBottomWidth), px(cs.borderLeftWidth)],
     borderRadius: cs.borderRadius,
-    background: bg.color,
+    // 取不到就依文字亮度挑一個對比色,不要固定用淺色底(見 backgroundForText)
+    background: bg.color ?? backgroundForText(cs.color),
     backgroundRisk: bg.risk,
   };
 }

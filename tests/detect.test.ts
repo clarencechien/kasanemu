@@ -502,3 +502,16 @@ test('hiddenByDisclosure:summary 看得見,內容看不見,展開後都看得見
   assert.equal(hiddenByDisclosure(at('s2')), false);
   assert.equal(hiddenByDisclosure(at('p2')), false);
 });
+
+test('Gmail 的「Labels」:inline 的 role=heading,祖先也不能撿走它的文字', () => {
+  // isUiLabel 只在元素「像 block」時才會被問到,而 <span> 是 inline ——
+  // 於是外層的 div 撿走「Labels」變成翻譯單元。要跟 sr-only 一樣登記起來。
+  const body = mount(`
+    <div class="aAw FgKVne">
+      <span class="aAv" role="heading">Labels</span>
+      <div class="aAu arN" aria-label="Create new label" role="button" tabindex="0"></div>
+    </div>
+    <p>Drone delivery is scaling rapidly in the United States this year.</p>
+  `);
+  assert.deepEqual(ids(body), ['Drone delivery is scaling rapidly in the United States this year.']);
+});

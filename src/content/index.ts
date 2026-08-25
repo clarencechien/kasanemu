@@ -165,6 +165,10 @@ let settleTimer = 0;
 /** 應用程式外殼的快速座標檢查(document 本身不捲時才開) */
 let driftTimer = 0;
 /** 只在數量變化時記錄,否則每次重排都記一筆會把 log 洗掉 */
+/** 兩次掃描之間至少隔這麼久(ms)—— 應用程式的 DOM 變動不該變成全樹掃描 */
+const MIN_SCAN_GAP_MS = 400;
+let lastScanAt = -1e9;
+let rescanTimer = 0;
 let lastOverflowCount = -1;
 /** 來源元素現在沒被畫出來的疊層數(收折的 <details> 等) */
 let lastHiddenCount = -1;
@@ -272,8 +276,13 @@ function scan(): void {
       src: c.src,
       style,
       geometryRisk: c.geometryRisk,
-      // §4.1 取不到不透明實色 → 降級為標註樣式,不要猜
-      annotation: style.backgroundRisk,
+      /*
+       * §4.1 原本是「取不到不透明實色 → 降級為標註樣式」。
+       * 改成只有使用者明確要求時才用標註樣式 —— 背景取不到的情況現在由
+       * backgroundForText() 依文字亮度挑一個對比色處理,那比固定淺色底
+       * 準得多(深色橫幅上一塊淺藍配橘字實在太醜)。
+       */
+      annotation: settings.forceAnnotation,
       singleLine: false,
       sizeGroup: Math.round(style.fontSizePx),
       scale: 1,
@@ -455,8 +464,29 @@ function relayout(): void {
 
 function flush(): void {
   if (!layer || !running) return;
-  const doScan = pendingScan;
-  pendingScan = false;
+  /*
+   * 掃描節流。
+   *
+   * Gmail 的診斷 log 顯示 `scan {"found":0}` **每秒跑兩次** ——
+   * 應用程式的 DOM 一直在動,每一次變動都觸發一次全樹 walk + getComputedStyle。
+   * 那是純浪費,而且會排擠真正要做的重新量測。
+   *
+   * 掃描是為了「發現新內容」,那件事不需要 60fps。重新量測(flush 的其餘部分)
+   * 才需要即時,所以只節流掃描,不節流 flush。
+   * 空掃重試(emptyScans)期間不節流 —— 那時候正在等內容出現。
+   */
+  const now = performance.now();
+  const doScan = pendingScan && (emptyScans > 0 || now - lastScanAt >= MIN_SCAN_GAP_MS);
+  if (doScan) {
+    lastScanAt = now;
+    pendingScan = false;
+  } else if (pendingScan && rescanTimer === 0) {
+    // 被節流掉的掃描要補回來,不然安靜的頁面會永遠等不到下一次 flush
+    rescanTimer = window.setTimeout(() => {
+      rescanTimer = 0;
+      scheduleFlush();
+    }, MIN_SCAN_GAP_MS);
+  }
   prune();
   if (doScan) scan();
 
@@ -2000,6 +2030,9 @@ function stop(): void {
   hoverRetryTimer = undefined;
   clearTimeout(innerSettleTimer);
   innerSettleTimer = 0;
+  clearTimeout(rescanTimer);
+  rescanTimer = 0;
+  lastScanAt = -1e9;
   if (scrollRaf) cancelAnimationFrame(scrollRaf);
   scrollRaf = 0;
   emptyScans = 0;

@@ -1506,3 +1506,63 @@ export function hiddenByDisclosure(el: Element): boolean {
 屬性時不會派發那個事件。所以 MutationObserver 加上
 `attributeFilter: ['open', 'hidden', 'aria-expanded', 'aria-hidden']` ——
 只有這幾個名字會觸發,成本可控,而且順便涵蓋自繪的 accordion。
+
+## BH. 背景取不到時,依文字亮度挑一個(不要固定用淺色底)
+
+回報:「ARK 的選色也有點怪怪的,不是選藍底嗎?」附圖是深藍底的橫幅上
+冒出一塊淺藍色方塊配橘字。
+
+那是 §4.1 的降級路徑:`resolveBackground()` 遇到 `background-image` 就回
+`risk: true`(底下是圖,不知道那塊像素是什麼顏色),於是套用標註樣式 ——
+固定的淺藍底 + 褐字。
+
+那條規則的理由是「不要猜」。但**固定用淺色底本身就是一種猜**,
+而且是最糟的那種:它假設整個網頁世界是淺色的。深色橫幅、深色模式、
+彩色卡片上全部猜錯。
+
+**文字顏色是我們確定知道的東西,而它必然與背景有對比。**
+白字 → 底一定是深的;深字 → 底一定是淺的。所以取不到背景時,
+依 `color` 的亮度挑一個對比底(`backgroundForText()`)。
+這個推論比「假設頁面是淺色」可靠得多。
+
+標註樣式保留給它真正該在的地方:使用者明確勾選的 `forceAnnotation`,
+以及按住 Alt 的掃視。
+
+## BI. Gmail 的第二輪:log 說了三件事
+
+build 30 在 Gmail 上的診斷 log:
+
+```
+inner-scroll     每 0.5 秒一筆,units 10–13    ← 內層捲動偵測有效
+position-drift   dy 最大 1440                  ← 座標稽核有效
+origin-offset    0 筆                          ← 原點沒問題
+scan {"found":0} **每秒兩次**                  ← 純浪費
+```
+
+前三件是好消息:BD / BE 的機制都在動。第四件是新發現的問題。
+
+**掃描節流。** 應用程式的 DOM 一直在動,每一次變動都觸發一次全樹 walk +
+getComputedStyle。掃描是為了「發現新內容」,那件事不需要 60fps ——
+兩次掃描之間至少隔 400ms。重新量測(flush 的其餘部分)才需要即時,
+所以**只節流掃描,不節流 flush**。被節流掉的掃描會補一次延後的 flush,
+不然安靜的頁面會永遠等不到。
+
+## BJ. `role="heading"` 掛在 inline 元素上時,祖先會撿走它的文字
+
+回報:Gmail 左欄的「Labels」還是被翻成「標籤」。
+
+§BD 已經加了「非 heading 標籤 + `role="heading"` + 24 字以內 = UI 標籤」,
+但那條檢查在 `isUiLabel()` 裡,而 `isUiLabel()` **只在元素「像 block」時
+才會被問到**。Gmail 的寫法是:
+
+```html
+<div class="aAw"><span role="heading">Labels</span><div role="button"/></div>
+```
+
+inline 的 `<span>` 在 blockish 判斷就 `return false` 了,於是外層的 `<div>`
+撿走「Labels」變成翻譯單元。
+
+修法和 sr-only 一模一樣:認出來之後**登記到 srOnly 集合**再 return,
+讓祖先扣掉它的文字。只是 return false 永遠只是把問題往上搬一層 ——
+這個坑在這個檔案裡已經踩過兩次(sr-only 的 stretched link、
+分享按鈕的 `<span hidden>`),這是第三次。
