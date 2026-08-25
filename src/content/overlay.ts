@@ -333,6 +333,26 @@ export class OverlayLayer {
    */
 
 
+  /** host 自己現在畫在哪。用來驗證「絕對座標 0,0 真的等於文件原點」 */
+  hostRect(): DOMRect {
+    return this.host.getBoundingClientRect();
+  }
+
+  /**
+   * 修正原點誤差。
+   *
+   * host 是 documentElement 的絕對定位子元素,正常情況下 (0,0) 就是文件原點。
+   * 但應用程式外殼可能把 `<html>` / `<body>` 變成定位或 transform 的容器,
+   * 那時 (0,0) 不再是文件原點,整層疊層會平移一段固定距離。
+   *
+   * 這**不是** build 14 那個做法:那是每個捲動 frame 用 JS 追 scrollY
+   * (追不上 → 抖動)。這裡修的是**靜態**誤差,只在版面變動時重算一次,
+   * 不隨捲動改變,所以不會抖。
+   */
+  setOrigin(dx: number, dy: number): void {
+    this.layer.style.transform = dx === 0 && dy === 0 ? '' : `translate(${dx}px, ${dy}px)`;
+  }
+
   setMode(mode: DisplayMode): void {
     this.layer.classList.toggle('mode-full', mode === 'full');
     this.layer.classList.toggle('mode-peek', mode === 'peek');

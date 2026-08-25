@@ -161,6 +161,8 @@ let reprioTimer = 0;
 let motionTimer = 0;
 let scrollRaf = 0;
 let settleTimer = 0;
+/** 應用程式外殼的快速座標檢查(document 本身不捲時才開) */
+let driftTimer = 0;
 /** 只在數量變化時記錄,否則每次重排都記一筆會把 log 洗掉 */
 let lastOverflowCount = -1;
 let lastShiftBucket = '';
@@ -351,10 +353,10 @@ function scheduleFlush(alsoScan = false): void {
  * 這裡在捲動停止、轉場結束之後對可見單元驗一次座標,對不上就重排。
  * 不在捲動**過程中**做,§10.2 的「捲動時額外開銷 0」還是成立。
  */
-function auditPositions(): void {
+function auditPositions(full = true): void {
   if (!layer || !running) return;
   applyChromeClip();
-  checkOcclusion();
+  if (full) checkOcclusion();
   // 用**疊層畫在哪**來決定要驗誰,而不是來源元素現在在哪:
   // 錯位的症狀正是「來源元素跑掉了,疊層還留在視口裡」,
   // 只驗 inView 的來源元素會漏掉那些。
@@ -373,7 +375,9 @@ function auditPositions(): void {
     const dh = Math.abs(rect.height - u.rect.height);
     if (dx > 1 || dy > 1 || dw > 1 || dh > 1) {
       diag('info', 'position-drift', { id: u.id, dx, dy, dw, dh });
-      scheduleFlush();
+      // 一個錯得離譜就代表這一批都不能信(多半是共同的祖先動了)
+      if (Math.max(dx, dy) > GROSS_DRIFT_PX) markAllStale();
+      flushNow();
       return;
     }
   }
@@ -469,6 +473,7 @@ function flush(): void {
     if (overflowing > 0) diag('info', 'content-overflows-box', { count: overflowing });
   }
   applyChromeClip();
+  checkOrigin();
   if (firstPaintMs < 0 && paintable.length > 0) {
     firstPaintMs = Math.round(performance.now() - startedAt);
     dbg('first paint', firstPaintMs, 'ms', effective);
@@ -1608,6 +1613,23 @@ async function start(): Promise<void> {
     auditPositions();
     void catchUpL0();
   }, 900);
+  /*
+   * 應用程式外殼(document 本身不捲,像 Gmail / Slack)另外開一輪快檢。
+   *
+   * 那種頁面的捲動發生在內層容器裡,而**捲動事件不一定收得到**
+   * (自訂捲動、虛擬清單、shadow DOM)。與其賭事件收得到,
+   * 不如直接量:座標一錯就先藏起來再重排。
+   * 只驗座標,不做遮擋檢查(那個貴,而且不會因為捲動而改變結論)。
+   */
+  const el = document.documentElement;
+  const appShell = el.scrollHeight <= el.clientHeight + 4;
+  diag('info', 'layout-mode', { appShell, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight });
+  if (appShell) {
+    driftTimer = window.setInterval(() => {
+      if (document.hidden) return;
+      auditPositions(false);
+    }, 250);
+  }
   // §3.4 字型載入會改變所有 rect,完成後強制重算一次
   document.fonts.ready.then(relayout);
 
@@ -1730,6 +1752,31 @@ function checkOcclusion(): void {
   }
 }
 
+let lastOrigin = '';
+
+/**
+ * 驗證「絕對座標 (0,0) 真的等於文件原點」。
+ *
+ * 正常頁面一定成立,所以這裡多半什麼都不做(一次 rect 讀取的成本)。
+ * 但應用程式外殼可能把 `<html>` / `<body>` 變成定位或 transform 的容器,
+ * 那時整層疊層會平移一段固定距離 —— 而**每一塊都錯同樣的量**,
+ * 症狀看起來就像「疊層整片跑掉」。
+ *
+ * 這是 §R / §X / §AA 三輪都在找、但當時是用「拿掉原點」的方式亂試的東西。
+ * 這次把它變成一個明確的、會寫進 log 的檢查。
+ */
+function checkOrigin(): void {
+  if (!layer) return;
+  const r = layer.hostRect();
+  const dx = Math.round(r.left + window.scrollX);
+  const dy = Math.round(r.top + window.scrollY);
+  const key = `${dx},${dy}`;
+  if (key === lastOrigin) return;
+  lastOrigin = key;
+  layer.setOrigin(-dx, -dy);
+  if (dx !== 0 || dy !== 0) diag('warn', 'origin-offset', { dx, dy });
+}
+
 /** 疊層畫的位置與來源元素現在的位置差多少 */
 function driftOf(u: Unit): { dx: number; dy: number } {
   const r = u.el.getBoundingClientRect();
@@ -1756,10 +1803,44 @@ function scrollSync(): void {
   const probe = [...units].find((u) => u.box && u.inView && u.tier !== 'skipped');
   if (!probe) return;
   const d = driftOf(probe);
-  if (Math.abs(d.dx) > 2 || Math.abs(d.dy) > 2) {
-    noteDrift(probe.id, d);
-    scheduleFlush();
+  const off = Math.max(Math.abs(d.dx), Math.abs(d.dy));
+  if (off <= 2) return;
+  noteDrift(probe.id, d);
+  /*
+   * 差幾像素只是沒對齊,重排一下就好;差一大截代表疊層已經蓋在
+   * **別人的內容**上,那才是「破版」—— 先藏起來再說。
+   * 門檻分開是為了不讓 parallax / sticky 那種長期小幅漂移一直閃。
+   */
+  if (off > GROSS_DRIFT_PX) markAllStale();
+  flushNow();
+}
+
+/**
+ * 座標已知是錯的 → **先全部藏起來**。
+ *
+ * 這是回報的「破版」的正解:不透明的盒子畫在錯的位置上,蓋掉的是別人的
+ * 內容,看起來就是整頁爛掉。疊層暫時消失只是看到原文 —— 兩害相權,
+ * 沒有疑問。
+ *
+ * 換句話說,這裡建立一條不變式:**我們不顯示已知錯位的疊層**。
+ * 之前只有「捲動中」這一種情況會藏,但錯位的來源不只捲動
+ * (內容插入、圖片載入、應用程式重繪),而且捲動事件不一定收得到。
+ */
+/** 超過這個位移就不只是「沒對齊」,是蓋到別人身上了(px) */
+const GROSS_DRIFT_PX = 12;
+
+function markAllStale(): void {
+  if (!layer) return;
+  for (const u of units) if (u.box || u.hint) layer.setStale(u, true);
+}
+
+/** 繞過 scheduleFlush 的 120ms debounce —— 錯位的每一毫秒都看得見 */
+function flushNow(): void {
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = 0;
   }
+  requestAnimationFrame(flush);
 }
 
 /** 只在量級變化時記一筆,不然捲動時每 frame 一筆會把 log 洗掉 */
@@ -1774,7 +1855,7 @@ function noteDrift(id: string, d: { dx: number; dy: number }): void {
  * 內層容器捲動之後多久重新量(ms)。
  * 太短會在慣性捲動中反覆重排,太長會讓疊層消失得很明顯。
  */
-const INNER_SCROLL_SETTLE_MS = 90;
+const INNER_SCROLL_SETTLE_MS = 60;
 let innerSettleTimer = 0;
 
 /**
@@ -1815,7 +1896,7 @@ function onScroll(e: Event): void {
       innerSettleTimer = 0;
       // 直接進 flush,不走 scheduleFlush 的 120ms debounce ——
       // 那 120ms 全部會被使用者看成「疊層慢半拍」
-      requestAnimationFrame(flush);
+      flushNow();
     }, INNER_SCROLL_SETTLE_MS);
   }
 
@@ -1869,6 +1950,9 @@ function stop(): void {
   document.removeEventListener('error', onResourceLoad, true);
   clearInterval(settleTimer);
   settleTimer = 0;
+  clearInterval(driftTimer);
+  driftTimer = 0;
+  lastOrigin = '';
   clearTimeout(motionTimer);
   motionTimer = 0;
   clearTimeout(hoverRetryTimer);
