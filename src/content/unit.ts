@@ -79,6 +79,11 @@ export interface Unit {
   /** feature.md §4.2 排入佇列的時間,用來判斷是否卡住 */
   upgradeQueuedAt?: number;
   /**
+   * 卡住重排的次數。看門狗只重排一次,再卡就標記失敗 ——
+   * 無人看管的重試迴圈會安靜地一直花錢。
+   */
+  l1Retries?: number;
+  /**
    * feature.md §4.4 / D19 字級在 L0 完成時鎖定,L1 替換不重算分組。
    * 0 = 尚未鎖定(single 模式一直是 0,沿用 Phase 1 的每次重算)。
    */

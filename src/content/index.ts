@@ -47,6 +47,7 @@ import {
   hoverRetryReady,
   isFailedTier,
   priorityOf as priorityFor,
+  stuckPlan,
   swapAllowed,
   translationPhase,
 } from './upgrade';
@@ -884,13 +885,72 @@ function queueUpgrade(list: Unit[]): void {
 }
 
 /**
+ * §4.2 佇列看門狗:排進去的區塊不准無聲無息地留在那裡。
+ *
+ * 使用者的原話:「都顯示完成 或是已經在佇列裡 但沒有變 L1
+ * 有打到 TPM Ratelimit 之類的嗎」—— 送來的 log 裡**沒有** 429、
+ * 沒有 notice、沒有 fuse-blocked,連一行都沒有說明那五塊去了哪裡。
+ *
+ * 從送出到收到中間有好幾個安靜的斷點:worker 的 post() 把
+ * `chrome.tabs.sendMessage` 的錯誤整個吞掉(而那時佇列已經清了)、
+ * pageKey 對不上的結果直接 return、service worker 被回收後
+ * alarm 沒接回來。一個一個追太慢,而且下一個斷點還是會有。
+ *
+ * 所以這一版換個方向:**讓「卡住」這個狀態不存在。**
+ * 超過 STUCK_L1_MS 沒有回音就重排一次 —— worker 的 enqueue 會去重,
+ * 所以還躺在佇列裡的只是被順手踢一下 drain,不會重複計費;
+ * 再卡就標成失敗,提示線轉警示色、hover 可以重試。
+ * 有出口總比永遠等下去好。上限一次,不做無人看管的重試迴圈。
+ */
+function sweepStuckL1(now: number): void {
+  if (!usesL1(effective)) return;
+  const requeue: Unit[] = [];
+  let gaveUp = 0;
+  let oldest = 0;
+  for (const u of units) {
+    const plan = stuckPlan(u, now);
+    if (plan === 'ok') continue;
+    oldest = Math.max(oldest, now - (u.upgradeQueuedAt ?? now));
+    u.l1Queued = false;
+    u.upgradeQueuedAt = undefined;
+    if (plan === 'give-up') {
+      gaveUp++;
+      // §5.1 有 L0 可讀就停在 L0 並標記,沒有的話才是真的失敗
+      u.tier = u.l0Text !== undefined ? 'l1-failed' : 'failed';
+      u.failReason = 'stuck';
+      if (u.kind === 'label') labelQueuedText.delete(u.src);
+      else if (u.l0Text === undefined) layer?.drop(u);
+      continue;
+    }
+    u.l1Retries = (u.l1Retries ?? 0) + 1;
+    requeue.push(u);
+  }
+  const stuck = requeue.length + gaveUp;
+  if (stuck === 0) return;
+  diag('warn', 'l1-stuck', {
+    stuck,
+    requeued: requeue.length,
+    gaveUp,
+    oldestMs: Math.round(oldest),
+  });
+  if (requeue.length > 0) queueUpgrade(requeue);
+  if (gaveUp > 0) {
+    renderChips();
+    scheduleFlush();
+  }
+  updateHud();
+}
+
+/**
  * feature.md §4.2 / D21:可見且**停留超過 1.5 秒**才排入 L1。
  * 純粹滑過去的區塊留在 L0,不花錢 —— 這一條直接對治
  * 「有 L0 打底反而燒更多」。
  */
 function dwellTick(): void {
-  if (!running || effective !== 'progressive') return;
+  if (!running) return;
   const now = Date.now();
+  sweepStuckL1(now);
+  if (effective !== 'progressive') return;
   const due = [...units].filter(
     (u) => dwellReady(u, now, settings.upgradeDwellMs, effective) && !hiddenByDisclosure(u.el),
   );
@@ -1461,6 +1521,7 @@ function retryUnit(u: Unit): void {
   u.failReason = undefined;
   u.l1Queued = false;
   u.upgradeQueuedAt = undefined;
+  u.l1Retries = 0; // 使用者親手指定的重試,重試預算歸零
   probed.delete(u);
   if (u.l0Text !== undefined) {
     // L0 有譯文、掛掉的是 L1:直接重排 L1,不再等 §4.2 的停留時間 ——
@@ -2631,16 +2692,24 @@ async function applyDomainState(next: DomainState): Promise<void> {
 
 /* ------------------------------------------------------------ 訊息接收 */
 
+/** worker 送來的是上一頁(或另一個 pageKey)的東西 —— 丟掉,但要看得見 */
+function stale(kind: string, from: string, n: number): void {
+  diag('warn', 'stale-message', { kind, n, from: from.slice(-24), now: pageKey.slice(-24) });
+}
+
 chrome.runtime.onMessage.addListener((raw: ToContent, _sender, reply) => {
   if (!raw || typeof raw !== 'object') return;
   switch (raw.type) {
     case 'results': {
-      if (raw.pageKey !== pageKey) return;
+      // pageKey 對不上就丟掉是對的(那是上一頁的譯文),但**丟掉要留下痕跡** ——
+      // 上一輪查「排進去卻沒有回音」時,這裡的沉默 return 是嫌疑人之一,
+      // 而 log 裡看不出來到底有沒有走到這條路。
+      if (raw.pageKey !== pageKey) return stale(raw.type, raw.pageKey, raw.results.length);
       applyResults(raw.results);
       break;
     }
     case 'failures': {
-      if (raw.pageKey !== pageKey) return;
+      if (raw.pageKey !== pageKey) return stale(raw.type, raw.pageKey, raw.failures.length);
       for (const f of raw.failures) {
         const u = unitById.get(f.id);
         if (!u) continue;
@@ -2749,6 +2818,23 @@ async function translatePage(): Promise<void> {
    * 這個動作本來就叫「翻譯這一頁」,而且是使用者親手按的 ——
    * 讓它把工作做完是最不意外的行為,也不需要新的按鈕或快捷鍵。
    */
+  /*
+   * **卡住的也算「還沒排」。**
+   *
+   * 「都顯示完成 或是已經在佇列裡 但沒有變 L1」—— 上一版按下去只會回報
+   * `alreadyQueued:5`,因為那五塊的 `l1Queued` 是 true。可是它們四十五秒
+   * 前就排進去了,而且一則回音都沒有。使用者親手按的動作不該被一個
+   * 早就過期的旗標擋下來。
+   */
+  const now = Date.now();
+  let unstuck = 0;
+  for (const u of units) {
+    if (stuckPlan(u, now) === 'ok') continue;
+    u.l1Queued = false;
+    u.upgradeQueuedAt = undefined;
+    u.l1Retries = 0;
+    unstuck++;
+  }
   const l0Units = [...units].filter((u) => u.tier === 'l0');
   const stillL0 = l0Units.filter((u) => !u.l1Queued);
   /*
@@ -2777,6 +2863,7 @@ async function translatePage(): Promise<void> {
     alreadyQueued: l0Units.length - stillL0.length,
     noRoom: stillL0.length - ready.length,
     retried: retryCount,
+    unstuck,
   });
   if (ready.length > 0) {
     ready.sort((a, b) => priorityOf(a) - priorityOf(b));

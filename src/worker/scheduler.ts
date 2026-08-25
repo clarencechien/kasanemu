@@ -57,8 +57,21 @@ function post(tabId: number, msg: ToContent): void {
       lastNotice: { level: msg.level, text: msg.text, at: Date.now() },
     });
   }
-  chrome.tabs.sendMessage(tabId, msg).catch(() => {
-    /* tab 已關或還沒注入,忽略 */
+  chrome.tabs.sendMessage(tabId, msg).catch((e: unknown) => {
+    /*
+     * tab 已關或還沒注入是正常的,但**譯文送不到就是譯文不見了** ——
+     * 佇列在 runBatch 結尾就清掉了,沒有人會再送一次。
+     * 使用者那五塊「排進去卻沒變 L1」的嫌疑人就在這裡,
+     * 而上一版這個 catch 是空的,log 裡一行都沒有。
+     */
+    if (msg.type === 'results' || msg.type === 'failures') {
+      diag('warn', 'post-failed', {
+        kind: msg.type,
+        tabId,
+        n: msg.type === 'results' ? msg.results.length : msg.failures.length,
+        err: String((e as Error)?.message ?? e).slice(0, 80),
+      });
+    }
   });
 }
 
@@ -87,6 +100,7 @@ export async function enqueue(
     });
   }
   await saveQueue(q);
+  diag('info', 'enqueued', { asked: units.length, queue: q.length, tier, pipeline });
   await ensureAlarm(q.length > 0);
   void drain();
 }
@@ -275,7 +289,9 @@ export async function drain(): Promise<void> {
     draining = false;
     const q = await loadQueue();
     await ensureAlarm(q.length > 0);
-    if (q.length > 0) dbg('queue still has', q.length);
+    // 佇列還有東西 = 東西還在 worker 這一側。內容腳本那邊看到的「卡住」
+    // 到底是誰扣著,只有把兩邊的數字都寫進 log 才分得出來。
+    if (q.length > 0) diag('info', 'queue-remains', { n: q.length });
   }
 }
 
