@@ -23,7 +23,16 @@ const LAYER_CSS = `
   inset: 0;
   /* §2.2 硬性要求:疊層一旦接收 hover 就會無限閃爍。此限制不可協商。 */
   pointer-events: none;
-  z-index: 2147483000;
+  /*
+   * **不要**在這裡放 2147483000。
+   *
+   * 那個值屬於 host(#kasanemu-root),它負責把整個疊層放到頁面最上層。
+   * shadow root **裡面**是另一個世界,只需要決定我們自己這幾個節點的先後。
+   * 先前這裡也放了 2147483000,於是貼片的 z-index: 5 永遠贏不了 ——
+   * 回報的「tip 還是被蓋在 layer 下」就是這個,而我上一輪只加了貼片的
+   * z-index、沒看這一行。
+   */
+  z-index: 0;
 }
 .box, .ghost {
   position: absolute;

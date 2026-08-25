@@ -1842,19 +1842,38 @@ function clippers(u: Unit): Element[] {
  * 修法和「被固定頁首蓋住」完全一樣:算出可見的矩形,用 clip-path 裁掉。
  * 保守的方向是**寧可多裁**:交集為空就整塊不見。
  */
+/**
+ * 被容器限制住時,底邊再往上收這麼多(px)。
+ *
+ * 使用者的原話:「下半部可以再加寬一下,就算最下面有一些內容沒 show layer,
+ * 只要畫面中間有就可以了。」—— 這是對的取捨:容器底邊附近本來就常有
+ * 陰影、漸層、釘住的按鈕列,量得再準也只是勉強擦邊。少蓋一點沒人會發現,
+ * 多蓋一點整頁就髒了。
+ *
+ * **只在真的被容器限制住時才收。** 一般頁面(視窗捲動)的底邊是視窗本身,
+ * 那裡的疊層是合法的、而且下面還有內容 —— 收 32px 會在每一頁的底部
+ * 切出一條看得見的線。
+ */
+const CONTAINER_SAFETY_PX = 32;
+
 function visibleBox(u: Unit): Box {
   let top = lastTopBand;
   let left = 0;
   let right = window.innerWidth;
   let bottom = window.innerHeight - lastBottomBand;
+  let bounded = false;
   for (const p of clippers(u)) {
     const r = p.getBoundingClientRect();
     if (r.width < 1 && r.height < 1) continue; // 祖先自己沒被畫出來,交給別的檢查處理
     if (r.top > top) top = r.top;
     if (r.left > left) left = r.left;
     if (r.right < right) right = r.right;
-    if (r.bottom < bottom) bottom = r.bottom;
+    if (r.bottom < bottom) {
+      bottom = r.bottom;
+      bounded = true;
+    }
   }
+  if (bounded) bottom -= CONTAINER_SAFETY_PX;
   return { top, right, bottom, left };
 }
 
@@ -1885,7 +1904,8 @@ function pinnedBottom(u: Unit, box: Box, overlayBottom: number): number {
   const r = hit.getBoundingClientRect();
   const wide = r.width >= (box.right - box.left) * 0.5;
   const atBottom = box.bottom - r.bottom <= PIN_PROBE_PX * 2;
-  return wide && atBottom && r.top > box.top ? r.top : box.bottom;
+  // 釘住的橫列也留同樣的餘裕 —— 貼著它的上緣切,邊界看起來還是很緊
+  return wide && atBottom && r.top > box.top ? r.top - CONTAINER_SAFETY_PX : box.bottom;
 }
 
 /**
