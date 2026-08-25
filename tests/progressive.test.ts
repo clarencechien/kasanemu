@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import { hasPua, mask, protectedFragments } from '../src/content/mask.ts';
+import { cpuBenchmark } from '../src/content/device.ts';
 import {
   normalizeSourceLang,
   resolveSourceLang,
@@ -260,17 +261,33 @@ test('來源語言:字集有證據時,不採信 <html lang>', () => {
 test('狀態列:沒捲到的區塊不算「還在跑」', () => {
   // 這一條先前是錯的:busy 的判準是「整頁還有 pending」,
   // 而長文章底下永遠有沒輪到的區塊 → 永遠不說完成、永遠不淡出
-  const base = { waiting: 0, nearPending: 0, farPending: 0, l0Busy: false };
+  const base = { waiting: 0, nearPending: 0, farPending: 0 };
   assert.equal(translationPhase({ ...base, farPending: 40 }), 'screen-done');
   assert.equal(translationPhase(base), 'all-done');
 });
 
 test('狀態列:有請求在飛、或畫面上還有沒翻好的,就是還在跑', () => {
-  const base = { waiting: 0, nearPending: 0, farPending: 0, l0Busy: false };
+  const base = { waiting: 0, nearPending: 0, farPending: 0 };
   assert.equal(translationPhase({ ...base, waiting: 3 }), 'busy');
   assert.equal(translationPhase({ ...base, nearPending: 1 }), 'busy');
-  // L0 的呼叫還在排隊也算 —— 它不經過 l1Queued,單看計數看不出來
-  assert.equal(translationPhase({ ...base, l0Busy: true }), 'busy');
   // 在跑的時候不會因為「頁面下面沒東西了」就說完成
   assert.equal(translationPhase({ ...base, waiting: 1, farPending: 0 }), 'busy');
+});
+
+test('沒有任何單元在等,就是完成 —— 不看引擎還忙不忙', () => {
+  /*
+   * 預翻會把遠處的區塊丟進 L0 佇列,那些區塊往往在輪到之前就被 L1
+   * 升級掉了:呼叫還在排隊,但沒有任何單元在等它。上一版把「引擎還在跑」
+   * 也算成 busy,於是整頁翻完了狀態列還停在「翻譯中…」。
+   */
+  assert.equal(translationPhase({ waiting: 0, nearPending: 0, farPending: 0 }), 'all-done');
+});
+
+test('CPU 微基準:固定工作量、量時間', () => {
+  // 反過來(固定時間、數圈數)會被時脈調節騙:前幾毫秒 CPU 還在低頻,
+  // 量到的是升頻曲線不是效能
+  const small = cpuBenchmark(10_000);
+  const big = cpuBenchmark(2_000_000);
+  assert.ok(small >= 0, '回傳毫秒數');
+  assert.ok(big >= small, '工作量大的不會比較快');
 });

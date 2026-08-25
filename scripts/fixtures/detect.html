@@ -1,0 +1,89 @@
+<!doctype html><html lang="en"><head><style>
+  body { color: #dfdfdf; background: #131312; font: 16px/1.5 system-ui; }
+  .imgwrap { display: flex; justify-content: center; }
+  .imgwrap img, .shot { width: 400px; height: 200px; background: #444; }
+  .inline-img { width: 40px; height: 40px; background: #444; vertical-align: middle; }
+  nav.pinned { position: sticky; top: 0; }
+</style>
+<!-- 快照的路徑是 childNode 索引,而刪掉 script 會讓後面的索引整個位移。
+     fixture 一定要裝著會弄壞它的東西,不然驗收全綠也沒有意義。 -->
+<script>window.__before_head = 1;</script>
+</head><body>
+<script>window.__first_in_body = 1;</script>
+<article>
+  <!-- 文章目次:巢狀,長短混雜 -->
+  <ul id="toc">
+    <li><a href="#a">Introduction</a></li>
+    <li><a href="#b">Count aggregations in ClickHouse and Elasticsearch</a></li>
+    <li><a href="#c">Benchmark results</a>
+      <ul>
+        <li><a href="#c1">Summary</a></li>
+        <li><a href="#c2">Storage size</a></li>
+      </ul>
+    </li>
+  </ul>
+
+  <!-- 圖片自己佔一行:文字要翻,疊層在圖片上緣收住 -->
+  <p id="withblockimg">A common use case for aggregation is ranking the frequency of values:
+    <span class="imgwrap"><img alt="chart" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="></span>
+  </p>
+
+  <!-- 行內圖片:混在文字行裡,照舊整段跳過 -->
+  <p id="withinlineimg">Latency dropped
+    <img class="inline-img" alt="badge" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==">
+    by a factor of five in the tests we ran.</p>
+  <!-- 每個連結都短,但項目本身是一整段:整份還是內容清單 -->
+  <ul id="querylist">
+    <li><p><strong>Query 1</strong>: a full data scan aggregating the whole data set.</p>
+      <ul>
+        <li><a href="#q1a">ClickHouse SQL query</a></li>
+        <li><a href="#q1b">Elasticsearch DSL query</a></li>
+        <li><a href="#q1c">Elasticsearch ESQL query</a></li>
+      </ul></li>
+    <li><p><strong>Query 2</strong>: filters the data set before aggregating.</p>
+      <ul>
+        <li><a href="#q2a">ClickHouse SQL query</a></li>
+        <li><a href="#q2b">Elasticsearch DSL query</a></li>
+        <li><a href="#q2c">Elasticsearch ESQL query</a></li>
+      </ul></li>
+  </ul>
+  <!-- 鬆散文字:markdown 轉出來的段落沒有 <p> 包著 -->
+  <div id="loose">
+    <div><p>A table would live here.</p></div>
+    ClickHouse requires 12 times less disk space than Elasticsearch to store the data set.
+    <div><p>Another block lives here.</p></div>
+    When the data set is pre-aggregated, ClickHouse needs 10 times less disk space.
+  </div>
+
+  <!-- 圖片夾在段落中間:文字被切成前後兩段 -->
+  <p id="midimg">Runtimes of running the query over the pre-aggregated data set:
+    <span class="imgwrap"><img alt="" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="></span>
+    As discussed, ESQL currently does not support the flattened field type.
+  </p>
+
+  <!-- 圖表表格:表頭翻了,儲存格的短連結不能因為「文字全來自連結」就不翻 -->
+  <table id="charts">
+    <thead><tr><th>Storage size</th><th>Aggregation performance</th></tr></thead>
+    <tbody><tr>
+      <td><a href="#t1">Link</a><span class="imgwrap"><img alt="" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="></span></td>
+      <td><a href="#t2">Link</a><span class="imgwrap"><img alt="" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="></span></td>
+    </tr></tbody>
+  </table>
+</article>
+
+<!-- 浮動目次:sticky 而且在 <nav> 裡,兩條舊規則各擋了它一次 -->
+<nav class="pinned"><ul id="pinnedtoc">
+  <li><a href="#a">Introduction</a></li>
+  <li><a href="#b">Count aggregations in ClickHouse and Elasticsearch</a></li>
+  <li><a href="#c">Benchmark results</a></li>
+</ul></nav>
+
+<script>window.__between_sections = 1;</script>
+
+<!-- 真的選單:每一項都短,維持外殼待遇 -->
+<nav id="menu"><ul>
+  <li><a href="#m1">Products</a></li>
+  <li><a href="#m2">Pricing</a></li>
+  <li><a href="#m3">Docs</a></li>
+</ul></nav>
+</body></html>

@@ -36,6 +36,8 @@ export type ToWorker =
   | { type: 'get-spend' }
   | { type: 'validate-models' }
   | { type: 'clear-cache' }
+  | { type: 'export-cache' }
+  | { type: 'import-cache'; dump: unknown }
   | { type: 'page-status'; pageKey: string };
 
 /** worker → content,以及 popup → content */
@@ -48,6 +50,7 @@ export type ToContent =
   | { type: 'command'; command: 'toggle-enabled' | 'toggle-mode' | 'translate-page' }
   /** feature.md §5.2 popup 讀本頁的階層統計 */
   | { type: 'get-page-stats' }
+  | { type: 'export-page' }
   /**
    * feature.md §3.2 規則 2:downloadable 的 create() 需要 user gesture,
    * 所以語言包由 popup 的按鈕點擊觸發下載,完成後叫 content 重試 L0。
@@ -81,6 +84,29 @@ export interface PageStats {
     sourceLang: string;
     progress: number;
     detail: string;
+  };
+  /**
+   * 機器畫像。同樣是「Intel 12 代 U」,Chromebook 與 Win11 筆電的
+   * L0 速度可以差好幾倍 —— 要比較就要有可比的數字,不能比型號。
+   */
+  device?: { threads: number; memoryGB: number; cpuMs: number; platform: string };
+  /** L0 呼叫的實測延遲(不含排隊),診斷用 */
+  l0Timing?: { calls: number; avgMs: number; maxMs: number; avgWaitMs: number; concurrency: number };
+  /**
+   * 解析不了的顏色字串。lab() / oklch() / color-mix() 這類新語法
+   * 解析失敗時是**完全沉默的**:疊層照畫,只是選錯底色 ——
+   * 要靠使用者截圖才看得見。列在報告裡就不必再猜。
+   */
+  unparsedColors?: string[];
+  /** 這一頁有幾塊直接命中快取,沒有再打一次 API */
+  cacheHits?: number;
+  /** 捲動時的疊層策略與它的判斷依據(見 content/motion.ts) */
+  motion?: {
+    stability: string;
+    guard: boolean;
+    appShell: boolean;
+    innerScroll: boolean;
+    pinned: number;
   };
   /** feature.md §2.2「L0 讀完就沒再看 L1」:替換時該區塊已離開可見區的次數 */
   swapsOffscreen: number;

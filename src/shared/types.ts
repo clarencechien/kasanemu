@@ -12,6 +12,9 @@ export type Pipeline = 'single' | 'progressive' | 'l0-only';
 /** feature.md §4.1 區塊狀態機 */
 export type UnitTier = 'pending' | 'l0' | 'l1' | 'l0-failed' | 'l1-failed' | 'failed' | 'skipped';
 export type OverlayStyleName = 'inherit' | 'annotation';
+/** 捲動時的疊層穩定策略(見 content/motion.ts) */
+export type Stability = 'auto' | 'always' | 'strict';
+
 export type CacheMode = 'session' | 'persistent' | 'off';
 
 /** 一個翻譯單元送去 API 的樣子 (§6.1) */
@@ -99,7 +102,7 @@ export interface Settings {
   noTranslateTerms: string[];
   /**
    * 啟用後是否自動翻譯可見區(PRD §7.1 的行為)。
-   * 關掉就必須按 popup 的「翻譯這一頁」或 Alt+Shift+R 才開始 ——
+   * 關掉就必須按 popup 的「翻譯這一頁」或 Alt+R 才開始 ——
    * 想先看清楚狀態、或不想一啟用就花錢的時候用。
    */
   autoTranslate: boolean;
@@ -121,6 +124,13 @@ export interface Settings {
   weightOffset: 0 | 100 | 200;
   /** §4.7 提示線 */
   hintLine: boolean;
+  /**
+   * 捲動時疊層要不要先藏起來(見 content/motion.ts)。
+   *  - auto:只在「座標真的會跑」的頁面上藏(Gmail 這種內層捲動的應用程式)
+   *  - always:一律不藏,接受捲動時可能短暫不對齊
+   *  - strict:任何動靜都先藏,最保守
+   */
+  stability: Stability;
   /**
    * 加翻層:UI 標籤、選單、連結不覆蓋原文,改成 hover 時在旁邊顯示貼片。
    * 見 docs/plan-annotation.md。
@@ -159,7 +169,7 @@ export const DEFAULT_SETTINGS: Settings = {
    *
    * 競品多半一進站就整頁翻,但使用者的原話是「我沒有要每頁都翻,
    * 也不是這樣燒 token 的」。啟用 = 這個網域我要用 Kasanemu;
-   * 真的要翻是另一個動作(popup 的按鈕 / Alt+Shift+R)。
+   * 真的要翻是另一個動作(popup 的按鈕 / Alt+R)。
    * 想要競品那種行為的人把這個打開就有。
    */
   autoTranslate: false,
@@ -168,10 +178,22 @@ export const DEFAULT_SETTINGS: Settings = {
   occlusionCheck: true,
   weightOffset: 100,
   hintLine: true,
+  // 預設自動:長文一直閃是比偶爾不對齊更明顯的干擾,而長文根本不需要藏
+  stability: 'auto',
   annotate: true,
   annotateAltOnly: false,
   forceAnnotation: false,
-  cacheMode: 'session',
+  /*
+   * **預設 persistent。**
+   *
+   * 原本是 session,而 `chrome.storage.session` 在瀏覽器關掉(以及每次
+   * 重新載入擴充功能)時就清空 —— 使用者的疑問是「翻好的不是先存 local 嗎?
+   * 怎麼會真的重來重翻?」。會,但只在同一次瀏覽器工作階段內。
+   *
+   * 這個工具的重點之一就是不要重複花錢,而快取的成本只是磁碟(有 LRU 上限)。
+   * 預設值應該站在「不要再付一次錢」那邊。
+   */
+  cacheMode: 'persistent',
   persistentCacheMB: 50,
   pageTokenCap: 120_000,
   globalDailyTWD: 60,

@@ -21,6 +21,15 @@ function mount(html: string): Element {
   g['getComputedStyle'] = dom.window.getComputedStyle.bind(dom.window);
   // jsdom 沒有 layout,getClientRects() 一律空陣列 —— 補一個假的,
   // 否則所有候選都會被「沒有繪製面積」的檢查擋掉
+  // jsdom 沒有 layout,Range 連 getClientRects 都沒有 —— 補一個假的,
+  // 否則所有 Range 錨點的候選都會被「沒有繪製面積」擋掉
+  const fakeRect = { top: 0, left: 0, width: 300, height: 20, bottom: 20, right: 300 };
+  dom.window.Range.prototype.getClientRects = function () {
+    return [fakeRect] as unknown as DOMRectList;
+  };
+  dom.window.Range.prototype.getBoundingClientRect = function () {
+    return fakeRect as DOMRect;
+  };
   dom.window.Element.prototype.getClientRects = function () {
     return [{ top: 0, left: 0, width: 300, height: 20 }] as unknown as DOMRectList;
   };
@@ -145,15 +154,27 @@ test('§3.1 表格儲存格、清單、標題都是單元,並帶上 role', () =>
   ]);
 });
 
-test('§3.5 position: sticky / fixed 的元素及其子樹跳過', () => {
+test('§3.5 sticky / fixed 不再整棵跳過,但要標記成 pinned', () => {
+  /*
+   * 舊版整棵跳過,理由是捲動時疊層會脫位 —— 那條規則寫在
+   * 「動就先藏起來」那套機制之前。現在標記起來,捲動期間藏這幾個就好。
+   * 整棵跳過的代價太大:浮動目次往往是整篇文章的導覽。
+   */
   const body = mount(
     '<div style="position: sticky"><p>Sticky toolbar label</p></div>' +
       '<div style="position: fixed"><p>Fixed banner text</p></div>' +
       '<p>Normal flow text.</p>',
   );
-  assert.deepEqual(ids(body), ['Normal flow text.']);
+  const got = findCandidates(body, () => false);
+  assert.deepEqual(
+    got.map((c) => [c.src, c.pinned === true]),
+    [
+      ['Sticky toolbar label', true],
+      ['Fixed banner text', true],
+      ['Normal flow text.', false],
+    ],
+  );
 });
-
 test('§3.1 display:none / visibility:hidden / opacity:0 的子樹跳過', () => {
   const body = mount(
     '<p style="display: none">Hidden by display</p>' +
@@ -558,4 +579,336 @@ test('行內小圖示不算圖文混排', () => {
   const icon = body.querySelector('#icon')!;
   icon.getBoundingClientRect = () => ({ width: 14, height: 14 }) as unknown as DOMRect;
   assert.deepEqual(ids(body), ['Drone delivery is scaling rapidly in the US.']);
+});
+
+/*
+ * ClickHouse 部落格的目次:同一份 <ul> 裡短的 12 字、長的 49 字。
+ * 逐項套 24 字門檻的話,短的變貼片、長的變疊層 —— 一半翻一半不翻。
+ */
+const TOC = `<article><ul>
+  <li><a href="#a">Introduction</a></li>
+  <li><a href="#b">Count aggregations in ClickHouse and Elasticsearch</a></li>
+  <li><a href="#c">Benchmark setup</a></li>
+  <li><a href="#d">Benchmark queries</a></li>
+</ul></article>`;
+
+test('內容清單裡的短連結歸內文層,整份目次一致', () => {
+  const root = mount(TOC);
+  const texts = findCandidates(root, () => false).map((c) => c.src);
+  assert.ok(texts.includes('Introduction'), `短條目也要進內文層,實得 ${JSON.stringify(texts)}`);
+  assert.ok(texts.includes('Benchmark setup'));
+  assert.ok(texts.includes('Count aggregations in ClickHouse and Elasticsearch'));
+});
+
+test('內容清單裡的短連結不再被加翻層收走,避免同一份清單兩種畫法', () => {
+  const root = mount(TOC);
+  const labels = findLabels(root, 50).map((c) => c.src);
+  assert.deepEqual(labels, [], `目次不該產生貼片,實得 ${JSON.stringify(labels)}`);
+});
+
+test('每項都短的清單仍然是選單,照舊走加翻層', () => {
+  const root = mount(
+    `<nav><ul>
+      <li><a href="#1">Mail</a></li>
+      <li><a href="#2">Chat</a></li>
+      <li><a href="#3">Meet</a></li>
+      <li><a href="#4">Contacts</a></li>
+    </ul></nav>`,
+  );
+  assert.deepEqual(findCandidates(root, () => false).map((c) => c.src), []);
+  assert.deepEqual(findLabels(root, 50).map((c) => c.src), ['Mail', 'Chat', 'Meet', 'Contacts']);
+});
+
+test('兩項的清單不算清單 —— 樣本太小,不足以推翻長度門檻', () => {
+  const root = mount(
+    `<ul>
+      <li><a href="#1">Docs</a></li>
+      <li><a href="#2">A rather long link label that is content</a></li>
+    </ul>`,
+  );
+  assert.deepEqual(findLabels(root, 50).map((c) => c.src), ['Docs']);
+});
+
+/* -------- 目次:巢狀清單與「容器自己還帶著一行字」 -------- */
+
+const NESTED_TOC = `<article><ul>
+  <li><a href="#a">Introduction</a></li>
+  <li><a href="#b">Count aggregations in ClickHouse and Elasticsearch</a></li>
+  <li><a href="#c">Benchmark results</a>
+    <ul>
+      <li><a href="#c1">Summary</a></li>
+      <li><a href="#c2">Storage size</a></li>
+      <li><a href="#c3">Aggregation performance</a></li>
+    </ul>
+  </li>
+  <li><a href="#d">Summary</a></li>
+</ul></article>`;
+
+test('子清單跟著整棵樹判定,不會自己那一層全是短的就變成選單', () => {
+  const root = mount(NESTED_TOC);
+  const texts = findCandidates(root, () => false).map((c) => c.src);
+  for (const want of ['Summary', 'Storage size', 'Aggregation performance']) {
+    assert.ok(texts.includes(want), `子項 ${want} 該進內文層,實得 ${JSON.stringify(texts)}`);
+  }
+});
+
+test('清單項目自己那一行也要翻,即使它底下還包著子清單', () => {
+  const root = mount(NESTED_TOC);
+  const found = findCandidates(root, () => false);
+  const hit = found.find((c) => c.src === 'Benchmark results');
+  assert.ok(hit, `「Benchmark results」不能整行消失,實得 ${JSON.stringify(found.map((c) => c.src))}`);
+  assert.equal(hit.el.tagName, 'A', '單元要落在 <a> 上,不是 <li> —— <li> 的盒子蓋住整份子清單');
+});
+
+test('承載元素本身還有容器子孫就不收 —— 免得跟子孫的單元疊兩層', () => {
+  // <a><h3>…</h3></a>:<h3> 已經是單元了
+  const root = mount('<a href="/post"><h3>Bringing the capabilities of Claude to defenders</h3></a>');
+  const found = findCandidates(root, () => false);
+  assert.equal(found.length, 1);
+  assert.equal(found[0]!.el.tagName, 'H3');
+});
+
+test('表格不會因為 tbody / tr 不在容器清單裡就被收成一個大單元', () => {
+  const root = mount('<table><tr><th>Tier</th><td>Balanced</td></tr></table>');
+  const texts = findCandidates(root, () => false).map((c) => c.src);
+  assert.deepEqual(texts, ['Tier', 'Balanced']);
+});
+
+/* -------- 外殼還是內容:同一個證據,同一個結論 -------- */
+
+const SIDEBAR_TOC = `<nav><ul>
+  <li><a href="#1">Introduction</a></li>
+  <li><a href="#2">Count aggregations in ClickHouse and Elasticsearch</a></li>
+  <li><a href="#3">Benchmark setup</a></li>
+  <li><a href="#4">Summary</a></li>
+</ul></nav>`;
+
+test('<nav> 不再整棵排除 —— 裡面是目次的話照翻', () => {
+  const texts = findCandidates(mount(SIDEBAR_TOC), () => false).map((c) => c.src);
+  assert.ok(texts.includes('Introduction'), `實得 ${JSON.stringify(texts)}`);
+  assert.ok(texts.includes('Summary'));
+});
+
+test('<nav> 裡是真的選單就維持外殼待遇:不畫疊層,但滑上去看得到', () => {
+  const menu = `<nav><ul>
+    <li><a href="#1">Products</a></li>
+    <li><a href="#2">Pricing</a></li>
+    <li><a href="#3">Docs</a></li>
+    <li><a href="#4">Contact</a></li>
+  </ul></nav>`;
+  const root = mount(menu);
+  assert.deepEqual(findCandidates(root, () => false).map((c) => c.src), []);
+  assert.deepEqual(findLabels(root, 50).map((c) => c.src), [
+    'Products', 'Pricing', 'Docs', 'Contact',
+  ]);
+});
+
+test('下拉選單不會因為子選單的字加起來很長就被當成內容', () => {
+  const root = mount(`<nav><ul>
+    <li><a href="#1">Products</a><ul><li><a href="#a">Cloud</a></li><li><a href="#b">Local</a></li></ul></li>
+    <li><a href="#2">Pricing</a></li>
+    <li><a href="#3">Docs</a></li>
+  </ul></nav>`);
+  assert.deepEqual(findCandidates(root, () => false).map((c) => c.src), []);
+});
+
+test('清單的長度證據看項目本身,不是只看裡面的連結', () => {
+  /*
+   * 每個連結都 ≤24 字,但項目本身有一整段說明 —— 那是內容清單。
+   * 只量連結的話,段落翻了、底下三個連結不翻。
+   */
+  const root = mount(`<article><ul>
+    <li><p><strong>Query 1</strong>: this is a full data scan aggregating the whole data set.</p>
+      <ul>
+        <li><a href="#a">ClickHouse SQL query</a></li>
+        <li><a href="#b">Elasticsearch DSL query</a></li>
+        <li><a href="#c">Elasticsearch ESQL query</a></li>
+      </ul></li>
+    <li><p><strong>Query 2</strong>: this one filters the data set before aggregating.</p>
+      <ul>
+        <li><a href="#d">ClickHouse SQL query</a></li>
+        <li><a href="#e">Elasticsearch DSL query</a></li>
+        <li><a href="#f">Elasticsearch ESQL query</a></li>
+      </ul></li>
+  </ul></article>`);
+  const texts = findCandidates(root, () => false).map((c) => c.src);
+  for (const want of ['ClickHouse SQL query', 'Elasticsearch DSL query', 'Elasticsearch ESQL query']) {
+    assert.ok(texts.includes(want), `子連結 ${want} 該翻,實得 ${JSON.stringify(texts)}`);
+  }
+});
+
+/* -------- 走捷徑的路徑要自己補上主路徑的每一道關卡 -------- */
+
+test('容器自己那行字的承載元素也要遵守排除清單', () => {
+  /*
+   * ClickHouse 的頂部導覽是 <div><button>Products</button>…</div>。
+   * <button> 在排除清單上,walk() 早就跳過了 —— captureInlineText
+   * 不能從父層把它撿回來。
+   */
+  const root = mount('<div><button>Products</button><p>Some actual paragraph text here.</p></div>');
+  const texts = findCandidates(root, () => false).map((c) => c.src);
+  assert.deepEqual(texts, ['Some actual paragraph text here.']);
+});
+
+test('外殼角色的承載元素同樣不撿', () => {
+  const root = mount(
+    '<div><span role="toolbar">Share</span><p>Some actual paragraph text here.</p></div>',
+  );
+  const texts = findCandidates(root, () => false).map((c) => c.src);
+  assert.deepEqual(texts, ['Some actual paragraph text here.']);
+});
+
+test('「裡面是目次就當內容」的例外不給頁首 —— mega menu 幾乎一定有長項目', () => {
+  const megaMenu = `<ul>
+    <li><a href="#1">Cloud — run ClickHouse without operating it yourself</a></li>
+    <li><a href="#2">Docs</a></li>
+    <li><a href="#3">Pricing</a></li>
+  </ul>`;
+  // 頁首:永遠是外殼
+  assert.deepEqual(findCandidates(mount(`<header>${megaMenu}</header>`), () => false), []);
+  assert.deepEqual(findCandidates(mount(`<footer>${megaMenu}</footer>`), () => false), []);
+  // 導覽 / 側欄:目次會出現在這裡,照翻
+  const inNav = findCandidates(mount(`<nav>${megaMenu}</nav>`), () => false).map((c) => c.src);
+  assert.ok(inNav.includes('Docs'), `實得 ${JSON.stringify(inNav)}`);
+  const inAside = findCandidates(mount(`<aside>${megaMenu}</aside>`), () => false).map((c) => c.src);
+  assert.ok(inAside.includes('Pricing'));
+});
+
+test('頁首裡的標籤仍然滑得到 —— 不畫疊層不等於整棵消失', () => {
+  const root = mount('<header><nav><a href="#1">Products</a><a href="#2">Pricing</a></nav></header>');
+  assert.deepEqual(findCandidates(root, () => false), []);
+  assert.deepEqual(findLabels(root, 50).map((c) => c.src), ['Products', 'Pricing']);
+});
+
+/* -------- 圖文儲存格:同一張表不能兩種行為 -------- */
+
+test('圖片自己佔一行時,短連結不再被判成 UI 標籤', () => {
+  /*
+   * ClickHouse 的圖表表格:<th>Storage size</th> 翻了,同一張表的
+   * <td><a>Link</a><span><img></span></td> 沒翻 —— 因為後者的文字
+   * 全部來自一個連結。UI 標籤那條規則的理由是幾何(緊湊導覽列),
+   * 而 mediaSplit 的存在本身就證明這裡不是那種版面。
+   */
+  const root = mount(
+    '<table><thead><tr><th>Storage size</th></tr></thead>' +
+      '<tbody><tr><td><a href="#x">Link</a>' +
+      '<span style="display:flex"><img alt="" src="x.png"></span></td></tr></tbody></table>',
+  );
+  // jsdom 沒有 layout:媒體的面積門檻要自己餵一個真的矩形進去
+  const img = root.querySelector('img')!;
+  img.getBoundingClientRect = () =>
+    ({ top: 20, left: 0, width: 400, height: 200, bottom: 220, right: 400 }) as DOMRect;
+  const got = findCandidates(root, () => false);
+  const texts = got.map((c) => c.src);
+  assert.ok(texts.includes('Storage size'));
+  assert.ok(texts.includes('Link'), `圖文儲存格也該翻,實得 ${JSON.stringify(texts)}`);
+  assert.equal(got.find((c) => c.src === 'Link')?.mediaSplit?.tagName, 'SPAN');
+});
+
+test('沒有圖片的短連結還是 UI 標籤 —— 規則本身沒有變鬆', () => {
+  const root = mount('<div><a href="#a">Docs</a><a href="#b">Pricing</a><a href="#c">Blog</a></div>');
+  assert.deepEqual(findCandidates(root, () => false).map((c) => c.src), []);
+});
+
+test('沒有可見文字的互動子孫不佔長度預算', () => {
+  /*
+   * 放大按鈕的名稱在 aria-label 上,畫面一個字都沒有。
+   * 把它算進來會讓預算憑空多 24 字 —— 預算要跟著文字走,不是跟著節點走。
+   */
+  const root = mount(
+    '<div><a href="#x">A fairly long link label that is content</a>' +
+      '<button aria-label="Enlarge image"></button></div>',
+  );
+  const texts = findCandidates(root, () => false).map((c) => c.src);
+  assert.ok(
+    texts.some((t) => t.includes('fairly long link label')),
+    `實得 ${JSON.stringify(texts)}`,
+  );
+});
+
+/* -------- 換錨點:沒有元素包著的文字 -------- */
+
+test('鬆散文字節點也要翻 —— 用 Range 當錨點', () => {
+  /*
+   * markdown 轉出來的常見形狀:段落文字直接掛在容器上,沒有 <p> 包著。
+   * 拿容器當單元會蓋掉整篇文章,所以改成圈住那一段。
+   */
+  const root = mount(
+    '<div><div><p>A table lives here.</p></div>' +
+      'ClickHouse requires 12 times less disk space than Elasticsearch to store the data.' +
+      '<div><p>Another block.</p></div>' +
+      'When the data set is pre-aggregated, ClickHouse needs 10 times less disk space.' +
+      '</div>',
+  );
+  const got = findCandidates(root, () => false);
+  const ranged = got.filter((c) => c.range !== undefined).map((c) => c.src);
+  assert.equal(ranged.length, 2, `兩段鬆散文字各一個單元,實得 ${JSON.stringify(ranged)}`);
+  assert.ok(ranged[0]!.startsWith('ClickHouse requires 12 times'));
+  assert.ok(ranged[1]!.startsWith('When the data set is pre-aggregated'));
+});
+
+test('容器整體太長不能擋掉個別段落 —— 長度要一段一段量', () => {
+  const long = 'x'.repeat(MAX_UNIT_CHARS - 40);
+  const root = mount(
+    `<div><p>${long}</p>` +
+      'Short loose paragraph that still deserves a translation of its own.' +
+      `<p>${long}</p>` +
+      'Another loose paragraph living between two blocks.' +
+      '</div>',
+  );
+  const ranged = findCandidates(root, () => false)
+    .filter((c) => c.range !== undefined)
+    .map((c) => c.src);
+  assert.equal(ranged.length, 2, `實得 ${JSON.stringify(ranged)}`);
+});
+
+test('圖片夾在段落中間 —— 切成前後兩段,而不是整段放棄', () => {
+  const root = mount(
+    '<p>Runtimes of running the query over the pre-aggregated data set:' +
+      '<span style="display:flex"><img alt="" src="c.png"></span>' +
+      'As discussed, ESQL currently does not support the flattened field type.</p>',
+  );
+  const img = root.querySelector('img')!;
+  img.getBoundingClientRect = () =>
+    ({ top: 40, left: 0, width: 400, height: 200, bottom: 240, right: 400 }) as DOMRect;
+  const ranged = findCandidates(root, () => false)
+    .filter((c) => c.range !== undefined)
+    .map((c) => c.src);
+  assert.equal(ranged.length, 2, `實得 ${JSON.stringify(ranged)}`);
+  assert.ok(ranged[0]!.startsWith('Runtimes of running'));
+  assert.ok(ranged[1]!.startsWith('As discussed'));
+});
+
+test('真正的行內圖片仍然整段放棄 —— 一段文字裡夾著圖,矩形一定蓋到它', () => {
+  const root = mount('<p><img id="i" alt="" src="c.png">Note: percentages are rounded to 5%.</p>');
+  const img = root.querySelector('#i')!;
+  img.getBoundingClientRect = () =>
+    ({ top: 0, left: 0, width: 400, height: 200, bottom: 200, right: 400 }) as DOMRect;
+  assert.deepEqual(findCandidates(root, () => false).map((c) => c.src), []);
+});
+
+test('已經有主人的文字不再收一次 —— <a> 包 <h3> 只出一個單元', () => {
+  const root = mount('<a href="/post"><h3>Bringing the capabilities of Claude to defenders</h3></a>');
+  const got = findCandidates(root, () => false);
+  assert.equal(got.length, 1);
+  assert.equal(got[0]!.el.tagName, 'H3');
+  assert.equal(got[0]!.range, undefined);
+});
+
+test('掃過的元素不會每一輪重新產生 range 候選', () => {
+  /*
+   * 這一條沒有的話,scan 會永遠回報 found > 0,掃描間隔就一直停在最短的
+   * 400ms —— 每 0.4 秒對整棵樹跑一次 getComputedStyle。單元不會重複
+   * (index.ts 會濾掉),但頁面會慢得像卡住。
+   */
+  const root = mount(
+    '<div><div><p>A table lives here.</p></div>' +
+      'ClickHouse requires 12 times less disk space than Elasticsearch to store the data.' +
+      '</div>',
+  );
+  const seen = new Set<Element>();
+  const first = findCandidates(root, (el) => seen.has(el));
+  assert.ok(first.some((c) => c.range !== undefined), '第一輪要收到鬆散文字');
+  for (const c of first) seen.add(c.el);
+  assert.deepEqual(findCandidates(root, (el) => seen.has(el)), [], '第二輪不該再找到任何東西');
 });

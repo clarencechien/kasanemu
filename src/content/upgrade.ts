@@ -147,9 +147,20 @@ export function translationPhase(s: {
   nearPending: number;
   /** 不在畫面上、還沒輪到 */
   farPending: number;
-  /** L0 還有呼叫在跑或在排隊 */
-  l0Busy: boolean;
 }): 'busy' | 'screen-done' | 'all-done' {
-  if (s.waiting > 0 || s.nearPending > 0 || s.l0Busy) return 'busy';
+  /*
+   * 判斷「跑完了沒」要看**單元**,不看引擎。
+   *
+   * 上一版還多問了一句「L0 池裡還有沒有東西在跑」,而那是錯的:
+   * 預翻會把遠處的區塊丟進 L0 佇列,那些區塊往往在輪到之前就已經被 L1
+   * 升級掉了 —— 呼叫還在排隊,但沒有任何單元在等它,結果算出來卻是
+   * 「還在忙」。stratechery 那一頁 79 塊全部翻完(待翻 0),狀態列卻
+   * 一直停在「翻譯中…」,使用者的話是「也沒有顯示完成」。
+   *
+   * 而且它是多餘的:真的在等 L0 的區塊本來就會被算進 nearPending
+   * (intake 送出前就標記了 probed)。**問錯對象的那一句,拿掉之後
+   * 沒有少掉任何資訊。**
+   */
+  if (s.waiting > 0 || s.nearPending > 0) return 'busy';
   return s.farPending > 0 ? 'screen-done' : 'all-done';
 }

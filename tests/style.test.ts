@@ -1,15 +1,47 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { JSDOM } from 'jsdom';
 import { bleedFor, inkOverflow } from '../src/content/bleed.ts';
-import { isSerifStack, parseColor, rgbToCss, targetWeight } from '../src/content/styleprobe.ts';
+import {
+  annotBg,
+  annotFg,
+  composite,
+  isSerifStack,
+  lightText,
+  parseColor,
+  probeStyle,
+  resetColorCache,
+  rgbToCss,
+  targetWeight,
+  unparsedColors,
+} from '../src/content/styleprobe.ts';
 import { cacheKey, maxCharsBucket } from '../src/shared/hash.ts';
 
-test('parseColor 認得 rgb / rgba / transparent,認不得的回 null', () => {
+test('parseColor 的快路徑認得 rgb / rgba / transparent', () => {
   assert.deepEqual(parseColor('rgb(255, 255, 255)'), { r: 255, g: 255, b: 255, a: 1 });
   assert.deepEqual(parseColor('rgba(0, 0, 0, 0.5)'), { r: 0, g: 0, b: 0, a: 0.5 });
   assert.deepEqual(parseColor('transparent'), { r: 0, g: 0, b: 0, a: 0 });
-  assert.equal(parseColor('color(srgb 1 0 0)'), null);
+});
+
+/*
+ * lab() / oklch() / color-mix() 走 canvas 慢路徑,在 node 裡沒有 canvas
+ * 所以回 null —— 這裡驗的是「沒有 canvas 也不會炸、也不會亂猜」。
+ * 真正的轉換由瀏覽器負責,人工驗收見 docs/acceptance.md。
+ */
+test('新式顏色語法在沒有 canvas 的環境安全地回 null,並且被記下來', () => {
+  resetColorCache();
+  assert.equal(parseColor('lab(88.8292% 0 -.0000119209)'), null);
   assert.equal(parseColor('oklch(0.7 0.1 200)'), null);
+  assert.equal(parseColor('這根本不是顏色'), null);
+  const bad = unparsedColors();
+  assert.ok(bad.includes('oklch(0.7 0.1 200)'), `應該記下來,實得 ${JSON.stringify(bad)}`);
+});
+
+test('rgb 快路徑不會被記成解析失敗', () => {
+  resetColorCache();
+  parseColor('rgb(1, 2, 3)');
+  parseColor('transparent');
+  assert.deepEqual(unparsedColors(), []);
 });
 
 test('§4.1 背景一律以完整不透明度套用', () => {
@@ -90,4 +122,64 @@ test('出血永遠不是負的', () => {
   const b = bleedFor(10, 40, 0, 'body');
   assert.equal(b.y, 0);
   assert.equal(b.x, 0);
+});
+
+/*
+ * ClickHouse 部落格的迴歸:深色頁面上的半透明白卡片。
+ *
+ * `rgba(255,255,255,0.1)` 疊在近黑色的版面上,畫面是深灰;
+ * 舊版把它當成「找到不透明色了」直接以全白畫出去,配上頁面自己的
+ * 淺灰字就是使用者說的「選色錯誤了」。合成才是對的答案。
+ */
+test('半透明背景要合成到底下的實色,不能直接當成不透明', () => {
+  const card = parseColor('rgba(255, 255, 255, 0.1)')!;
+  const page = parseColor('rgb(19, 19, 18)')!;
+  const out = composite([card], page);
+  assert.ok(out.r < 60, `合成後應該還是深色,得到 ${rgbToCss(out, 1)}`);
+  assert.ok(out.r > 19, '但要比純底色亮一點');
+});
+
+test('多層半透明由遠而近疊,結果落在兩端之間', () => {
+  const base = parseColor('rgb(0, 0, 0)')!;
+  const one = composite([parseColor('rgba(255,255,255,0.1)')!], base);
+  const two = composite(
+    [parseColor('rgba(255,255,255,0.1)')!, parseColor('rgba(255,255,255,0.1)')!],
+    base,
+  );
+  assert.ok(two.r > one.r, '兩層比一層亮');
+  assert.ok(two.r < 255, '仍然遠離純白');
+});
+
+test('標註配色跟著頁面明暗走,不寫死淺色', () => {
+  // 深色頁面(亮字)
+  assert.equal(lightText('rgb(223, 223, 223)'), true);
+  assert.ok(annotBg('rgb(223, 223, 223)').startsWith('rgba(24'));
+  assert.equal(annotFg('rgb(223, 223, 223)'), '#F0A868');
+  // 淺色頁面(暗字)—— 維持原本的便條紙配色
+  assert.equal(lightText('rgb(36, 41, 47)'), false);
+  assert.ok(annotBg('rgb(36, 41, 47)').startsWith('rgba(230'));
+  assert.equal(annotFg('rgb(36, 41, 47)'), '#993C1D');
+});
+
+/*
+ * 目次一半黃字一半白字:class 一樣,我們問的元素不一樣。
+ * `<li><a>Introduction</a></li>` 的墨水是 <a> 的,單元卻建在 <li> 上。
+ */
+test('文字整段裝在單一子元素裡時,顏色取那一層', () => {
+  const dom = new JSDOM(
+    '<!doctype html><body>' +
+      '<li id="wrapped"><a style="color: rgb(250, 255, 105)">Introduction</a></li>' +
+      '<p id="mixed" style="color: rgb(223, 223, 223)">Read the <a style="color: rgb(250, 255, 105)">docs</a> first.</p>' +
+      '<li id="two"><a style="color: rgb(250, 255, 105)">A</a><span style="color: red">B</span></li>' +
+      '</body>',
+  );
+  const g = globalThis as unknown as Record<string, unknown>;
+  g['document'] = dom.window.document;
+  g['getComputedStyle'] = dom.window.getComputedStyle.bind(dom.window);
+  g['matchMedia'] = () => ({ matches: false });
+  const at = (id: string): string => probeStyle(dom.window.document.getElementById(id)!, 100).color;
+
+  assert.equal(at('wrapped'), 'rgb(250, 255, 105)', '整段裝在 <a> 裡 → 取 <a> 的黃');
+  assert.equal(at('mixed'), 'rgb(223, 223, 223)', '段落自己有文字 → 主色仍然是段落的');
+  assert.equal(at('two'), 'rgb(0, 0, 0)', '兩個子元素 → 不猜,用自己的');
 });

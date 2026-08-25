@@ -22,6 +22,22 @@ export interface Unit {
   style: ProbedStyle;
   /** §3.5 bounding box 會蓋住浮動圖片 → 跳過該單元 */
   geometryRisk: boolean;
+  /**
+   * 段落裡自己佔一行的圖片。疊層要在這裡收住,不要蓋過去
+   * (detect.ts 的 mediaSplitOf)。
+   */
+  mediaSplit?: Element;
+  /**
+   * 來源在 sticky / fixed 的子樹裡:它的 document 座標會隨捲動改變,
+   * 而疊層在 document 座標 —— 捲動期間先藏起來,停下來再量一次。
+   */
+  pinned?: boolean;
+  /**
+   * 這個單元蓋的是元素裡的**一段**行內內容,不是整個元素
+   * (鬆散的文字節點、或被圖片切成兩半的段落,見 detect.ts 的 inlineRuns)。
+   * 有 range 時所有幾何都問它,不問 el。
+   */
+  range?: Range;
   /** §4.6 標註樣式 (背景取色失敗或使用者指定) */
   annotation: boolean;
   /** §4.4 單行元素:不加入字級分組,允許橫向溢出 (D15) */
@@ -30,6 +46,8 @@ export interface Unit {
   sizeGroup: number;
   scale: number;
   maxChars: number;
+  /** L0 已經試過幾次。catchUpL0 用它擋住永遠失敗的區塊(見 L0_MAX_TRIES) */
+  l0Tries?: number;
   rect: DocRect;
   /** 疊層往外撐多少才蓋得住原文的墨水(見 bleed.ts) */
   bleed: { x: number; y: number };

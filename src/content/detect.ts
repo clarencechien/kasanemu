@@ -8,10 +8,20 @@ const BLOCK_TAGS = new Set([
 
 /** §3.1 排除清單。script/style/svg 等本來也沒有可讀文字,一併擋掉子樹。 */
 const EXCLUDE_TAGS = new Set([
-  'NAV', 'HEADER', 'FOOTER', 'ASIDE', 'FORM', 'BUTTON', 'SELECT', 'TEXTAREA',
+  'FORM', 'BUTTON', 'SELECT', 'TEXTAREA',
   'CODE', 'PRE', 'KBD', 'SAMP', 'SCRIPT', 'STYLE', 'SVG', 'NOSCRIPT',
   'IFRAME', 'CANVAS', 'TEMPLATE', 'INPUT', 'OPTION', 'VIDEO', 'AUDIO', 'MATH',
 ]);
+
+/**
+ * 地標標籤。**不是排除清單** —— 和 CHROME_SELECTOR 同一級待遇:
+ * 不畫常駐疊層,但 hover / 選取仍然翻得到。
+ *
+ * 它們原本在 EXCLUDE_TAGS 裡,結果同一份導覽用 `<nav>` 寫的比用
+ * `<div role="navigation">` 寫的**待遇更差**:後者滑上去看得到,
+ * 前者整棵消失。同一件事該有同一個答案。
+ */
+const CHROME_TAGS = new Set(['NAV', 'HEADER', 'FOOTER', 'ASIDE']);
 
 /**
  * 排除的子樹。
@@ -111,6 +121,83 @@ function isAppHeading(el: Element): boolean {
   return normalizeText(el.textContent ?? '').length <= UI_LABEL_MAX_CHARS;
 }
 
+const LIST_TAGS = new Set(['UL', 'OL']);
+
+/**
+ * 清單項目自己那一行的文字,**不含巢狀子清單**。
+ *
+ * 判斷「這是目次還是選單」要看項目本身有多長。用 textContent 會把子清單
+ * 的文字一起算進去,`<li>Products<ul><li>A</li><li>B</li></ul></li>`
+ * 這種下拉選單就會被誤判成內容。
+ */
+function listItemText(li: Element, skip?: ReadonlySet<Element>): string {
+  let out = '';
+  for (const node of Array.from(li.childNodes)) {
+    if (node.nodeType === 3 /* TEXT_NODE */) {
+      out += node.nodeValue ?? '';
+      continue;
+    }
+    if (node.nodeType !== 1 /* ELEMENT_NODE */) continue;
+    const kid = node as Element;
+    if (kid.tagName === 'UL' || kid.tagName === 'OL') continue;
+    if (NON_TEXT_TAGS.has(kid.tagName)) continue;
+    if (skip?.has(kid)) continue;
+    if (kid.matches(EXCLUDE_SELECTOR)) continue;
+    out += ownText(kid, skip);
+  }
+  return normalizeText(out);
+}
+
+/**
+ * 這個互動元素在**內容清單**裡,不是選單裡。
+ *
+ * ClickHouse 的目次是 `<ul><li><a>Introduction</a></li>…</ul>`,同一份清單裡
+ * 「Introduction」12 字、「Count aggregations in ClickHouse and Elasticsearch」49 字。
+ * 照 24 字門檻逐項判斷,短的變成要 hover 的貼片、長的變成常駐疊層 ——
+ * 同一份目次一半翻一半不翻,使用者的原話是「有些不翻 有些翻」。
+ *
+ * 門檻本身沒有錯,錯在**逐項套用**。清單是一個整體:裡面只要有一項長到
+ * 明顯是內容(文章標題、目次條目),整份清單就是內容,不是導覽列。
+ * 反過來說,Gmail 左欄與一般網站的選單每一項都短,結論不變。
+ */
+function inContentList(act: Element, skip?: ReadonlySet<Element>): boolean {
+  const item = act.closest('li');
+  const parent = item?.parentElement;
+  if (!item || !parent || !LIST_TAGS.has(parent.tagName)) return false;
+  let list: Element = parent;
+  /*
+   * 巢狀清單要看**整棵樹**,不是自己那一層。
+   *
+   * 目次的子清單常常每一項都短(Summary / Storage size / Aggregation
+   * performance),只看自己那一層就會判定成選單 —— 於是同一份目次
+   * 上半部翻了、縮排進去的三項沒翻。它們是同一份目次的一部分,
+   * 判斷也該是同一個。
+   */
+  for (
+    let up = list.parentElement?.closest('ul,ol');
+    up;
+    up = up.parentElement?.closest('ul,ol')
+  ) {
+    list = up;
+  }
+  const items = list.querySelectorAll('li');
+  if (items.length < 3) return false;
+  for (const li of items) {
+    if (li === item) continue;
+    /*
+     * 量**項目自己那一行**,不是只量它裡面的連結。
+     *
+     * 只量連結會漏掉這種形狀:
+     *   <li><p><strong>Query ①</strong> — 這是對整個資料集的全資料掃描…</p>
+     *       <ul><li><a>ClickHouse SQL query</a></li>…</ul></li>
+     * 每個連結都 ≤24 字,可是整份清單顯然是內容 —— 使用者看到的是
+     * 段落翻了、底下三個連結沒翻。長度的證據在項目上,不在連結上。
+     */
+    if (listItemText(li, skip).length > UI_LABEL_MAX_CHARS) return true;
+  }
+  return false;
+}
+
 export function isUiLabel(el: Element, skip?: ReadonlySet<Element>): boolean {
   /*
    * `<div role="heading">Mail</div>` —— 應用程式的區塊標題。
@@ -123,13 +210,32 @@ export function isUiLabel(el: Element, skip?: ReadonlySet<Element>): boolean {
   if (el.getAttribute('role') === 'heading' && !HEADING_TAGS.has(el.tagName)) {
     if (visibleTextOf(el, skip).length <= UI_LABEL_MAX_CHARS) return true;
   }
+  /*
+   * 內容清單整份一起判定,不逐項套長度門檻。
+   *
+   * 傳 el 本身也成立:`<li>` 的 closest('li') 就是它自己,所以
+   * 「連結」與「只包著連結的 li」兩條路徑共用同一個結論 ——
+   * 少了這一點,目次的短條目會在下面那條「文字全來自互動子孫」的規則
+   * 再一次被判成 UI 標籤。
+   */
+  if (inContentList(el, skip)) return false;
   const act = el.closest(INTERACTIVE_SELECTOR);
   if (act) return visibleTextOf(act, skip).length <= UI_LABEL_MAX_CHARS;
   /*
    * 自己不是互動元素,但文字**全部**來自互動子孫 —— 那是按鈕列 / 連結列,
    * 不是段落。段落裡夾一個行內連結不會命中:那時連結外面還有文字。
    */
-  const actives = el.querySelectorAll(INTERACTIVE_SELECTOR);
+  /*
+   * 只算**看得見文字的**互動子孫。
+   *
+   * ClickHouse 的圖片儲存格裡有一顆放大按鈕,它的無障礙名稱在
+   * `aria-label` 上、畫面上一個字都沒有。把它算進來會讓長度預算
+   * 憑空多 24 字(`UI_LABEL_MAX_CHARS * actives.length`),
+   * 而它連一個字都沒有貢獻 —— 預算應該跟著文字走,不是跟著節點走。
+   */
+  const actives = [...el.querySelectorAll(INTERACTIVE_SELECTOR)].filter(
+    (a) => visibleTextOf(a, skip).length > 0,
+  );
   if (actives.length === 0) return false;
   const total = visibleTextOf(el, skip);
   if (total.length > UI_LABEL_MAX_CHARS * actives.length) return false;
@@ -166,6 +272,15 @@ export interface Candidate {
   src: string;
   /** 來源元素含浮動子孫,bounding box 會蓋住圖片 (§3.5) */
   geometryRisk: boolean;
+  /** 自己佔一行的媒體子節點 —— 疊層要在這裡收住(見 mediaSplitOf) */
+  mediaSplit?: Element;
+  /** 在 sticky / fixed 的子樹裡:捲動時 document 座標會跑,先藏起來 */
+  pinned?: boolean;
+  /**
+   * 這個單元蓋的不是整個元素,而是元素裡的一段行內內容(見 inlineRuns)。
+   * 幾何一律問 Range,不問元素。
+   */
+  range?: Range;
 }
 
 const HAN = /\p{Script=Han}/u;
@@ -244,13 +359,109 @@ export function hasContainerChild(el: Element): boolean {
 const MEDIA_TAGS = 'img,video,canvas,svg,picture,iframe';
 const MEDIA_MIN_AREA = 400;
 
-export function hasMediaChild(el: Element): boolean {
+export function hasMediaChild(el: Element, includeSelf = false): boolean {
+  if (includeSelf && el.matches(MEDIA_TAGS)) {
+    const own = el.getBoundingClientRect();
+    if (own.width * own.height >= MEDIA_MIN_AREA) return true;
+  }
   const kids = el.querySelectorAll(MEDIA_TAGS);
   for (let i = 0; i < kids.length && i < 12; i++) {
     const r = kids[i]!.getBoundingClientRect();
     if (r.width * r.height >= MEDIA_MIN_AREA) return true;
   }
   return false;
+}
+
+/**
+ * 帶著大圖、但圖片**自己佔一整行**的子節點。
+ *
+ * ClickHouse 的部落格每張圖都寫在段落裡:
+ *
+ *   <p>文字…<span class="relative flex w-full"><img …></span></p>
+ *
+ * `hasMediaChild()` 看到 <img> 就整段放棄,於是圖多的文章一半不翻 ——
+ * 使用者的原話是「看起來文字跟著圖的 就不會翻」。可是這種版面上
+ * 文字與圖片是**上下分開**的,疊層只要蓋到圖片之前就好。
+ *
+ * 三個條件缺一不可,少一個就會蓋到圖:
+ *  1. 只有一處媒體(兩處以上表示文字被切成好幾段,單一矩形蓋不住)
+ *  2. 它在第一個或最後一個(夾在中間同樣把文字切成兩段)
+ *  3. 它自己佔一行(真正的行內圖片就在文字行裡,一定會被蓋到)
+ */
+export function mediaSplitOf(el: Element): Element | null {
+  /*
+   * 要走 childNodes,不是 children。
+   *
+   * 踩過一次:`<p>文字<span class="flex"><img></span>文字</p>` 的**元素**子節點
+   * 只有那個 span,所以「它是第一個也是最後一個」成立,程式判定圖片靠在邊上 ——
+   * 而畫面上圖片正夾在兩段文字中間。文字節點沒有元素身分,但它在版面上占位;
+   * 量版面就不能只看元素。
+   */
+  const kids = Array.from(el.childNodes);
+  const carries = (n: Node): boolean => {
+    if (n.nodeType !== 1) return false;
+    const kid = n as Element;
+    return (
+      kid.matches(MEDIA_TAGS) ||
+      [...kid.querySelectorAll(MEDIA_TAGS)].some((m) => {
+        const r = m.getBoundingClientRect();
+        return r.width * r.height >= MEDIA_MIN_AREA;
+      })
+    );
+  };
+  const at = kids.map(carries);
+  const first = at.indexOf(true);
+  if (first < 0) return null;
+  const last = at.lastIndexOf(true);
+  /*
+   * 頭尾**連續一段**都算,不是只有一個 —— ClickHouse 的圖表段落常常是
+   * 「一段文字 + 兩張並排的圖」(Query ① 與 Query ②)。
+   * 真正的條件是**文字沒有被圖切成兩半**。
+   */
+  for (let i = first; i <= last; i++) if (!at[i]) return null;
+  const hasText = (from: number, to: number): boolean => {
+    for (let i = from; i < to; i++) {
+      const n = kids[i]!;
+      if (n.nodeType === 3) {
+        if (normalizeText(n.nodeValue ?? '').length > 0) return true;
+      } else if (n.nodeType === 1 && normalizeText((n as Element).textContent ?? '').length > 0) {
+        return true;
+      }
+    }
+    return false;
+  };
+  if (hasText(0, first) && hasText(last + 1, kids.length)) return null;
+  // 每一塊都要自己佔一行,否則圖就在文字行裡
+  for (let i = first; i <= last; i++) {
+    if (!BLOCKISH_DISPLAY.has(getComputedStyle(kids[i] as Element).display)) return null;
+  }
+  // 邊界取靠近文字的那一端
+  return (first === 0 ? kids[last] : kids[first]) as Element;
+}
+
+/**
+ * el 自己的文字,**不含區塊子節點的**。
+ *
+ * `ownText()` 會一路遞迴下去,所以 `<li><a>標題</a><ul>…</ul></li>`
+ * 拿到的是標題加上整份子清單。要判斷「這個容器自己還帶著一段文字嗎」,
+ * 就得先把歸屬於子區塊的部分扣掉。
+ */
+function inlineOwnText(el: Element, skip?: ReadonlySet<Element>): string {
+  let out = '';
+  for (const node of Array.from(el.childNodes)) {
+    if (node.nodeType === 3 /* TEXT_NODE */) {
+      out += node.nodeValue ?? '';
+      continue;
+    }
+    if (node.nodeType !== 1 /* ELEMENT_NODE */) continue;
+    const kid = node as Element;
+    if (NON_TEXT_TAGS.has(kid.tagName)) continue;
+    if (skip?.has(kid)) continue;
+    if (kid.matches(EXCLUDE_SELECTOR)) continue;
+    if (kid.matches(CONTAINER_TAGS)) continue;
+    out += ownText(kid, skip);
+  }
+  return out;
 }
 
 /**
@@ -390,6 +601,45 @@ function hasFloatDescendant(el: Element): boolean {
   return false;
 }
 
+/**
+ * 外殼,還是內容?
+ *
+ * 地標標籤與 ARIA 角色是**版面上的位置**,不是內容的性質。文章的目次
+ * 常常就放在 `<nav>` 或 `<aside>` 裡 —— ClickHouse 右側那份浮動目次是
+ * 整篇文章的導覽,使用者的原話是「右邊的 table of contents 完全沒翻」。
+ *
+ * 分辨的方法和 §BX 的清單規則同一條:裡面有沒有長到明顯是內容的項目。
+ * 目次有(「Count aggregations in ClickHouse and Elasticsearch」49 字),
+ * Gmail 左欄沒有(每一項都 ≤24 字)。**同一個證據,同一個結論。**
+ */
+/**
+ * 「裡面是目次就當內容」這個例外只給**導覽型**的地標。
+ *
+ * 站台頁首不是目次,永遠不是。而它的 mega menu 裡幾乎一定有一項長到
+ * 超過 24 字(產品說明),於是 hasContentList() 一律成立 ——
+ * 整個 sticky 頁首被當成內容,長出六個內文單元。
+ * 例外要窄:目次會出現在 <nav> / <aside>,不會出現在 <header> / <footer>。
+ */
+const TOC_HOSTS = 'nav,aside,[role="navigation"],[role="complementary"]';
+
+function isAppChrome(el: Element): boolean {
+  if (!CHROME_TAGS.has(el.tagName) && !el.matches(CHROME_SELECTOR)) return false;
+  if (!el.matches(TOC_HOSTS)) return true;
+  return !hasContentList(el);
+}
+
+/** 底下有沒有「目次型」的清單:三項以上,而且至少一項長到不像選單 */
+function hasContentList(el: Element): boolean {
+  for (const list of el.querySelectorAll('ul,ol')) {
+    const items = list.querySelectorAll('li');
+    if (items.length < 3) continue;
+    for (const li of items) {
+      if (listItemText(li).length > UI_LABEL_MAX_CHARS) return true;
+    }
+  }
+  return false;
+}
+
 interface WalkCtx {
   /**
    * 已認定為螢幕閱讀器專用的元素。
@@ -402,6 +652,8 @@ interface WalkCtx {
   srOnly: Set<Element>;
   seen: (el: Element) => boolean;
   out: Candidate[];
+  /** 這一趟已經建過單元的元素 —— seen() 只知道**上一趟**的結果 */
+  made: Set<Element>;
   root: Element;
 }
 
@@ -411,11 +663,11 @@ interface WalkCtx {
  * 而不是一個巨大的 div 單元,同時一句話被 <a>/<em>/<span> 切碎時
  * 仍然整段一起翻。
  */
-function walk(el: Element, ctx: WalkCtx): boolean {
+function walk(el: Element, ctx: WalkCtx, pinned = false): boolean {
   if (EXCLUDE_TAGS.has(el.tagName)) return false;
   if (el.matches(EXCLUDE_SELECTOR)) return false;
   // 應用程式外殼:不蓋疊層,但 hover / 選取仍然翻得到(見 CHROME_SELECTOR)
-  if (el.matches(CHROME_SELECTOR)) return false;
+  if (isAppChrome(el)) return false;
   // 無文字的子樹直接剪掉,省下大量 getComputedStyle。
   // 這裡用 textContent 是刻意的:只是剪枝,精確的文字晚一點用 ownText 取。
   if (!(el.textContent ?? '').trim()) return false;
@@ -423,7 +675,7 @@ function walk(el: Element, ctx: WalkCtx): boolean {
   // 收折的 <details>:所有量測都會說謊,只有 DOM 說實話
   if (el.tagName === 'DETAILS' && !el.hasAttribute('open')) {
     for (const kid of Array.from(el.children)) {
-      if (kid.tagName === 'SUMMARY' && walk(kid, ctx)) return true;
+      if (kid.tagName === 'SUMMARY' && walk(kid, ctx, pinned)) return true;
     }
     return false;
   }
@@ -438,8 +690,18 @@ function walk(el: Element, ctx: WalkCtx): boolean {
     ctx.srOnly.add(el);
     return false;
   }
-  // §3.5 sticky / fixed 元素捲動時疊層會脫位,跳過該元素及其子樹
-  if (cs.position === 'sticky' || cs.position === 'fixed') return false;
+  /*
+   * §3.5 原本是「sticky / fixed 的元素及其子樹整棵跳過」,理由是捲動時
+   * 疊層會脫位 —— 疊層在 document 座標,而釘住的元素在 document 座標裡
+   * 一直在動。那是**寫在還沒有「動就先藏起來」這套機制之前**的規則。
+   *
+   * 現在有了:內層捲動時 markAllStale(),靜下來再一次量、一次顯示。
+   * 釘住的元素是同一類問題,用同一個答案就好 —— 標記起來,
+   * 捲動期間藏這幾個,停下來再放出來。整棵跳過的代價太大:
+   * ClickHouse 右側那份浮動目次是整篇文章的導覽,使用者的原話是
+   * 「右邊的 table of contents 完全沒翻」。
+   */
+  const inFlow = pinned || cs.position === 'sticky' || cs.position === 'fixed';
   /*
    * 螢幕閱讀器專用標籤:整棵跳過,並登記起來讓祖先扣掉它的文字。
    * walk 先遞迴子節點再評估自己,所以父層評估時這個集合已經填好。
@@ -470,29 +732,244 @@ function walk(el: Element, ctx: WalkCtx): boolean {
 
   let produced = false;
   for (const child of Array.from(el.children)) {
-    if (walk(child, ctx)) produced = true;
+    if (walk(child, ctx, inFlow)) produced = true;
   }
-  if (produced) return true;
+  // 子孫產生了單元,但自己還帶著一段沒人認領的文字 —— 見 captureInlineText
+  if (produced) {
+    captureInlineText(el, ctx, inFlow);
+    return true;
+  }
 
   const blockish = BLOCK_TAGS.has(el.tagName) || BLOCKISH_DISPLAY.has(cs.display);
   if (!blockish) return false;
   // 子孫沒產生單元不代表可以退而求其次把容器整個吃下來
-  if (hasContainerChild(el)) return false;
-  // 圖文混排:蓋下去會把圖一起蓋掉(§3.5 的非浮動版本)
-  if (hasMediaChild(el)) return false;
+  if (hasContainerChild(el)) return captureInlineText(el, ctx, inFlow);
+  /*
+   * 圖文混排:蓋下去會把圖一起蓋掉(§3.5 的非浮動版本)。
+   * 但圖片自己佔一行的話,文字與圖片是上下分開的 —— 那種不必放棄,
+   * 記下界線,疊層蓋到那裡為止(見 mediaSplitOf)。
+   */
+  const split = mediaSplitOf(el);
+  /*
+   * 圖片夾在文字中間(前後都有字)—— 一個矩形蓋不住,但兩個可以。
+   * 區塊層級的圖片本來就是分隔線,交給 inlineRuns 依它切段。
+   */
+  if (!split && hasMediaChild(el)) return captureRuns(el, ctx, inFlow);
+  const skip = split ? new Set([...ctx.srOnly, split]) : ctx.srOnly;
 
-  const text = normalizeText(ownText(el, ctx.srOnly));
+  const text = normalizeText(ownText(el, skip));
   if (!isMeaningfulText(text)) return false;
-  // 互動元素裡的短文字是 UI 標籤,不是內容(長度只算看得見的字)
-  if (isUiLabel(el, ctx.srOnly)) return false;
+  /*
+   * 互動元素裡的短文字是 UI 標籤,不是內容(長度只算看得見的字)。
+   *
+   * **但有 mediaSplit 的元素不算。** 那條規則的理由是幾何:譯文比原文短,
+   * 蓋在緊湊的導覽列上要嘛吃掉項目間距、要嘛讓原文從右邊露出來。
+   * 而 mediaSplit 的存在本身就證明了這裡不是那種版面 —— 圖片自己佔一行,
+   * 表示文字也自己佔一行,蓋上去很安全。
+   *
+   * 實例是 ClickHouse 的圖表表格:`<th>Storage size</th>` 翻了,
+   * 同一張表的 `<td><a>Link</a><span><img></span></td>` 沒翻,
+   * 因為後者的文字全部來自一個連結。同一張表兩種行為。
+   */
+  if (!split && isUiLabel(el, ctx.srOnly)) return false;
   // 最後一道防線:段落不會有一千字
   if (text.length > MAX_UNIT_CHARS) return false;
   if (looksLikeTargetLang(text)) return false;
   if (ctx.seen(el)) return true; // 已建立過單元,視為已命中,不重複
   if (el.getClientRects().length === 0) return false;
 
-  ctx.out.push({ el, role: roleOf(el, cs), src: text, geometryRisk: hasFloatDescendant(el) });
+  ctx.out.push({
+    el,
+    role: roleOf(el, cs),
+    src: text,
+    geometryRisk: hasFloatDescendant(el),
+    ...(split ? { mediaSplit: split } : {}),
+    ...(inFlow ? { pinned: true } : {}),
+  });
+  ctx.made.add(el);
   return true;
+}
+
+/**
+ * 容器自己帶著一段文字,而那段文字整段裝在一個行內元素裡 —— 拿那個元素當單元。
+ *
+ * 目次的巢狀項目就是這個形狀:
+ *
+ *   <li><a>Benchmark results</a><ul><li><a>Summary</a></li>…</ul></li>
+ *
+ * 拿 <li> 當單元不行:它的 bounding box 蓋住整個子清單。可是不做任何事
+ * 也不對 —— 舊版就是這樣,「Benchmark results」那一行**不產生任何單元**,
+ * 既不是內文也不是貼片,滑上去也沒反應。使用者看到的是目次翻一半。
+ *
+ * <a> 的幾何剛剛好,語意也對。條件很緊:整段文字要恰好等於某一個
+ * 非區塊子元素的文字,有一點對不上就不做 —— 寧可少翻一行,
+ * 不要蓋錯地方。
+ */
+/**
+ * 容器裡「不屬於任何區塊子節點」的連續行內內容,一段一個。
+ *
+ * 有兩種很常見的版面,單靠元素當錨點永遠接不住:
+ *
+ *   <div class="rich-text">
+ *     <div>…表格…</div>
+ *     ClickHouse requires 12 times less disk space than Elasticsearch…
+ *   </div>
+ *
+ *   <p>文字…<span class="flex"><img></span>As discussed, ESQL currently…</p>
+ *
+ * 第一種的文字**沒有任何元素包著**(markdown 轉出來的鬆散文字節點);
+ * 第二種的圖片夾在中間,把文字切成兩段。兩種都不可能用一個元素矩形蓋住。
+ *
+ * 答案是換錨點:用 Range 圈住那一段,幾何問 `range.getClientRects()`。
+ * 區塊子節點是天然的分隔線 —— 兩段之間必然換行,所以每一段的矩形都是
+ * 完整的幾行,不會出現「從半行開始」那種難蓋的形狀。
+ */
+export function inlineRuns(el: Element): Array<{ range: Range; nodes: Node[] }> {
+  const out: Array<{ range: Range; nodes: Node[] }> = [];
+  let run: Node[] = [];
+  const flush = (): void => {
+    if (run.length === 0) return;
+    const range = document.createRange();
+    range.setStartBefore(run[0]!);
+    range.setEndAfter(run[run.length - 1]!);
+    if (normalizeText(range.toString()).length > 0) out.push({ range, nodes: run });
+    run = [];
+  };
+  for (const node of Array.from(el.childNodes)) {
+    if (node.nodeType === 1 /* ELEMENT_NODE */) {
+      const kid = node as Element;
+      const blockish =
+        kid.matches(CONTAINER_TAGS) || BLOCKISH_DISPLAY.has(getComputedStyle(kid).display);
+      if (blockish) {
+        flush();
+        continue;
+      }
+      if (NON_TEXT_TAGS.has(kid.tagName) || kid.matches(EXCLUDE_SELECTOR)) continue;
+    } else if (node.nodeType !== 3 /* TEXT_NODE */) {
+      continue;
+    }
+    run.push(node);
+  }
+  flush();
+  return out;
+}
+
+/**
+ * 把行內段落收成單元。**一個元素可以產生好幾個**,所以下游的
+ * 「這個元素做過了沒」不能再假設一對一(見 index.ts 的 unitByEl)。
+ */
+function captureRuns(el: Element, ctx: WalkCtx, pinned: boolean): boolean {
+  /*
+   * **上一輪就做過了就別再做。**
+   *
+   * 元素錨點那條路徑在 `walk()` 裡有 `ctx.seen(el)` 擋著,而這條捷徑漏了 ——
+   * 於是每一次 scan 都重新產生同一批 range 候選。它們在 index.ts 會被
+   * 「這個元素上一輪就有單元」濾掉,所以不會變成重複的疊層,
+   * **但 scan 永遠回報 found > 0**,於是掃描間隔一直停在最短的 400ms,
+   * 每 0.4 秒對整棵樹跑一次 getComputedStyle。診斷 log 裡那排
+   * `scan {"found":9}` 就是這樣來的,而使用者感覺到的是「卡住了」。
+   *
+   * 這是 §CF「走捷徑的路徑要自己補上主路徑的每一道關卡」的第二次。
+   */
+  if (ctx.seen(el)) return true;
+  const cs = getComputedStyle(el);
+  let made = false;
+  for (const { range, nodes } of inlineRuns(el)) {
+    /*
+     * 這一段的文字**已經有主人了嗎**。
+     *
+     * `<a><h3>卡片標題</h3></a>` 的 `<a>` 是行內的,所以整個會被收進一段 run,
+     * 而那段文字早就由 `<h3>` 的單元蓋著了 —— 再收一次就是兩層疊層。
+     * 單元一律建在容器上,所以「這段裡有容器」就等於「有主人」。
+     */
+    const owned = nodes.some((n) => {
+      if (n.nodeType !== 1) return false;
+      const e = n as Element;
+      return ctx.made.has(e) || e.matches(CONTAINER_TAGS) || e.querySelector(CONTAINER_TAGS) !== null;
+    });
+    if (owned) continue;
+    /*
+     * 這一段裡還夾著大圖 —— 那是真正的行內圖片(不是自己佔一行的那種,
+     * 那種會在上面被當成分隔線切開),疊層一定會蓋到它。整段放棄。
+     * 少了這一條,`<p><img><span>說明</span></p>` 會長出一塊蓋住圖的疊層。
+     */
+    if (nodes.some((n) => n.nodeType === 1 && hasMediaChild(n as Element, true))) continue;
+    const text = normalizeText(range.toString());
+    if (!isMeaningfulText(text) || text.length > MAX_UNIT_CHARS) continue;
+    if (looksLikeTargetLang(text)) continue;
+    // 整段都在互動元素裡的短文字仍然是 UI 標籤
+    if (text.length <= UI_LABEL_MAX_CHARS && range.startContainer === range.endContainer) continue;
+    if (range.getClientRects().length === 0) continue;
+    ctx.out.push({
+      el,
+      role: roleOf(el, cs),
+      src: text,
+      geometryRisk: false,
+      range,
+      ...(pinned ? { pinned: true } : {}),
+    });
+    made = true;
+  }
+  if (made) ctx.made.add(el);
+  return made;
+}
+
+function captureInlineText(el: Element, ctx: WalkCtx, pinned: boolean): boolean {
+  const text = normalizeText(inlineOwnText(el, ctx.srOnly));
+  if (!isMeaningfulText(text)) return false;
+  /*
+   * 長度與語言的檢查只擋**單一承載元素**那條捷徑,不能擋掉整個函式。
+   *
+   * 這裡踩過一次:`<div class="rich-text">` 底下有五段鬆散文字,
+   * `inlineOwnText()` 把五段接成一條 3000 字的字串,於是
+   * `text.length > MAX_UNIT_CHARS` 直接 return —— 連 Range 的路都沒走到。
+   * 而那五段各自都是正常長度的段落。**把整體拿去量,擋掉的是每一個個體。**
+   */
+  const single = text.length <= MAX_UNIT_CHARS && !looksLikeTargetLang(text);
+  for (const kid of single ? Array.from(el.children) : []) {
+    if (kid.matches(CONTAINER_TAGS)) continue;
+    /*
+     * 承載元素必須自己就是**葉子**。
+     *
+     * `<a><h3>卡片標題</h3></a>` 的 <h3> 已經是單元了,再拿 <a> 收一次
+     * 就是兩層疊層疊在一起;`<tbody>` / `<tr>` 也一樣 —— 它們不在
+     * CONTAINER_TAGS 裡(那是「像段落的容器」的清單),但底下有 <td>。
+     * 用「有沒有容器子孫」判斷比繼續往 CONTAINER_TAGS 塞標籤可靠。
+     */
+    if (kid.querySelector(CONTAINER_TAGS)) continue;
+    /*
+     * 承載元素也要走一次排除清單。
+     *
+     * 這一步漏掉的代價是**把已經擋掉的東西救回來**:ClickHouse 的頂部
+     * 導覽是 `<div><button>Products</button>…</div>`,`<button>` 在
+     * EXCLUDE_TAGS 裡、walk() 早就跳過了,但 captureInlineText 直接
+     * 從父層撿走它 —— 站台導覽因此變成六個內文單元。
+     * 走捷徑的路徑要自己補上主路徑的每一道關卡。
+     */
+    if (EXCLUDE_TAGS.has(kid.tagName)) continue;
+    if (kid.matches(EXCLUDE_SELECTOR) || kid.matches(CHROME_SELECTOR)) continue;
+    if (normalizeText(ownText(kid, ctx.srOnly)) !== text) continue;
+    if (ctx.made.has(kid) || ctx.seen(kid)) return true;
+    const kcs = getComputedStyle(kid);
+    if (isInvisible(kcs)) return false;
+    if (isScreenReaderOnly(kid, kcs) || isUiLabel(kid, ctx.srOnly)) return false;
+    if (hasMediaChild(kid)) return false;
+    if (kid.getClientRects().length === 0) return false;
+    ctx.out.push({
+      el: kid,
+      role: roleOf(kid, kcs),
+      src: text,
+      geometryRisk: false,
+      ...(pinned ? { pinned: true } : {}),
+    });
+    ctx.made.add(kid);
+    return true;
+  }
+  /*
+   * 沒有單一承載元素 —— 文字是鬆散的文字節點加行內標籤的混合。
+   * 那就別找元素了,直接圈範圍。
+   */
+  return captureRuns(el, ctx, pinned);
 }
 
 /**
@@ -539,6 +1016,9 @@ export function findLabels(
     }
     const text = normalizeText(ownText(el, srOnly));
     if (text.length === 0 || text.length > UI_LABEL_MAX_CHARS) continue;
+    // 內容清單裡的短連結交給內文層畫常駐疊層,不要在這裡收成貼片 ——
+    // 否則同一份目次會一半貼片一半疊層(見 inContentList)
+    if (inContentList(el, srOnly)) continue;
     if (!isMeaningfulText(text)) continue;
     if (looksLikeTargetLang(text)) continue;
     if (el.getClientRects().length === 0) continue;
@@ -557,7 +1037,7 @@ export function findLabels(
 
 export function findCandidates(root: Element, seen: (el: Element) => boolean): Candidate[] {
   const out: Candidate[] = [];
-  walk(root, { seen, out, root, srOnly: new Set<Element>() });
+  walk(root, { seen, out, root, srOnly: new Set<Element>(), made: new Set<Element>() });
   return out;
 }
 
@@ -581,9 +1061,6 @@ export function explainCandidate(el: Element): string[] {
     else {
       const pcs = getComputedStyle(p);
       if (isInvisible(pcs)) reasons.push(`祖先 <${p.tagName.toLowerCase()}> 不可見 (${pcs.display}/${pcs.visibility}/${pcs.opacity})`);
-      else if (pcs.position === 'sticky' || pcs.position === 'fixed') {
-        reasons.push(`祖先 <${p.tagName.toLowerCase()}> 是 ${pcs.position},捲動會脫位所以跳過`);
-      }
     }
     if (reasons.length > 0) return reasons;
   }
@@ -594,11 +1071,20 @@ export function explainCandidate(el: Element): string[] {
 
   const cs = getComputedStyle(el);
   if (isInvisible(cs)) return [`不可見 (display:${cs.display} visibility:${cs.visibility} opacity:${cs.opacity})`];
-  if (cs.position === 'sticky' || cs.position === 'fixed') return [`position: ${cs.position},跳過`];
+  for (let n: Element | null = el; n && n !== document.body; n = n.parentElement) {
+    if (isAppChrome(n)) {
+      return [
+        `祖先 <${n.tagName.toLowerCase()}> 是應用程式外殼 —— 不畫疊層,但滑上去仍然翻得到`,
+      ];
+    }
+  }
 
   const blockish = BLOCK_TAGS.has(el.tagName) || BLOCKISH_DISPLAY.has(cs.display);
   if (!blockish) return [`不是 block 級 (display: ${cs.display}),文字會併進最近的 block 祖先`];
   if (hasContainerChild(el)) return ['底下還有帶文字的 block —— 這是容器不是段落,單元會建在更裡面'];
+  if (!mediaSplitOf(el) && hasMediaChild(el)) {
+    return ['圖文混排且圖片沒有自己佔一行 —— 疊層一定會蓋到圖,整段跳過'];
+  }
 
   const text = normalizeText(ownText(el));
   if (!isMeaningfulText(text)) return [`文字沒有意義:${JSON.stringify(text.slice(0, 40))}`];
@@ -606,5 +1092,15 @@ export function explainCandidate(el: Element): string[] {
   if (looksLikeTargetLang(text)) return ['判定為已是目標語言 (CJK 比例 > 30%)'];
   if (el.getClientRects().length === 0) return ['沒有繪製面積 (getClientRects 為空)'];
   if (isScreenReaderOnly(el, cs)) return ['螢幕閱讀器專用標籤(sr-only:1×1 + clip),視覺上不存在'];
+  /*
+   * isUiLabel 要放在最後、而且**不能漏**。
+   *
+   * 漏掉的代價是這支工具會說謊:查 ClickHouse 圖表儲存格為什麼不翻,
+   * 它回「符合所有規則 —— 應該會成為翻譯單元」,而實際上是被這一關擋掉的。
+   * 會說謊的儀表比沒有儀表更糟,因為它讓人往錯的方向找。
+   */
+  if (!mediaSplitOf(el) && isUiLabel(el)) {
+    return ['判定為 UI 標籤(互動元素裡 24 字以內的文字)—— 交給加翻層,滑上去會顯示貼片'];
+  }
   return ['符合所有規則 —— 應該會成為翻譯單元'];
 }

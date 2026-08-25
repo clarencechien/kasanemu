@@ -35,7 +35,9 @@ import {
   measureUnit,
   unlockScales,
 } from './geometry';
-import { clipInsets, type Box } from './cover';
+import { clipInsets, scrolls, type Box } from './cover';
+import { hidePinnedWhileScrolling, motionGuard } from './motion';
+import { deviceProfile, type DeviceProfile } from './device';
 import { probePackagedFonts } from './fonts';
 import { L0Engine, translatorSupported } from './l0';
 import { pageSourceLang, sampleVisibleText, sniffScript, toTranslatorTarget } from './lang';
@@ -49,11 +51,19 @@ import {
   translationPhase,
 } from './upgrade';
 import { mask, protectedFragments } from './mask';
-import { OverlayLayer, type ChipItem } from './overlay';
-import { hintColor, parseColor, probeStyle, resetHintColor } from './styleprobe';
+import { HOST_ID, OverlayLayer, type ChipItem } from './overlay';
+import {
+  hintColor,
+  parseColor,
+  probeStyle,
+  resetColorCache,
+  resetHintColor,
+  unparsedColors,
+} from './styleprobe';
 import { clearMeasureCache } from './measure';
 import { activeText, hasText, type Unit } from './unit';
 import { dedupeByText, labelBudget } from './annotate';
+import { buildSnapshot } from './snapshot';
 
 setDiagScope('content');
 
@@ -84,6 +94,30 @@ const L0_LOOKAHEAD_PX = 1500;
 const L0_LOOKAHEAD_SLOW_PX = 400;
 /** 超過這個平均延遲就算慢機器(ms) */
 const SLOW_MACHINE_MS = 2000;
+/**
+ * L0 佇列深度上限。超過就**不再往前預翻**,只收現在看得到的。
+ *
+ * 診斷 log(ClickHouse 那篇 268 個區塊的長文,Chromebook):開場沒多久
+ * 佇列就有 179 個在排,每個呼叫 2.4 秒、併發 2 —— 那是五分鐘的存貨。
+ * 預翻的用意是「使用者捲到的時候已經翻好了」,可是排在 179 個後面的東西
+ * 不管使用者捲不捲都不會準時到,只是把 CPU 佔住、讓真正在看的那一屏也慢。
+ *
+ * 存貨超過這個數就停止進料;下一輪 scan 會再來看。
+ * 30 個 × 2.4 秒 ÷ 併發 2 ≈ 36 秒,對慢機器來說已經是預翻的上限了。
+ */
+const L0_QUEUE_CAP = 30;
+/**
+ * 同一個區塊最多讓 L0 試幾次。
+ *
+ * catchUpL0 每 900ms 重試一次 l0-failed,原本沒有上限。多數失敗是暫時的
+ * (語言包還沒好),但**佔位符被翻掉**那種不是:masked.restore() 對同一段
+ * 文字永遠回 null,而且 L0 的譯文有快取 —— 重試連 API 都不用打就直接失敗。
+ * log 裡整段 `l0-done {"asked":6,"batchMs":0,...,"failed":6}` 每 900ms 一筆、
+ * calls 完全不動,就是這個永動機。試三次還不行就交給 L1,別再空轉。
+ */
+const L0_MAX_TRIES = 3;
+/** 佇列滿到一個都放不下時,隔多久再來看一次 */
+const INTAKE_RETRY_MS = 600;
 
 function lookaheadPx(): number {
   const t = l0?.timing();
@@ -111,7 +145,13 @@ let l0: L0Engine | null = null;
  * 下一次 scan() 的 seen() 會對每個舊元素回 true,findCandidates 於是
  * 一個候選都不產生 —— 症狀是切換管線後狀態列說「沒找到可翻譯的區塊」。
  */
-let unitByEl = new WeakMap<Element, Unit>();
+/**
+ * 元素 → 它產生的單元。**一對多**:鬆散文字與被圖片切開的段落會讓同一個
+ * 元素產生好幾段(見 detect.ts 的 inlineRuns),所以這裡是陣列。
+ * `has()` 的語意仍然是「這個元素掃過了」—— 一個元素的所有段落在同一次
+ * findCandidates 裡一起產生,不會只做一半。
+ */
+let unitByEl = new WeakMap<Element, Unit[]>();
 const units = new Set<Unit>();
 const unitById = new Map<string, Unit>();
 let nextId = 1;
@@ -122,6 +162,8 @@ let probed = new WeakSet<Unit>();
 let pageKey = makePageKey();
 let hovered: Unit | null = null;
 let altScan = false;
+/** 按住 Alt:整層暫時收起(譯文留著,放開立刻回來) */
+let hiddenAll = false;
 
 /* ---------------------------------------------------------------- 加翻層 */
 /*
@@ -160,6 +202,10 @@ let flushTimer = 0;
 let enqueueTimer = 0;
 let dwellTimer = 0;
 let reprioTimer = 0;
+/** 捲動停止後把 pinned 疊層放回來的計時器 */
+let pinnedTimer = 0;
+/** 目前有幾個 pinned 單元(0 就完全不必理會捲動) */
+let pinnedCount = 0;
 let motionTimer = 0;
 let scrollRaf = 0;
 let settleTimer = 0;
@@ -199,13 +245,21 @@ let pendingScan = false;
 /** feature.md §2.2 首屏疊層出現時間 */
 let startedAt = 0;
 let firstPaintMs = -1;
+/** 機器畫像,start() 時量一次(微基準要跑幾毫秒,不要每次都跑) */
+let device: DeviceProfile | null = null;
 /** feature.md §4.3 距上次捲動 < 400ms 的區塊延後替換 */
+/** 這一頁有幾塊是從快取直接拿到的(沒有再花一次 API) */
+let cacheHitsTotal = 0;
 let lastScrollAt = 0;
+/** document 自己不捲(Gmail / Slack 這種應用程式外殼)—— start() 時量一次 */
+let appShellPage = false;
+/** 這一頁收到過內層容器的捲動事件 */
+let sawInnerScroll = false;
 /** feature.md §2.2「L0 讀完就沒再看 L1」的比例 */
 let swapsTotal = 0;
 let swapsOffscreen = 0;
 /**
- * 手動翻譯已被觸發過(popup 按鈕或 Alt+Shift+R)。
+ * 手動翻譯已被觸發過(popup 按鈕或 Alt+R)。
  * autoTranslate 關掉時,這個旗標是唯一的放行條件。
  */
 let manualArmed = false;
@@ -281,8 +335,10 @@ const usesL1 = (p: Pipeline): boolean => p === 'progressive' || p === 'single';
 function scan(): void {
   if (!layer) return;
   const found = findCandidates(document.body, (el) => unitByEl.has(el));
+  // 同一批裡同一個元素可以出現好幾次(一段一個),所以只擋「上一輪就有的」
+  const before = new Set(found.filter((c) => unitByEl.has(c.el)).map((c) => c.el));
   for (const c of found) {
-    if (unitByEl.has(c.el)) continue;
+    if (before.has(c.el)) continue;
     const style = probeStyle(c.el, settings.weightOffset);
     const unit: Unit = {
       id: `u${nextId++}`,
@@ -292,6 +348,9 @@ function scan(): void {
       src: c.src,
       style,
       geometryRisk: c.geometryRisk,
+      ...(c.mediaSplit ? { mediaSplit: c.mediaSplit } : {}),
+      ...(c.pinned ? { pinned: true } : {}),
+      ...(c.range ? { range: c.range } : {}),
       /*
        * §4.1 原本是「取不到不透明實色 → 降級為標註樣式」。
        * 改成只有使用者明確要求時才用標註樣式 —— 背景取不到的情況現在由
@@ -316,7 +375,9 @@ function scan(): void {
       inView: false,
       overflowing: false,
     };
-    unitByEl.set(c.el, unit);
+    const list = unitByEl.get(c.el);
+    if (list) list.push(unit);
+    else unitByEl.set(c.el, [unit]);
     units.add(unit);
     unitById.set(unit.id, unit);
     if (unit.tier !== 'skipped') {
@@ -414,6 +475,8 @@ function auditPositions(full = true): void {
   const bottom = window.scrollY + near * 2;
   for (const u of units) {
     if (u.tier === 'skipped') continue;
+    // 釘住的單元隨捲動移動是**正常的**,不是壞掉的證據(見 scrollSync)
+    if (u.pinned === true) continue;
     if (!u.box && !u.inView) continue;
     if (u.rect.top + u.rect.height < top || u.rect.top > bottom) continue;
     // 用同一個公式算「現在應該蓋哪裡」,否則取過 max 的高度會永遠對不上
@@ -425,7 +488,12 @@ function auditPositions(full = true): void {
     if (dx > 1 || dy > 1 || dw > 1 || dh > 1) {
       diag('info', 'position-drift', { id: u.id, dx, dy, dw, dh });
       // 一個錯得離譜就代表這一批都不能信(多半是共同的祖先動了)
-      if (Math.max(dx, dy) > GROSS_DRIFT_PX) {
+      /*
+       * 座標錯得離譜 → 這一批都不能信。**但「先藏起來」只有在會反覆發生的
+       * 頁面上才划算**:長文上這通常是一張圖載完把後面推走,量一次就對了,
+       * 藏 200ms 只換來一次閃爍。flushNow() 當幀就重畫到正確位置。
+       */
+      if (Math.max(dx, dy) > GROSS_DRIFT_PX && guarding()) {
         markAllStale();
         noteMotion();
       }
@@ -539,8 +607,19 @@ function flush(): void {
      */
     layer.setCovered(u, !isRendered(u.el) || u.rect.width < 1 || u.rect.height < 1);
     // 還在動就一直藏著(座標每個 frame 都在變);靜下來才放出來
-    layer.setStale(u, !settled());
+    /*
+     * 釘住的來源(sticky / fixed)在捲動期間 document 座標一直在動,
+     * 而疊層在 document 座標 —— 每一幀追著跑會比合成器慢一格而抖動
+     * (build 14 的教訓),所以走和內層捲動同一條路:先藏起來,
+     * 停下來再一次量、一次顯示。只藏這幾個,一般段落照常留在畫面上。
+     */
+    layer.setStale(
+      u,
+      (guarding() && !settled()) ||
+        (u.pinned === true && !scrollIdle() && hidePinnedWhileScrolling(settings.stability)),
+    );
   }
+  pinnedCount = [...units].filter((u) => u.pinned === true).length;
   const hidden = [...units].filter((u) => u.box && !isRendered(u.el)).length;
   if (hidden !== lastHiddenCount) {
     lastHiddenCount = hidden;
@@ -567,6 +646,16 @@ function flush(): void {
  * feature.md §4.6 / D23:先問快取。命中就直接以 L1 譯文渲染,跳過 L0,
  * 第二次讀同一頁不該先閃一次 L0。
  */
+let lastCappedAt = -1e9;
+
+/** 佇列滿的診斷每秒最多一筆 —— 它每 600ms 會來一次,照實記會把 log 洗掉 */
+function noteCapped(want: number, room: number, queued: number, visible: number): void {
+  const now = performance.now();
+  if (now - lastCappedAt < 1000) return;
+  lastCappedAt = now;
+  diag('info', 'intake-capped', { want, room, queued, visible });
+}
+
 async function intake(): Promise<void> {
   if (!running) return;
   if (!settings.autoTranslate && !manualArmed) {
@@ -589,7 +678,7 @@ async function intake(): Promise<void> {
   const ahead = lookaheadPx();
   const top = window.scrollY - ahead;
   const bottom = window.scrollY + window.innerHeight + ahead;
-  const fresh = [...units].filter(
+  let fresh = [...units].filter(
     (u) =>
       u.tier === 'pending' &&
       u.maxChars > 0 &&
@@ -602,6 +691,43 @@ async function intake(): Promise<void> {
   if (fresh.length === 0) return;
   // 先翻使用者現在看得到的:預翻範圍拉大之後,順序比以前更重要
   fresh.sort((a, b) => priorityOf(a) - priorityOf(b));
+  /*
+   * 佇列已經很滿就只補到上限為止。**沒被取走的不標記 probed**,
+   * 下一輪 scan 會重新考慮它們 —— 那時使用者可能已經捲到附近,
+   * 優先度也就跟著對了。
+   */
+  /*
+   * 佇列太深就停止**預翻**,但看得見的一律照收。
+   *
+   * 上限管的是存貨,不是需求:使用者現在看得到的東西沒有「等下一輪」這個選項,
+   * 而排在幾十個離螢幕很遠的區塊後面等於沒翻。
+   */
+  const queued = l0?.queueDepth() ?? 0;
+  const room = Math.max(0, L0_QUEUE_CAP - queued);
+  if (room < fresh.length) {
+    const viewTop = window.scrollY;
+    const viewBottom = viewTop + window.innerHeight;
+    const visible = fresh.filter(
+      (u) => u.rect.top + u.rect.height >= viewTop && u.rect.top <= viewBottom,
+    );
+    const rest = fresh.filter((u) => !visible.includes(u));
+    noteCapped(fresh.length, room, queued, visible.length);
+    fresh = [...visible, ...rest.slice(0, room)];
+    /*
+     * 一個都放不下。這裡**必須自己排下一次** —— 平常是
+     * runL0 → scheduleFlush → flush → scheduleIntake 這條迴圈在推,
+     * 沒送出任何東西就沒有 flush,進料會停在這裡不再醒來。
+     */
+    if (fresh.length === 0) {
+      if (!enqueueTimer) {
+        enqueueTimer = window.setTimeout(() => {
+          enqueueTimer = 0;
+          void intake();
+        }, INTAKE_RETRY_MS);
+      }
+      return;
+    }
+  }
   for (const u of fresh) probed.add(u);
 
   /*
@@ -625,8 +751,9 @@ async function intake(): Promise<void> {
     return hits.size;
   });
 
-  const l0 = runL0(fresh);
-  const [cacheHits] = await Promise.all([probing, l0]);
+  const l0Run = runL0(fresh);
+  const [cacheHits] = await Promise.all([probing, l0Run]);
+  cacheHitsTotal += cacheHits;
   diag('info', 'intake', { fresh: fresh.length, cacheHits, lookahead: ahead });
 }
 
@@ -657,10 +784,20 @@ async function runL0(list: Unit[]): Promise<void> {
     list.map(async (u) => {
       // 快取比 L0 先回來 → 不必翻了(D23:不閃 L0)
       if (u.l1Text !== undefined) return;
+      u.l0Tries = (u.l0Tries ?? 0) + 1;
       // §3.4 送出前把行內 code 與不翻清單換成佔位符
       const masked = mask(u.src, protectedFragments(u.el, settings.noTranslateTerms));
       // 距視窗中心越近越先翻 —— 捲到新一屏時會插隊到預翻的遠處區塊前面
-      const raw = await engine.translate(masked.text, Math.round(priorityOf(u)));
+      // 優先度傳 thunk,不傳數字 —— 佇列在出隊時才問「現在離視窗多遠」。
+      // 傳數字的話,捲動之前入隊的區塊會帶著過期的順序卡在佇列深處(見 l0.ts slot())
+      /*
+       * 第二個參數是**輪到它時**才問的「還要嗎」。
+       *
+       * 慢機器上 L0 佇列可以排到一兩百個,而那段時間裡 L1 會陸續把它們
+       * 升級掉 —— 輪到的時候譯文早就在畫面上了,再翻一次是純粹的浪費。
+       * 入隊時的 `u.l1Text !== undefined` 只擋得住入隊那一刻的狀況。
+       */
+      const raw = await engine.translate(masked.text, () => Math.round(priorityOf(u)), () => u.l1Text === undefined);
       if (raw === null) {
         u.tier = effective === 'l0-only' ? 'failed' : 'l0-failed';
         u.failReason = 'l0';
@@ -887,10 +1024,25 @@ function makeLabelUnit(el: Element, src: string, register = true): Unit {
  * 和 scan() 一樣是增量的 —— 頁面上的導覽列不會變,但無限捲動會帶來新的卡片,
  * 而卡片上的 CTA 也是 label。
  */
+/**
+ * 這個元素的文字已經被某個內文疊層蓋住了嗎?
+ *
+ * 只比對元素本身是不夠的:單元常常建在**祖先**上。段落裡夾一個
+ * 「docs」連結,單元在 `<p>` 上;圖表儲存格 `<td><a>Link</a><img></td>`
+ * 的單元在 `<td>` 上。兩種情況下那個 `<a>` 都還是會被加翻層收走,
+ * 於是同一段文字既有常駐疊層、又有 hover 貼片 —— 重複,而且多送一次 API。
+ */
+function covered(el: Element): boolean {
+  for (let n: Element | null = el; n && n !== document.body; n = n.parentElement) {
+    if (unitByEl.has(n)) return true;
+  }
+  return false;
+}
+
 function scanLabels(): void {
   if (!settings.annotate) return;
   if (labels.size >= ANNOTATION_CAP) return;
-  const found = findLabels(document.body, ANNOTATION_CAP, (el) => labelByEl.has(el));
+  const found = findLabels(document.body, ANNOTATION_CAP, (el) => labelByEl.has(el) || covered(el));
   let added = 0;
   for (const c of found) {
     if (labels.size >= ANNOTATION_CAP) break;
@@ -1221,7 +1373,7 @@ function armChipL1(u: Unit): void {
 }
 
 function openChip(u: Unit, immediate = false): void {
-  if (!settings.annotate || !running) return;
+  if (!settings.annotate || !running || hiddenAll) return;
   // 選取是明確的「我要這一段」,不受「只在 Alt 時顯示」與捲動靜默的限制
   if (!immediate) {
     if (settings.annotateAltOnly && !altScan) return;
@@ -1316,8 +1468,10 @@ function retryUnit(u: Unit): void {
     u.tier = 'l0';
     if (usesL1(effective)) queueUpgrade([u]);
   } else {
-    // 連 L0 都沒有:退回 pending,讓 intake() 照正常流程重跑一次
+    // 連 L0 都沒有:退回 pending,讓 intake() 照正常流程重跑一次。
+    // 重試次數歸零 —— 使用者親手指定的重試不該被 L0_MAX_TRIES 擋掉
     u.tier = 'pending';
+    u.l0Tries = 0;
     void intake();
   }
   lastProblem = '';
@@ -1328,15 +1482,32 @@ function retryUnit(u: Unit): void {
 /**
  * §2.2 疊層 pointer-events: none,所以 hover 只能由來源元素反向驅動。
  */
+/**
+ * 同一個元素可能有好幾段行內單元(被圖片切開的段落、鬆散文字),
+ * 而滑鼠只指著其中一段。用指標位置挑,不然滑到第二段卻讓第一段讓開。
+ */
+function pickUnit(list: readonly Unit[], e: Event): Unit {
+  if (list.length === 1) return list[0]!;
+  const p = e as MouseEvent;
+  if (typeof p.clientX !== 'number') return list[0]!;
+  const x = p.clientX + window.scrollX;
+  const y = p.clientY + window.scrollY;
+  for (const u of list) {
+    const r = u.rect;
+    if (x >= r.left && x <= r.left + r.width && y >= r.top && y <= r.top + r.height) return u;
+  }
+  return list[0]!;
+}
+
 function onMouseOver(e: Event): void {
   if (!layer) return;
   let node: Node | null = e.target as Node | null;
   let found: Unit | null = null;
   while (node && node !== document.body) {
     if (node instanceof Element) {
-      const u = unitByEl.get(node);
-      if (u) {
-        found = u;
+      const list = unitByEl.get(node);
+      if (list && list.length > 0) {
+        found = pickUnit(list, e);
         break;
       }
     }
@@ -1360,32 +1531,72 @@ function onMouseOver(e: Event): void {
 }
 
 function onKeyDown(e: KeyboardEvent): void {
-  // §2.1 按住 Alt → 所有疊層切換為標註樣式,用於快速掃視哪些區塊被翻了
-  if (e.key === 'Alt' && !altScan) {
-    altScan = true;
-    layer?.setAltScan(true);
-    // Alt 同時是加翻層的「全部顯示」:掃視的語彙沿用同一顆鍵
-    renderChips();
+  /*
+   * **按住 Alt = 暫時收起整層**,放開就回來。
+   *
+   * 原本 Alt 是 §2.1 的標註樣式掃視,而「整層收起」掛在 Alt+Shift+H。
+   * 使用者的原話:「跟 Alt 互換一下,Alt 好按多了」—— 對,而且更重要的是
+   * 這兩件事的**使用頻率完全不同**:想瞄一眼原文是每分鐘都會做的事,
+   * 掃視哪些區塊被翻了是偶爾除錯才做的。常用的動作該配最好按的鍵。
+   *
+   * 而且「按住看原文、放開回來」本來就該是 hold,不是 toggle。
+   */
+  if (e.key === 'Alt' && !e.shiftKey && !hiddenAll) {
+    hiddenAll = true;
+    layer?.setHiddenAll(true);
+    closeChip(true);
+    updateHud();
+  }
+  /*
+   * Alt 加上別的鍵 = 那是一個和弦,不是「我想看原文」。
+   *
+   * 「翻譯這一頁」改掛 Alt+R 之後這一條變成必要的:按 Alt+R 時
+   * Alt 會先單獨到達,整層收起來閃一下,直到放開 Alt 才回來。
+   * 收到第二個鍵就把它放回去 —— hold 的意圖只有在 Alt 單獨按住時才成立。
+   */
+  if (hiddenAll && e.key !== 'Alt') {
+    hiddenAll = false;
+    layer?.setHiddenAll(false);
+    updateHud();
   }
   if (e.altKey && e.shiftKey && (e.key === 'D' || e.key === 'd')) {
     e.preventDefault();
     toggleDebugPanel();
   }
+  if (e.altKey && e.shiftKey && (e.key === 'H' || e.key === 'h')) {
+    e.preventDefault();
+    // 這個和弦要按住 Alt,而 Alt 已經把整層收起來了 —— 先放回來再切掃視
+    if (hiddenAll) {
+      hiddenAll = false;
+      layer?.setHiddenAll(false);
+    }
+    toggleAltScan();
+  }
+}
+
+/** §2.1 標註樣式掃視:一眼看出哪些區塊被翻了。除錯用,所以配和弦鍵 */
+function toggleAltScan(): void {
+  altScan = !altScan;
+  layer?.setAltScan(altScan);
+  renderChips();
+  diag('info', 'alt-scan', { on: altScan });
+  updateHud();
 }
 
 function onKeyUp(e: KeyboardEvent): void {
-  if (e.key === 'Alt' && altScan) {
-    altScan = false;
-    layer?.setAltScan(false);
-    renderChips();
+  if (e.key === 'Alt' && hiddenAll) {
+    hiddenAll = false;
+    layer?.setHiddenAll(false);
+    updateHud();
   }
 }
 
 function onBlur(): void {
-  if (altScan) {
-    altScan = false;
-    layer?.setAltScan(false);
-    renderChips();
+  // 切走視窗時 keyup 收不到,Alt 會卡在按住的狀態 —— 疊層就再也回不來了
+  if (hiddenAll) {
+    hiddenAll = false;
+    layer?.setHiddenAll(false);
+    updateHud();
   }
   closeChip(true);
 }
@@ -1457,7 +1668,19 @@ function updateHud(): void {
     return;
   }
   const c = tierCounts();
-  const failed = c.failed + c['l1-failed'];
+  /*
+   * **分開數「壞掉」與「沒升級」。**
+   *
+   * `l1-failed` 的區塊有 L0 譯文在畫面上 —— 使用者讀得懂,只是品質停在 L0。
+   * 把它算成「失敗」會讓狀態列變成警示級,而警示級是不自動淡出的(§CF-3),
+   * 於是免費檔位偶爾吐一次空回應,畫面上就掛著一條永遠不會消失的紅色橫幅。
+   * 使用者的結論是「一直卡在 missing-id,不會再翻了」——
+   * 其實那一頁 328 塊裡有 326 塊翻完了。
+   *
+   * 真正還沒有東西可看的只有 `failed`。留下待辦要留對東西。
+   */
+  const hard = c.failed;
+  const soft = c['l1-failed'];
   let waiting = 0;
   let nearPending = 0;
   let farPending = 0;
@@ -1475,6 +1698,10 @@ function updateHud(): void {
     else farPending++;
   }
 
+  if (hiddenAll) {
+    layer.setHud('疊 · 疊層暫時收起(放開 Alt 回來)', 'idle');
+    return;
+  }
   if (lastProblem) {
     layer.setHud(`疊 · ${lastProblem}`, 'warn');
     return;
@@ -1491,23 +1718,19 @@ function updateHud(): void {
     return;
   }
   if (!settings.autoTranslate && !manualArmed) {
-    layer.setHud(`疊 · 已啟用,${units.size} 塊待翻 —— 按 Alt+Shift+R 或 popup 開始`, 'idle');
+    layer.setHud(`疊 · 已啟用,${units.size} 塊待翻 —— 按 Alt+R 或 popup 開始`, 'idle');
     return;
   }
   const parts: string[] = [];
   if (c.l0 > 0) parts.push(`L0 ${c.l0}`);
   if (c.l1 > 0) parts.push(`L1 ${c.l1}`);
-  if (failed > 0) parts.push(`失敗 ${failed}`);
+  if (hard > 0) parts.push(`失敗 ${hard}`);
+  if (soft > 0) parts.push(`未升級 ${soft}`);
   if (settings.annotate && labels.size > 0) parts.push(`標籤 ${labels.size}`);
   const heldBack = [...units].filter((u) => u.pendingSwap !== undefined).length;
   if (heldBack > 0) parts.push(`待換 ${heldBack}`);
 
-  const phase = translationPhase({
-    waiting,
-    nearPending,
-    farPending,
-    l0Busy: l0?.busy() ?? false,
-  });
+  const phase = translationPhase({ waiting, nearPending, farPending });
   if (phase === 'busy') {
     const tail =
       waiting > 0
@@ -1528,9 +1751,29 @@ function updateHud(): void {
    * 而使用者需要知道那是「捲下去會繼續」而不是「漏掉了」。
    */
   const done = phase === 'all-done' ? '完成' : '這一屏完成,捲動繼續翻';
-  // 有紅的就順便講怎麼救 —— 使用者不會知道 hover 可以重試
-  const tail = failed > 0 ? ' · 滑到紅線上重試' : ` · ${done}`;
-  layer.setHud(`疊 · ${parts.join(' · ')}${tail}`, failed > 0 ? 'warn' : 'idle');
+  /*
+   * **有失敗也要說「完成」。**
+   *
+   * 原本有紅的時候只講「滑到紅線上重試」,把「跑完了」整個吞掉 ——
+   * 於是使用者看到的是一條警示狀態列,幾秒後消失,而且從頭到尾
+   * 沒人告訴他整頁其實翻完了。他的結論是「文章翻不完,HUD 不見了,
+   * 是不是死掉了」。**沒說完成,就等於說了沒完成。**
+   */
+  /*
+   * 「完成」要說得起。整頁跑完了,但還有區塊停在 L0(捲太快、沒停留過)——
+   * 那不是壞掉,可是也不該讓使用者以為那就是最終品質。
+   * 講清楚,而且**告訴他怎麼要**:同一顆按鈕再按一次就全部升級。
+   */
+  const onlyL0 = usesL1(effective)
+    ? [...units].filter((u) => u.tier === 'l0' && !u.l1Queued).length
+    : 0;
+  const tail =
+    hard > 0
+      ? ` · ${done}(滑到紅線上重試)`
+      : onlyL0 > 0 && phase === 'all-done'
+        ? ` · ${done} · ${onlyL0} 塊只有 L0,Alt+R 全部升級`
+        : ` · ${done}`;
+  layer.setHud(`疊 · ${parts.join(' · ')}${tail}`, hard > 0 ? 'warn' : 'idle');
 }
 
 /* ------------------------------------------------------------------ 統計 */
@@ -1579,6 +1822,17 @@ function pageStats(): PageStats {
       progress: l0?.progress ?? 0,
       detail: l0?.detail ?? '',
     },
+    device: device ?? undefined,
+    l0Timing: l0?.timing(),
+    unparsedColors: unparsedColors(),
+    cacheHits: cacheHitsTotal,
+    motion: {
+      stability: settings.stability,
+      guard: guarding(),
+      appShell: appShellPage,
+      innerScroll: sawInnerScroll,
+      pinned: pinnedCount,
+    },
     swapsOffscreen,
     swapsTotal,
   };
@@ -1601,10 +1855,15 @@ async function start(): Promise<void> {
   firstPaintMs = -1;
   await probePackagedFonts();
   resetHintColor();
+  resetColorCache();
   clearMeasureCache();
 
   // 整頁的字集要在掃描之前定案:日文 / 韓文頁面的純漢字標題不能被當成
   // 「已經是中文」而跳過(見 detect.ts 的 setPageScript)
+  if (!device) {
+    device = deviceProfile();
+    diag('info', 'device', device);
+  }
   const sample = sampleVisibleText();
   const script = sniffScript(sample);
   setPageScript(script);
@@ -1644,15 +1903,16 @@ async function start(): Promise<void> {
     (entries) => {
       let hit = false;
       for (const en of entries) {
-        const u = unitByEl.get(en.target);
-        if (!u) continue;
-        u.inView = en.isIntersecting;
-        if (en.isIntersecting) {
-          // §4.2 第 2 條的計時起點
-          if (u.inViewSince === undefined) u.inViewSince = Date.now();
-          hit = true;
-        } else {
-          u.inViewSince = undefined;
+        // 一個元素可以有好幾段行內單元,每一段都要跟著更新
+        for (const u of unitByEl.get(en.target) ?? []) {
+          u.inView = en.isIntersecting;
+          if (en.isIntersecting) {
+            // §4.2 第 2 條的計時起點
+            if (u.inViewSince === undefined) u.inViewSince = Date.now();
+            hit = true;
+          } else {
+            u.inViewSince = undefined;
+          }
         }
       }
       if (hit) scheduleIntake();
@@ -1741,7 +2001,14 @@ async function start(): Promise<void> {
    */
   const el = document.documentElement;
   const appShell = el.scrollHeight <= el.clientHeight + 4;
-  diag('info', 'layout-mode', { appShell, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight });
+  appShellPage = appShell;
+  diag('info', 'layout-mode', {
+    appShell,
+    stability: settings.stability,
+    guard: motionGuard({ stability: settings.stability, appShell, innerScroll: sawInnerScroll }),
+    scrollHeight: el.scrollHeight,
+    clientHeight: el.clientHeight,
+  });
   if (appShell) {
     driftTimer = window.setInterval(() => {
       if (document.hidden) return;
@@ -1850,18 +2117,22 @@ function clippers(u: Unit): Element[] {
  * 陰影、漸層、釘住的按鈕列,量得再準也只是勉強擦邊。少蓋一點沒人會發現,
  * 多蓋一點整頁就髒了。
  *
+ * 32 還是會擦到(譯文盒子比譯文本身高 —— 它要蓋住比較長的原文),
+ * 使用者說「再多抓一倍就好,只要畫面中間有就好」。64 是那個一倍,
+ * 再補 8px 收掉最後一點溢出 —— 譯文的最後一行常常只露出幾個像素的邊。
+ *
  * **只在真的被容器限制住時才收。** 一般頁面(視窗捲動)的底邊是視窗本身,
  * 那裡的疊層是合法的、而且下面還有內容 —— 收 32px 會在每一頁的底部
  * 切出一條看得見的線。
  */
-const CONTAINER_SAFETY_PX = 32;
+const CONTAINER_SAFETY_PX = 72;
 
 function visibleBox(u: Unit): Box {
   let top = lastTopBand;
   let left = 0;
   let right = window.innerWidth;
   let bottom = window.innerHeight - lastBottomBand;
-  let bounded = false;
+  let limiter: Element | null = null;
   for (const p of clippers(u)) {
     const r = p.getBoundingClientRect();
     if (r.width < 1 && r.height < 1) continue; // 祖先自己沒被畫出來,交給別的檢查處理
@@ -1870,10 +2141,15 @@ function visibleBox(u: Unit): Box {
     if (r.right < right) right = r.right;
     if (r.bottom < bottom) {
       bottom = r.bottom;
-      bounded = true;
+      limiter = p;
     }
   }
-  if (bounded) bottom -= CONTAINER_SAFETY_PX;
+  /*
+   * 餘裕只留給**真的會捲**的容器。裁切用的 overflow:hidden 內容一格都不會動,
+   * 留 72px 只是把最後兩行的疊層白白切掉(見 cover.ts 的 scrolls())。
+   * 只問限制底邊的那一個,不是每一層 —— 一個 frame 一次屬性讀取。
+   */
+  if (limiter && scrolls(limiter)) bottom -= CONTAINER_SAFETY_PX;
   return { top, right, bottom, left };
 }
 
@@ -2048,7 +2324,21 @@ function scrollSync(): void {
   // 這裡只處理「被固定頁首蓋住的那一段要跟著消失」。
   applyChromeClip();
   // 再看內容自己有沒有移動(sticky、lazy load、內容插入)
-  const probe = [...units].find((u) => u.box && u.inView && u.tier !== 'skipped');
+  /*
+   * 哨兵**不能是釘住的單元**。
+   *
+   * sticky / fixed 的元素在 document 座標裡本來就會隨捲動移動,移動量
+   * 正好是捲動距離 —— 拿它當「內容有沒有自己在動」的哨兵,等於每一幀
+   * 都判定「漂移了」,然後每一幀重量 373 個單元。診斷 log 裡
+   * `scroll-drift {"dy":5884}` 那種數字不是漂移,是捲動距離本身。
+   *
+   * 這是 build 47 讓 sticky 子樹產生單元之後才出現的:u1 變成
+   * `<header class="sticky top-0">` 裡的按鈕,而它永遠在視窗裡。
+   * **放寬了誰能成為單元,就要重新檢查誰在拿單元當量尺。**
+   */
+  const probe = [...units].find(
+    (u) => u.box && u.inView && u.tier !== 'skipped' && u.pinned !== true,
+  );
   if (!probe) return;
   const d = driftOf(probe);
   const off = Math.max(Math.abs(d.dx), Math.abs(d.dy));
@@ -2059,7 +2349,7 @@ function scrollSync(): void {
    * **別人的內容**上,那才是「破版」—— 先藏起來再說。
    * 門檻分開是為了不讓 parallax / sticky 那種長期小幅漂移一直閃。
    */
-  if (off > GROSS_DRIFT_PX) {
+  if (off > GROSS_DRIFT_PX && guarding()) {
     markAllStale();
     noteMotion();
   }
@@ -2137,6 +2427,28 @@ function checkSettled(): void {
   flushNow();
 }
 
+/**
+ * 頁面捲動停了嗎?只有 pinned 單元在意這件事 ——
+ * 一般段落在 document 座標裡不會因為捲動而改變位置。
+ */
+function scrollIdle(): boolean {
+  return performance.now() - lastScrollAt >= MOTION_SETTLE_MS;
+}
+
+/**
+ * 這一頁要不要用「動就先藏起來」的策略。
+ *
+ * 判斷收在一個地方,而且**每次都重問** —— sawInnerScroll 會在頁面用了
+ * 內層捲動的那一刻變成 true,設定也可能在使用中改掉。
+ */
+function guarding(): boolean {
+  return motionGuard({
+    stability: settings.stability,
+    appShell: appShellPage,
+    innerScroll: sawInnerScroll,
+  });
+}
+
 function noteMotion(): void {
   lastMotionAt = performance.now();
   if (settleTick === 0) settleTick = window.setTimeout(checkSettled, MOTION_SETTLE_MS);
@@ -2160,11 +2472,15 @@ function onScroll(e: Event): void {
    * 全部先藏起來,靜下來再一次顯示。
    */
   if (layer && running && innerScrollerOf(e)) {
-    if (settled()) {
-      markAllStale();
-      diag('info', 'inner-scroll', { units: units.size });
+    // 證據比推測強:收到過就從此開啟守衛(一般文章一輩子收不到)
+    sawInnerScroll = true;
+    if (guarding()) {
+      if (settled()) {
+        markAllStale();
+        diag('info', 'inner-scroll', { units: units.size });
+      }
+      noteMotion();
     }
-    noteMotion();
   }
 
   /*
@@ -2175,6 +2491,21 @@ function onScroll(e: Event): void {
    */
   if (chipUnit || layer?.chipsVisible()) closeChip(true);
   if (!scrollRaf) scrollRaf = requestAnimationFrame(scrollSync);
+  /*
+   * pinned 單元靠 flush 才會重新量、重新顯示,而 flush 不會自己因為
+   * 「捲動停了」被排程。沒有這個計時器,右側浮動目次會在第一次捲動後
+   * 永遠藏著 —— 藏起來容易,記得放回來才是重點。
+   */
+  if (pinnedCount > 0 && !pinnedTimer) {
+    pinnedTimer = window.setTimeout(function tick(): void {
+      if (!scrollIdle()) {
+        pinnedTimer = window.setTimeout(tick, MOTION_SETTLE_MS);
+        return;
+      }
+      pinnedTimer = 0;
+      scheduleFlush(true);
+    }, MOTION_SETTLE_MS);
+  }
   if (reprioTimer) return;
   reprioTimer = window.setTimeout(() => {
     reprioTimer = 0;
@@ -2198,6 +2529,12 @@ function stop(): void {
   io = ro = mo = null;
   clearInterval(dwellTimer);
   dwellTimer = 0;
+  clearTimeout(pinnedTimer);
+  pinnedTimer = 0;
+  pinnedCount = 0;
+  appShellPage = false;
+  sawInnerScroll = false;
+  cacheHitsTotal = 0;
   document.removeEventListener('mouseover', onMouseOver, true);
   document.removeEventListener('mouseleave', onDocLeave);
   document.removeEventListener('focusin', onFocusIn, true);
@@ -2237,12 +2574,14 @@ function stop(): void {
   for (const u of units) layer?.drop(u);
   layer?.hideHud();
   manualArmed = false;
+  hiddenAll = false;
+  altScan = false;
   lastProblem = '';
   units.clear();
   unitById.clear();
   // 重建而不是清空:WeakMap / WeakSet 沒有 clear(),
   // 留著會讓下一次 scan() 認為整頁都已經建過單元
-  unitByEl = new WeakMap<Element, Unit>();
+  unitByEl = new WeakMap<Element, Unit[]>();
   probed = new WeakSet<Unit>();
   setPageScript(null);
   clearTimeout(selectionTimer);
@@ -2346,6 +2685,21 @@ chrome.runtime.onMessage.addListener((raw: ToContent, _sender, reply) => {
       reply(pageStats());
       return true;
     }
+    case 'export-page': {
+      const done = [...units].filter((u) => hasText(u)).length;
+      if (done === 0) {
+        reply({ error: '這一頁還沒有任何譯文 —— 先翻再匯出' });
+        return true;
+      }
+      const snap = buildSnapshot({
+        units,
+        hostId: HOST_ID,
+        url: location.href,
+        version: chrome.runtime.getManifest().version_name ?? chrome.runtime.getManifest().version,
+      });
+      reply({ html: snap.html, applied: snap.applied, title: document.title, total: done });
+      return true;
+    }
     case 'l0-ready': {
       // popup 在 user gesture 裡把語言包下載完了,重試卡住的區塊
       void retryL0();
@@ -2373,13 +2727,67 @@ async function translatePage(): Promise<void> {
   }
   if (!running) return;
   // 失敗的重來一次:清掉已問過快取的記號,並把狀態退回 pending
+  let retryCount = 0;
   for (const u of units) {
     if (u.tier === 'failed' || u.tier === 'l1-failed' || u.tier === 'l0-failed') {
+      retryCount++;
       u.tier = u.l0Text !== undefined ? 'l0' : 'pending';
       u.l1Queued = false;
       u.failReason = undefined;
+      u.l0Tries = 0;
       probed.delete(u);
     }
+  }
+  /*
+   * **再按一次 = 把還停在 L0 的也升上去。**
+   *
+   * §4.2 的停留門檻(1.5 秒)是成本閘門:純粹捲過去的段落留在 L0,一毛不花。
+   * 那條規則是對的,但它留下一個沒有出口的狀態 —— 整頁「完成」了,
+   * 其中十二塊卻只有 L0 品質,而使用者沒有任何方法說「那幾塊我要好的」。
+   * 使用者的原話:「有些還停在 L0 但顯示完成」。
+   *
+   * 這個動作本來就叫「翻譯這一頁」,而且是使用者親手按的 ——
+   * 讓它把工作做完是最不意外的行為,也不需要新的按鈕或快捷鍵。
+   */
+  const l0Units = [...units].filter((u) => u.tier === 'l0');
+  const stillL0 = l0Units.filter((u) => !u.l1Queued);
+  /*
+   * **收折起來的內容也要升級。**
+   *
+   * 平常的停留門檻不理會收折的 `<details>`(看不見的東西不必花錢),
+   * 上一版把同一條規則抄進這裡 —— 於是使用者按了「翻譯這一頁」,
+   * 而那 12 塊剛好全在收折的 FAQ 裡,按鈕什麼都沒做。
+   * 使用者的原話:「按翻譯這一頁跟 alt+shift+r 沒啥用」。
+   *
+   * 自動的規則可以保守,**使用者親手按的動作不行** ——
+   * 他要的是「這一頁」,不是「這一頁我現在看得到的部分」。
+   */
+  for (const u of stillL0) if (u.maxChars === 0) u.maxChars = computeMaxChars(u);
+  const ready = stillL0.filter((u) => u.maxChars > 0);
+  /*
+   * 這一則**每次都寫**,包括什麼都沒做的時候。
+   *
+   * 上一輪查「按了沒反應」時,log 裡連一行都沒有 —— 只能從缺席去推測,
+   * 而缺席可以是「沒被呼叫」也可以是「呼叫了但集合是空的」,分不出來。
+   * 使用者親手觸發的動作,一定要在 log 裡留下它做了什麼。
+   */
+  diag('info', 'translate-page', {
+    l0: l0Units.length,
+    upgrading: ready.length,
+    alreadyQueued: l0Units.length - stillL0.length,
+    noRoom: stillL0.length - ready.length,
+    retried: retryCount,
+  });
+  if (ready.length > 0) {
+    ready.sort((a, b) => priorityOf(a) - priorityOf(b));
+    queueUpgrade(ready);
+  } else if (retryCount === 0) {
+    // 按了就要有回音 —— 沒事可做也是一種回音
+    lastProblem = l0Units.length > 0 ? '這幾塊已經在升級佇列裡了' : '沒有可以再升級的區塊';
+    window.setTimeout(() => {
+      if (lastProblem !== '') lastProblem = '';
+      updateHud();
+    }, 2500);
   }
   updateHud();
   scheduleFlush(true);
@@ -2394,7 +2802,11 @@ async function translatePage(): Promise<void> {
 async function catchUpL0(): Promise<void> {
   if (!running || !usesL0(effective) || l0?.state !== 'ready') return;
   const stuck = [...units].filter(
-    (u) => u.tier === 'l0-failed' && u.l1Text === undefined && u.maxChars > 0,
+    (u) =>
+      u.tier === 'l0-failed' &&
+      u.l1Text === undefined &&
+      u.maxChars > 0 &&
+      (u.l0Tries ?? 0) < L0_MAX_TRIES,
   );
   if (stuck.length === 0) return;
   await runL0(stuck);

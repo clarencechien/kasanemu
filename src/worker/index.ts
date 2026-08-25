@@ -108,6 +108,18 @@ chrome.runtime.onMessage.addListener((raw: ToWorker, sender, reply) => {
           reply({ ok: true });
           break;
         }
+        case 'export-cache': {
+          reply(await cache.exportAll());
+          break;
+        }
+        case 'import-cache': {
+          try {
+            reply(await cache.importAll(raw.dump));
+          } catch (e) {
+            reply({ error: e instanceof Error ? e.message : String(e) });
+          }
+          break;
+        }
         default:
           reply({ ok: false });
       }

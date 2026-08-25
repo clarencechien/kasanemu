@@ -1,4 +1,5 @@
 import { dbg, warn } from '../shared/log';
+import { SlotPool } from './queue';
 export { pageSourceLang, toTranslatorTarget } from './lang';
 
 /**
@@ -96,9 +97,8 @@ export class L0Engine {
   private readonly key: string;
   /** feature.md §4.6 L0 譯文也快取,避免重複呼叫(導覽列、重複標題命中率高) */
   private readonly cache = new Map<string, string>();
-  private inFlight = 0;
-  /** 依優先度排序的等待佇列(數字小的先跑) */
-  private queue: Array<{ priority: number; go: () => void }> = [];
+  /** 併發閘門。優先度在**出隊時**才計算,理由見 queue.ts */
+  private readonly pool = new SlotPool(initialConcurrency());
   /**
    * 實際 translate() 呼叫的耗時統計(不含排隊)。
    *
@@ -110,8 +110,6 @@ export class L0Engine {
   callMsTotal = 0;
   callMsMax = 0;
   waitMsTotal = 0;
-  /** 目前的併發上限;依實測延遲調整 */
-  private concurrency = initialConcurrency();
   /** 檢討用的滑動視窗(累計值要留給 timing()) */
   private recentCalls = 0;
   private recentMs = 0;
@@ -196,14 +194,23 @@ export class L0Engine {
   }
 
   /** 一區塊一次呼叫,無 batch、無 id 對位問題(§3.3) */
-  async translate(text: string, priority = 0): Promise<string | null> {
+  async translate(
+    text: string,
+    priority: number | (() => number) = 0,
+    stillWanted?: () => boolean,
+  ): Promise<string | null> {
     const hit = this.cache.get(text);
     if (hit !== undefined) return hit;
     if (!(await this.ensure())) return null;
     const instance = this.instance;
     if (!instance) return null;
     const queuedAt = performance.now();
-    await this.slot(priority);
+    await this.pool.acquire(priority);
+    // 排了很久才輪到,期間可能已經不需要了(L1 先回來了)—— 讓出槽位
+    if (stillWanted && !stillWanted()) {
+      this.pool.release();
+      return null;
+    }
     const startedAt = performance.now();
     this.waitMsTotal += startedAt - queuedAt;
     try {
@@ -222,17 +229,10 @@ export class L0Engine {
       warn('l0 translate failed', e);
       return null;
     } finally {
-      this.release();
+      this.pool.release();
     }
   }
 
-  /**
-   * 不要一次把整頁丟進去,Translator 是本機資源。
-   *
-   * 佇列依優先度排序:使用者捲到新的一屏時,那些區塊會**插隊**到
-   * 預翻進去的遠處區塊前面。預翻範圍拉大之後這件事變得必要 ——
-   * 否則新看到的段落要排在幾十個離螢幕很遠的區塊後面。
-   */
   /**
    * 依實測延遲調整併發:慢就降(讓每塊早點好),快就升(把機器吃滿)。
    * 降到 2 為止 —— 再低就等於序列化,連預翻都跑不動。
@@ -240,46 +240,24 @@ export class L0Engine {
   private adapt(): void {
     if (this.recentCalls < ADAPT_EVERY) return;
     const avg = this.recentMs / this.recentCalls;
-    const before = this.concurrency;
-    if (avg > SLOW_CALL_MS) this.concurrency = Math.max(2, this.concurrency - 1);
-    else if (avg < FAST_CALL_MS) this.concurrency = Math.min(8, this.concurrency + 1);
+    const before = this.pool.limit;
+    if (avg > SLOW_CALL_MS) this.pool.limit = Math.max(2, this.pool.limit - 1);
+    else if (avg < FAST_CALL_MS) this.pool.limit = Math.min(8, this.pool.limit + 1);
     this.recentCalls = 0;
     this.recentMs = 0;
-    if (this.concurrency !== before) {
-      dbg('l0 concurrency', before, '→', this.concurrency, `avg ${Math.round(avg)}ms`);
+    if (this.pool.limit !== before) {
+      dbg('l0 concurrency', before, '→', this.pool.limit, `avg ${Math.round(avg)}ms`);
     }
-  }
-
-  private slot(priority: number): Promise<void> {
-    if (this.inFlight < this.concurrency) {
-      this.inFlight++;
-      return Promise.resolve();
-    }
-    return new Promise<void>((resolve) => {
-      const entry = {
-        priority,
-        go: () => {
-          this.inFlight++;
-          resolve();
-        },
-      };
-      const at = this.queue.findIndex((q) => q.priority > priority);
-      if (at < 0) this.queue.push(entry);
-      else this.queue.splice(at, 0, entry);
-    });
-  }
-
-  private release(): void {
-    this.inFlight--;
-    // 併發降下來時,多出來的正在跑的請求跑完就好,不再補新的
-    if (this.inFlight >= this.concurrency) return;
-    const next = this.queue.shift();
-    if (next) next.go();
   }
 
   /** 還有呼叫在跑或在排隊 —— 狀態列判斷「跑完了沒」要用 */
   busy(): boolean {
-    return this.inFlight > 0 || this.queue.length > 0;
+    return this.pool.busy;
+  }
+
+  /** 佇列深度。intake 用它決定要不要再往前預翻(見 index.ts 的 L0_QUEUE_CAP) */
+  queueDepth(): number {
+    return this.pool.depth;
   }
 
   /** 給診斷用:真正的呼叫延遲,以及被排隊吃掉多少 */
@@ -296,8 +274,8 @@ export class L0Engine {
       avgMs: this.calls > 0 ? Math.round(this.callMsTotal / this.calls) : 0,
       maxMs: Math.round(this.callMsMax),
       avgWaitMs: this.calls > 0 ? Math.round(this.waitMsTotal / this.calls) : 0,
-      queued: this.queue.length,
-      concurrency: this.concurrency,
+      queued: this.pool.depth,
+      concurrency: this.pool.limit,
     };
   }
 
@@ -307,8 +285,7 @@ export class L0Engine {
     this.instance = null;
     this.creating = null;
     this.cache.clear();
-    this.queue = [];
-    this.inFlight = 0;
+    this.pool.clear();
     if (this.state === 'ready') this.state = 'idle';
   }
 }

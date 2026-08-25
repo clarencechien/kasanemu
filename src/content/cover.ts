@@ -16,6 +16,28 @@ import type { DocRect, Unit } from './unit';
 const EMPTY: DocRect = { left: 0, top: 0, width: 0, height: 0 };
 
 export function coverRect(unit: Unit): { rect: DocRect; overflows: boolean } {
+  /*
+   * 錨點是一段 Range 的時候,元素矩形完全不能用 —— 那個 `<p>` 或
+   * `<div>` 還裝著表格、圖片、另外半段文字。問 Range 拿到的才是
+   * 「這一段字實際佔的位置」。
+   *
+   * 也不做 scrollHeight 撐開:那是整個元素的內容高度,對一段文字沒有意義。
+   */
+  if (unit.range) {
+    const rects = unit.range.getClientRects();
+    if (rects.length === 0) return { rect: EMPTY, overflows: false };
+    const r = unit.range.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return { rect: EMPTY, overflows: false };
+    return {
+      rect: {
+        left: r.left + window.scrollX,
+        top: r.top + window.scrollY,
+        width: r.width,
+        height: r.height,
+      },
+      overflows: false,
+    };
+  }
   const el = unit.el as HTMLElement;
   /*
    * **沒有任何 client rect = 現在根本沒被畫出來**,一律回零。
@@ -48,19 +70,68 @@ export function coverRect(unit: Unit): { rect: DocRect; overflows: boolean } {
    */
   const cs = getComputedStyle(el);
   const spills = cs.overflowX === 'visible' && cs.overflowY === 'visible';
-  const contentH = spills ? (el.scrollHeight || 0) + bt + bb : 0;
+  /*
+   * 段落裡自己佔一行的圖片:疊層在圖片的邊界收住。
+   *
+   * 少了這一段,`<p>文字…<span class="flex"><img></span></p>` 只有兩條路 ——
+   * 整段不翻(舊版),或是一塊不透明疊層把圖蓋掉。兩個都不對:
+   * 文字與圖片在版面上本來就是上下分開的,照著分就好。
+   *
+   * 圖在上或在下用中心點判斷,不另外存欄位:兩個矩形都在手上,
+   * 多存一個布林值只是多一個會過期的狀態。
+   */
+  let top = r.top;
+  // r.height 而不是 r.bottom:同一個矩形的兩種說法,但假的 rect(測試、
+  // 某些 polyfill)只保證有 height
+  let bottom = r.top + r.height;
+  if (unit.mediaSplit) {
+    const m = unit.mediaSplit.getBoundingClientRect();
+    if (m.width > 0 && m.height > 0) {
+      const mid = m.top + m.height / 2;
+      if (mid > r.top + r.height / 2) bottom = Math.min(bottom, m.top);
+      else top = Math.max(top, m.top + m.height);
+    }
+  }
+  const boxH = Math.max(0, bottom - top);
+  // 有裁到就不再用 scrollHeight 撐開 —— 那個高度含圖片,撐開等於白裁
+  const trimmed = boxH < r.height - 1;
+  const contentH = spills && !trimmed ? (el.scrollHeight || 0) + bt + bb : 0;
   const contentW = spills ? (el.scrollWidth || 0) + bl + br : 0;
   return {
     rect: {
       left: r.left + window.scrollX,
-      top: r.top + window.scrollY,
+      top: top + window.scrollY,
       width: Math.max(r.width, contentW),
-      height: Math.max(r.height, contentH),
+      height: Math.max(boxH, contentH),
     },
-    overflows: contentH > r.height + 1 || contentW > r.width + 1,
+    overflows: (!trimmed && contentH > r.height + 1) || contentW > r.width + 1,
   };
 }
 
+
+/**
+ * 這個容器**真的會捲**嗎?
+ *
+ * `overflow: hidden` 有兩種完全不同的用途,而它們對疊層的意義相反:
+ *
+ *  - **捲動窗格**(Gmail 的郵件清單):內容會滑出邊界,底邊附近不可信,
+ *    所以那裡要留一大塊保守餘裕,寧可少蓋。
+ *  - **純粹的裁切**(ClickHouse 的 blockquote 用 overflow:hidden
+ *    讓左側 ::before 的色條不超出圓角):內容一格都不會動。
+ *
+ * 對後者留餘裕是純粹的損失 —— 引文最後兩行的疊層被切掉、原文露出來,
+ * 看起來就是使用者說的「翻了沒蓋完全」。而它甚至不是翻譯的問題。
+ *
+ * 分辨的方法不是看 overflow 的值,是看**內容有沒有超出可視區**。
+ */
+export function scrolls(el: {
+  scrollHeight: number;
+  clientHeight: number;
+  scrollWidth: number;
+  clientWidth: number;
+}): boolean {
+  return el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1;
+}
 
 export interface Box {
   top: number;

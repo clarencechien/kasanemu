@@ -53,7 +53,7 @@
       </label>
       <p class="hint">
         <strong>預設是關的。</strong>啟用只代表「這個網域我要用 Kasanemu」——
-        真的要翻是另一個動作:popup 的「翻譯這一頁」或 <code>Alt+Shift+R</code>。
+        真的要翻是另一個動作:popup 的「翻譯這一頁」或 <code>Alt+R</code>。
         在同一頁點連結跳轉後也要再按一次:你按的是「翻**這一頁**」,
         不是「從今以後每一頁」。
         競品多半一進站就整頁翻,想要那種行為就把這個打開。
@@ -127,6 +127,26 @@
         頁面若有透明的點擊攔截層可能誤判,那時關掉。
       </p>
       <label class="check"><input type="checkbox" data-k="hintLine" /> 顯示譯文左緣提示線</label>
+      <label>捲動時的疊層穩定策略
+        <select data-k="stability">
+          <option value="auto">自動(預設)</option>
+          <option value="always">一直顯示</option>
+          <option value="strict">嚴格:任何動靜都先藏</option>
+        </select>
+      </label>
+      <p class="hint">
+        Gmail 這種應用程式的捲動發生在<strong>內層容器</strong>裡,而疊層畫在 document 座標上
+        不會跟著動 —— 不透明的盒子就畫到別人的內容上。那種頁面只能「捲動時先藏起來,
+        停下來再一次量、一次顯示」。
+        但同一條規則套在一般長文上只換來閃爍:文章的段落在 document 座標裡
+        根本不會因為捲動而移動。
+        <br />
+        <strong>自動</strong>不看網域看行為:document 自己不捲,或這一頁真的收到過
+        內層容器的捲動事件,才啟用。白名單列不完,而且會漏掉沒列到的網站。
+        <br />
+        <strong>一直顯示</strong>是「我不在意偶爾不對齊,不要閃」;
+        <strong>嚴格</strong>是舊行為,版面很動態的頁面上最保守。
+      </p>
       <label class="check"><input type="checkbox" data-k="annotate" /> 加翻層:UI 標籤、選單、連結滑過時顯示譯文貼片</label>
       <p class="hint">
         24 字以內的按鈕與連結不會被疊層覆蓋 —— 譯文比原文短,盒子要嘛蓋掉項目之間的
@@ -134,7 +154,7 @@
         貼片,原文一個像素都不動。停留 0.2 秒才出現,所以橫掃導覽列不會沿路閃。
         貼片不吃滑鼠事件,就算蓋到隔壁按鈕,那顆按鈕照樣點得到。
       </p>
-      <label class="check"><input type="checkbox" data-k="annotateAltOnly" /> 加翻層只在按住 Alt 時出現</label>
+      <label class="check"><input type="checkbox" data-k="annotateAltOnly" /> 加翻層只在掃視模式(Alt+Shift+H)時出現</label>
       <label class="check"><input type="checkbox" data-k="forceAnnotation" /> 一律使用標註樣式</label>
       <p class="hint">
         疊層背景永遠不透明:底下是活文字不是死像素,半透明會讓兩層字互相干擾,
@@ -146,15 +166,38 @@
       <h2>快取</h2>
       <label>模式
         <select data-k="cacheMode">
-          <option value="session">session(預設)</option>
-          <option value="persistent">persistent(IndexedDB)</option>
+          <option value="persistent">persistent:存在磁碟,關掉瀏覽器也還在(預設)</option>
+          <option value="session">session:只留在這次瀏覽器工作階段</option>
           <option value="off">off(除錯用)</option>
         </select>
       </label>
+      <p class="hint">
+        快取的 key 是<strong>原文 + 目標語言 + 模型 ID + 長度分桶</strong>,不綁網域 ——
+        所以同一句話在不同頁面上也會命中(導覽列、頁尾、重複的標題命中率特別高)。
+        換檔位等於換模型 ID,那是另一份譯文,不會互相污染。
+        <br />
+        <code>persistent</code> 存在 IndexedDB,關掉瀏覽器、重開機都還在,超過下面的
+        上限才依最久沒用到的順序清掉。<code>session</code> 只留在記憶體與
+        <code>chrome.storage.session</code>,瀏覽器一關就沒了 ——
+        <strong>重新載入擴充功能也會清空</strong>,所以封測期間換 build 之後第一次翻一定是全新的。
+      </p>
       <label>persistent LRU 上限(MB)
         <input type="number" data-k="persistentCacheMB" data-num="1" min="1" />
       </label>
-      <button id="clear-cache">清空快取</button>
+      <div class="row">
+        <button id="export-cache">匯出快取</button>
+        <button id="import-cache">匯入快取</button>
+        <button id="clear-cache">清空快取</button>
+      </div>
+      <input type="file" id="cache-file" accept="application/json,.json" hidden />
+      <div id="cache-note" class="note"></div>
+      <p class="hint">
+        譯文是花錢換來的,不該綁在安裝上。<strong>換版、重灌、換機器前先匯出</strong>,
+        裝好之後匯回來就不必重翻。
+        <br />
+        匯入是<strong>只補不覆蓋</strong>:同一把 key 代表同一段原文 + 同一個模型 +
+        同一個長度分桶,現有的那份不會比較差,而覆蓋會把剛翻好、還熱著的換成檔案裡的舊資料。
+      </p>
     </section>
 
     <section>

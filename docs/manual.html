@@ -551,7 +551,7 @@ footer {
           <span class="k">啟用不等於開始翻</span>
           <strong>預設不會自動翻。</strong>啟用只代表「這個網域我要用 Kasanemu」;
           要翻是另一個動作 —— popup 的「翻譯這一頁」或
-          <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd>。
+          <kbd>Alt</kbd>+<kbd>R</kbd>。
           <strong>在同一頁點連結跳轉後也要再按一次</strong>:
           你按的是「翻這一頁」,不是「從今以後每一頁」。
           想要競品那種一進站就整頁翻的行為,popup 上把「每一頁都自動翻」打開。
@@ -630,7 +630,7 @@ footer {
         <h3 style="margin-top:26px">兩個隨手可用的動作</h3>
         <ul class="plain">
           <li><strong>滑鼠移到譯文上</strong> → 疊層讓開,原文回來。移開就換回譯文。</li>
-          <li><strong>按住 <kbd>Alt</kbd></strong> → 全部疊層切成標註樣式,一眼掃出哪些區塊被翻了、哪些沒有。</li>
+          <li><strong>按住 <kbd>Alt</kbd></strong> → 整層暫時收起,整頁原文一次看光;放開就回來。</li>
         </ul>
       </div>
     </section>
@@ -660,7 +660,7 @@ footer {
           <li><strong>重複的字只翻一次。</strong>卡片牆上十二張卡都寫「詳細を見る」,十二張都 hover 得到,但只送一次 API。</li>
           <li><strong>第二個開始不用等。</strong>一旦有貼片開著,移到隔壁項目會立刻換。</li>
           <li><strong>點得到。</strong>貼片和疊層一樣不吃滑鼠事件,就算蓋到隔壁按鈕,那顆按鈕照樣點得到。</li>
-          <li><strong>按住 <kbd>Alt</kbd> 全部顯示。</strong>和掃視疊層同一顆鍵,一眼看完整條導覽列。</li>
+          <li><strong><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> 全部顯示。</strong>和掃視疊層同一組鍵,一眼看完整條導覽列。</li>
           <li><strong>鍵盤也有。</strong>用 Tab 移到連結上,貼片一樣會出現。</li>
         </ul>
         <div class="note">
@@ -683,9 +683,10 @@ footer {
           </thead>
           <tbody>
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>T</kbd></td><td>在這個網域啟用 / 關閉疊層翻譯</td></tr>
-            <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd></td><td>切換「全開」/「點閱」</td></tr>
-            <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd></td><td>翻譯這一頁;也用來把整頁失敗的區塊全部重試</td></tr>
-            <tr><td class="keycell">按住 <kbd>Alt</kbd></td><td>掃視:疊層切成標註樣式,同時顯示所有 UI 標籤的譯文貼片</td></tr>
+            <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd></td><td>切換「全開」/「點閱」(點閱 = 疊層平常隱藏,滑過才顯示)</td></tr>
+            <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>R</kbd></td><td>翻譯這一頁。<strong>再按一次</strong>會把失敗的重試、還停在 L0 的全部升級(包含收折起來的內容)</td></tr>
+            <tr><td class="keycell">按住 <kbd>Alt</kbd></td><td><strong>暫時收起整層</strong> —— 想瞄一眼原文就按著,放開就回來</td></tr>
+            <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd></td><td>掃視:疊層切成標註樣式,同時顯示所有 UI 標籤的貼片(除錯用)</td></tr>
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></td><td>抽樣面板:原文 / L0 / L1 三欄並列(需先在設定開 debug mode)</td></tr>
           </tbody>
         </table>
@@ -763,7 +764,7 @@ footer {
       <div class="stack-block">
         <div class="card">
           <span class="k">某幾塊變紅了</span>
-          <p>把滑鼠停在那塊上約半秒,它會自己重排隊重翻(每塊最多兩次)。整頁都要重試就按 <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd>。</p>
+          <p>把滑鼠停在那塊上約半秒,它會自己重排隊重翻(每塊最多兩次)。整頁都要重試就按 <kbd>Alt</kbd>+<kbd>R</kbd>。</p>
         </div>
         <div class="card">
           <span class="k">狀態列說「沒找到可翻譯的區塊」</span>
@@ -776,6 +777,75 @@ footer {
         <div class="card">
           <span class="k">疊層位置歪掉、蓋到別的東西</span>
           <p>這是最需要回報的類型。請截圖 + 匯出 log,並且說一下當下在做什麼(剛捲動?剛展開選單?)。</p>
+        </div>
+        <div class="card">
+          <span class="k">換版、重灌之前先備份譯文</span>
+          <p>
+            <strong>設定 → 快取 → 匯出快取</strong>,存成一個 <code>.json</code>。
+            裝好新版之後按<strong>匯入快取</strong>倒回去,已經翻過的就不必再翻一次。
+            匯入是<strong>只補不覆蓋</strong>,所以倒回舊檔不會蓋掉你剛翻好的東西。
+          </p>
+        </div>
+        <div class="card">
+          <span class="k">把翻好的這一頁存下來</span>
+          <p>
+            popup → <strong>匯出這一頁(疊好的)</strong>,存成一個 <code>.html</code>。
+            打開就是譯文版,<strong>滑過去或按住 <kbd>Alt</kbd> 一樣看得到原文</strong> ——
+            和使用中的行為一致,只是改由三行 CSS 兌現,不需要擴充功能也能看。
+            <br />
+            兩個限制:頁面自己的 <code>&lt;script&gt;</code> 會被拿掉(不然框架重新
+            渲染時會把譯文洗掉),而樣式與圖片仍然向原站取用 ——
+            <strong>離線開只剩文字</strong>。
+          </p>
+        </div>
+        <div class="card">
+          <span class="k">同一頁重開,會不會再花一次錢?</span>
+          <p>
+            不會。譯文快取<strong>預設存在磁碟上</strong>(IndexedDB),關掉瀏覽器、重開機都還在,
+            key 是「原文 + 目標語言 + 模型 ID + 長度」而且<strong>不綁網域</strong> ——
+            同一句話在別的頁面上也會命中。診斷 log 有一行「快取:命中 N 塊」可以看。
+            <br />
+            例外是<strong>換 build</strong>:重新載入擴充功能會把記憶體與 session 的部分清掉,
+            所以封測期間每換一版,第一次翻都是全新的。
+          </p>
+        </div>
+        <div class="card">
+          <span class="k">說「完成」了,卻還有幾塊只有 L0</span>
+          <p>
+            那是<strong>刻意的</strong>:一個區塊要在畫面上待滿 1.5 秒才會送去 L1,
+            純粹捲過去的段落留在 L0,一毛不花(提示線是虛線)。
+            <br />
+            想把那幾塊也升上去,<strong>再按一次 <kbd>Alt</kbd>+<kbd>R</kbd></strong>
+            (或 popup 的「翻譯這一頁」)—— 它會把還停在 L0 的全部送去升級。
+            狀態列在這種時候會直接寫出來還有幾塊。
+          </p>
+        </div>
+        <div class="card">
+          <span class="k">「未升級 N」是什麼意思</span>
+          <p>
+            那幾塊的 L1 沒回來,但<strong>畫面上有 L0 的譯文</strong> —— 你讀得懂,
+            只是品質停在本機那一層(提示線是虛線)。免費檔位偶爾會對某幾段吐空回應,
+            那不是壞掉。想再試一次就把滑鼠停在那塊上。
+            <br />
+            真正沒有東西可看的會寫「<strong>失敗 N</strong>」,那時狀態列才會是警示色。
+          </p>
+        </div>
+        <div class="card">
+          <span class="k">狀態列不見了,是不是死掉了?</span>
+          <p>
+            說完就淡出是刻意的 —— 常駐的狀態列是噪音。<strong>但有失敗的時候它不會淡出</strong>,
+            會一直留著直到那幾塊被重試成功。所以:狀態列不在 = 沒有待辦,不是當掉。
+            想確認的話打開 popup,那裡永遠看得到這一頁的即時統計。
+          </p>
+        </div>
+        <div class="card">
+          <span class="k">捲動時譯文一直閃</span>
+          <p>
+            Gmail 這種頁面的捲動發生在<strong>內層容器</strong>裡,疊層畫在頁面座標上不會跟著動,
+            所以那種頁面必須「捲動時先藏起來,停下來再顯示」。一般長文不需要,預設也不會這麼做。
+            如果你在某個網站上還是覺得閃,到<strong>選項 → 視覺 → 捲動時的疊層穩定策略</strong>
+            改成「一直顯示」;反過來,版面很動態的頁面可以改成「嚴格」。
+          </p>
         </div>
 
         <div class="note fail">
@@ -798,7 +868,7 @@ footer {
           <li>非常動態的頁面(輪播、展開動畫)在動的當下,疊層可能慢半拍才跟上。</li>
           <li>分享列、<code>.notranslate</code> 標記的區塊一律不翻 —— 那些不是內容。</li>
           <li>網頁應用程式的介面外殼(導覽列、工具列、Gmail 左欄那種)不蓋疊層,但滑上去仍然翻得到。</li>
-          <li>在 <code>&lt;div&gt;</code> 裡面捲的頁面(Gmail、Slack),捲動時疊層會暫時消失,停下來就回來 —— 那是刻意的,總比疊層跟著滑好。</li>
+          <li>在 <code>&lt;div&gt;</code> 裡面捲的頁面(Gmail、Slack),捲動時疊層會暫時消失,停下來就回來 —— 那是刻意的,總比疊層跟著滑好。<strong>只有那種頁面才這樣</strong>,一般長文捲動時譯文一直都在;真的還是覺得閃,設定裡可以改(見上面「出問題的時候」)。</li>
           <li>free 檔位在長頁面上會明顯排隊,那是免費層的速率限制,不是當掉。</li>
           <li>日文與韓文是「應該會動」而不是「測過了」—— 封測的主力測試對象是英文。</li>
         </ul>

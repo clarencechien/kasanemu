@@ -58,7 +58,7 @@
     },
     "translate-page": {
       "suggested_key": {
-        "default": "Alt+Shift+R"
+        "default": "Alt+R"
       },
       "description": "翻譯這一頁(重試失敗的區塊)"
     }

@@ -1,6 +1,7 @@
 import type { ToWorker } from '../shared/messages';
 import { TIERS, TIER_ORDER, type Tier } from '../shared/models';
 import type { Settings } from '../shared/types';
+import type { CacheDump } from '../worker/cache';
 
 interface ModelCheck {
   at: number;
@@ -149,6 +150,52 @@ async function main(): Promise<void> {
     await ask({ type: 'clear-cache' });
     flashSaved();
   });
+
+  $('#export-cache').addEventListener('click', () => void exportCache());
+  $('#import-cache').addEventListener('click', () => $('#cache-file').click());
+  $('#cache-file').addEventListener('change', (e) => {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = ''; // 同一個檔連續匯入兩次也要觸發 change
+    if (file) void importCache(file);
+  });
+}
+
+/** 快取匯出:檔名帶日期,匯回來的時候看得出是哪一份 */
+async function exportCache(): Promise<void> {
+  const note = $('#cache-note');
+  note.textContent = '匯出中…';
+  const dump = await ask<CacheDump>({ type: 'export-cache' });
+  const json = JSON.stringify(dump);
+  const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `kasanemu-cache-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  note.textContent = `已匯出 ${dump.count} 筆(${(json.length / 1024 / 1024).toFixed(2)} MB)`;
+}
+
+async function importCache(file: File): Promise<void> {
+  const note = $('#cache-note');
+  note.textContent = '匯入中…';
+  let dump: unknown;
+  try {
+    dump = JSON.parse(await file.text());
+  } catch {
+    note.textContent = '讀不懂這個檔 —— 需要匯出時產生的 .json';
+    return;
+  }
+  const res = await ask<{ added?: number; skipped?: number; error?: string }>({
+    type: 'import-cache',
+    dump,
+  });
+  if (res.error !== undefined) {
+    note.textContent = `匯入失敗:${res.error}`;
+    return;
+  }
+  note.textContent = `已匯入 ${res.added ?? 0} 筆,略過 ${res.skipped ?? 0} 筆(本來就有)`;
+  flashSaved();
 }
 
 void main();

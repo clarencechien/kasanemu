@@ -1,6 +1,6 @@
 import type { DisplayMode, Settings } from '../shared/types';
 import { fontFaceCss, fontStack } from './fonts';
-import { hintColor } from './styleprobe';
+import { annotBg, annotFg, hintColor } from './styleprobe';
 import { LETTER_SPACING_EM, activeText, effectiveFontSize, type Unit } from './unit';
 import { place, type ViewRect } from './annotate';
 import { hintClassFor } from './upgrade';
@@ -11,7 +11,7 @@ import { hintClassFor } from './upgrade';
  * stacking context、transform 都會破壞定位。
  * §11.1 容器用 closed shadow DOM,樣式不受頁面 CSS 影響。
  */
-const HOST_ID = 'kasanemu-root';
+export const HOST_ID = 'kasanemu-root';
 
 /** feature.md §4.5 過場刻意短。越明顯的動畫越吸引注意,替換應該低調。 */
 const SWAP_MS = 80;
@@ -91,14 +91,23 @@ const LAYER_CSS = `
 /* §4.6 標註樣式:fallback、按住 Alt 掃視、或 options 指定 */
 .layer.alt-scan .box,
 .box.annotate {
-  background: rgba(230, 241, 251, 0.94);
-  color: #993C1D;
+  background: var(--ksnm-annot-bg);
+  color: var(--ksnm-annot-fg);
   font-family: var(--ksnm-annot-ff);
   font-weight: 400;
   font-size: var(--ksnm-annot-size);
   border-radius: 5px;
 }
 .layer.alt-scan .box { opacity: 1; }
+/*
+ * 全部收起來(Alt+Shift+H)。
+ *
+ * 和「點閱模式」不一樣:點閱是滑過才顯示,這個是**整層完全不在**,
+ * 連提示線都收掉,像沒裝這個擴充一樣。用在「這一頁我想直接讀原文」。
+ *
+ * 刻意不停止翻譯:譯文留在記憶體裡,再按一次立刻全部回來,不必重翻。
+ */
+.layer.hidden-all { display: none; }
 /* 來源元素其實看不見(被裁切、隱藏的重複 DOM)→ 疊層也不該出現 */
 .box.covered, .hint.covered { display: none; }
 /*
@@ -413,6 +422,10 @@ export class OverlayLayer {
     unit.hint?.classList.toggle('covered', covered);
   }
 
+  setHiddenAll(on: boolean): void {
+    this.layer.classList.toggle('hidden-all', on);
+  }
+
   setAltScan(on: boolean): void {
     this.layer.classList.toggle('alt-scan', on);
   }
@@ -433,7 +446,20 @@ export class OverlayLayer {
     const s = unit.style;
     const box = unit.box;
     const annot = unit.annotation || settings.forceAnnotation;
-    box.className = `box${unit.singleLine ? ' single' : ''}${annot ? ' annotate' : ''}`;
+    /*
+     * 狀態 class 不能被重畫洗掉。
+     *
+     * `hovered`(正在看原文)、`covered`(來源看不見)、`stale`(座標還在動)
+     * 是**執行期狀態**,不是重畫的產物。整個 className 重指派會把它們清掉,
+     * 而 covered / stale 在 flush 迴圈裡緊接著被重設,只有 hovered 沒有 ——
+     * 於是 Gmail 上「滑上去只閃一下原文就蓋回來」:那裡 flush 一直在跑,
+     * 而滑鼠不動就不會再有 mouseover 事件把 hovered 加回去。
+     * 一般網頁 flush 很少,所以看不出來。
+     */
+    const keep = (box.className.match(/\b(?:hovered|covered|stale)\b/g) ?? []).join(' ');
+    box.className =
+      `box${unit.singleLine ? ' single' : ''}${annot ? ' annotate' : ''}` +
+      (keep ? ` ${keep}` : '');
     box.textContent = text;
     box.dataset['geom'] =
       `${Math.round(unit.rect.width)}×${Math.round(unit.rect.height)}` +
@@ -491,6 +517,10 @@ export class OverlayLayer {
       '--ksnm-fg': s.color,
       '--ksnm-ff': fontStack(s.isSerif, s.sourceStack),
       '--ksnm-annot-ff': fontStack(false, 'sans-serif'),
+      // 標註色也要跟著頁面明暗走。寫死的淺藍底 + 褐字在深色頁面上
+      // 就是使用者說的「選色錯誤」—— 亮字必然配深底,反之亦然。
+      '--ksnm-annot-bg': annotBg(s.color),
+      '--ksnm-annot-fg': annotFg(s.color),
       '--ksnm-size': `${size}px`,
       // §4.6 標註樣式字級為來源 −1px,下限 12px
       '--ksnm-annot-size': `${Math.max(12, s.fontSizePx - 1)}px`,
@@ -638,11 +668,20 @@ export class OverlayLayer {
     el.className = `hud show ${level}`;
     el.textContent = text;
     clearTimeout(this.hudTimer);
-    if (level === 'busy') return;
-    this.hudTimer = window.setTimeout(
-      () => el.classList.remove('show'),
-      level === 'warn' ? 8000 : 3200,
-    );
+    /*
+     * **淡出的是資訊,留下的是待辦。**
+     *
+     * 「完成」是講完就沒事了,該淡出 —— 常駐的狀態列是噪音。
+     * 但「有 15 塊失敗,滑上去可以重試」是還沒解決的事,它一淡出,
+     * 畫面上就沒有任何東西告訴使用者發生過什麼,也沒有東西告訴他
+     * 怎麼救。使用者的原話是「HUD 不見了 是不是死掉了」。
+     *
+     * 所以 warn 不自動淡出。它會在最後一塊被重試成功時自己變成
+     * idle 然後淡出 —— 自己會清乾淨的東西才有資格常駐。
+     * (按住 Alt 收起整層時它一樣會不見;完全不想要就在設定關掉狀態列。)
+     */
+    if (level === 'busy' || level === 'warn') return;
+    this.hudTimer = window.setTimeout(() => el.classList.remove('show'), 3200);
   }
 
   hideHud(): void {

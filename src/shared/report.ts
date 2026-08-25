@@ -77,6 +77,33 @@ export function buildReport(i: ReportInput): string {
       `- L0:${i.stats.l0.state} · ${i.stats.l0.sourceLang} · ` +
         `supported=${i.stats.l0.supported} · ${i.stats.l0.detail || '—'}`,
     );
+    const t = i.stats.l0Timing;
+    if (t && t.calls > 0) {
+      lines.push(
+        `- L0 延遲:呼叫 ${t.calls} 次 · 平均 ${t.avgMs}ms · 最高 ${t.maxMs}ms · ` +
+          `排隊 ${t.avgWaitMs}ms · 併發 ${t.concurrency}`,
+      );
+    }
+    const d = i.stats.device;
+    if (d) {
+      // 「同樣是 12 代 U」不是可比的資訊,這三個數字才是
+      lines.push(
+        `- 機器:${d.threads} 執行緒 · 記憶體 ${d.memoryGB || '?'}GB · ` +
+          `CPU 微基準 ${d.cpuMs}ms(越小越快)· ${d.platform}`,
+      );
+    }
+    if (i.stats.cacheHits !== undefined) {
+      lines.push(`- 快取:命中 ${i.stats.cacheHits} 塊 · 模式 ${i.settings.cacheMode}`);
+    }
+    if (i.stats.motion) {
+      const m = i.stats.motion;
+      lines.push(
+        `- 捲動策略:${m.stability} → ${m.guard ? '捲動時先藏' : '一直顯示'}` +
+          `(appShell=${m.appShell} 內層捲動=${m.innerScroll} 釘住的單元 ${m.pinned})`,
+      );
+    }
+    const bad = i.stats.unparsedColors ?? [];
+    if (bad.length > 0) lines.push(`- **顏色解析失敗 ${bad.length} 種**:${bad.join(' · ')}`);
     if (i.stats.stalled) lines.push(`- **停滯 ${Math.round(i.stats.stalledMs / 1000)} 秒:L1 一個都沒回來**`);
     lines.push('');
   } else {
