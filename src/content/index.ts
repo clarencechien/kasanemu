@@ -123,7 +123,7 @@ let probed = new WeakSet<Unit>();
 let pageKey = makePageKey();
 let hovered: Unit | null = null;
 let altScan = false;
-/** Alt+Shift+H:整層收起來(譯文留著,再按一次立刻回來) */
+/** 按住 Alt:整層暫時收起(譯文留著,放開立刻回來) */
 let hiddenAll = false;
 
 /* ---------------------------------------------------------------- 加翻層 */
@@ -1365,12 +1365,21 @@ function onMouseOver(e: Event): void {
 }
 
 function onKeyDown(e: KeyboardEvent): void {
-  // §2.1 按住 Alt → 所有疊層切換為標註樣式,用於快速掃視哪些區塊被翻了
-  if (e.key === 'Alt' && !altScan) {
-    altScan = true;
-    layer?.setAltScan(true);
-    // Alt 同時是加翻層的「全部顯示」:掃視的語彙沿用同一顆鍵
-    renderChips();
+  /*
+   * **按住 Alt = 暫時收起整層**,放開就回來。
+   *
+   * 原本 Alt 是 §2.1 的標註樣式掃視,而「整層收起」掛在 Alt+Shift+H。
+   * 使用者的原話:「跟 Alt 互換一下,Alt 好按多了」—— 對,而且更重要的是
+   * 這兩件事的**使用頻率完全不同**:想瞄一眼原文是每分鐘都會做的事,
+   * 掃視哪些區塊被翻了是偶爾除錯才做的。常用的動作該配最好按的鍵。
+   *
+   * 而且「按住看原文、放開回來」本來就該是 hold,不是 toggle。
+   */
+  if (e.key === 'Alt' && !e.shiftKey && !hiddenAll) {
+    hiddenAll = true;
+    layer?.setHiddenAll(true);
+    closeChip(true);
+    updateHud();
   }
   if (e.altKey && e.shiftKey && (e.key === 'D' || e.key === 'd')) {
     e.preventDefault();
@@ -1378,42 +1387,38 @@ function onKeyDown(e: KeyboardEvent): void {
   }
   if (e.altKey && e.shiftKey && (e.key === 'H' || e.key === 'h')) {
     e.preventDefault();
-    toggleHiddenAll();
+    // 這個和弦要按住 Alt,而 Alt 已經把整層收起來了 —— 先放回來再切掃視
+    if (hiddenAll) {
+      hiddenAll = false;
+      layer?.setHiddenAll(false);
+    }
+    toggleAltScan();
   }
 }
 
-/**
- * 整層收起來 / 放回去。
- *
- * 使用者的原話:「目前有熱鍵是全拿掉 layer 嗎?」——
- * 有 `Alt+Shift+T` 的點閱模式(滑過才顯示),但那不是「拿掉」。
- * 這個是真的拿掉,連提示線都收,像沒裝這個擴充一樣。
- *
- * **刻意不停止翻譯**:譯文留在記憶體裡,再按一次立刻全部回來。
- * 用 Alt+T 停用網域也能達到目的,但那會把整頁的成果丟掉,
- * 想再看譯文就得重翻一次(而且要重新花錢)。
- */
-function toggleHiddenAll(): void {
-  hiddenAll = !hiddenAll;
-  layer?.setHiddenAll(hiddenAll);
-  if (hiddenAll) closeChip(true);
-  diag('info', 'hidden-all', { on: hiddenAll });
+/** §2.1 標註樣式掃視:一眼看出哪些區塊被翻了。除錯用,所以配和弦鍵 */
+function toggleAltScan(): void {
+  altScan = !altScan;
+  layer?.setAltScan(altScan);
+  renderChips();
+  diag('info', 'alt-scan', { on: altScan });
   updateHud();
 }
 
 function onKeyUp(e: KeyboardEvent): void {
-  if (e.key === 'Alt' && altScan) {
-    altScan = false;
-    layer?.setAltScan(false);
-    renderChips();
+  if (e.key === 'Alt' && hiddenAll) {
+    hiddenAll = false;
+    layer?.setHiddenAll(false);
+    updateHud();
   }
 }
 
 function onBlur(): void {
-  if (altScan) {
-    altScan = false;
-    layer?.setAltScan(false);
-    renderChips();
+  // 切走視窗時 keyup 收不到,Alt 會卡在按住的狀態 —— 疊層就再也回不來了
+  if (hiddenAll) {
+    hiddenAll = false;
+    layer?.setHiddenAll(false);
+    updateHud();
   }
   closeChip(true);
 }
@@ -1504,7 +1509,7 @@ function updateHud(): void {
   }
 
   if (hiddenAll) {
-    layer.setHud('疊 · 疊層已收起 —— Alt+Shift+H 放回來', 'idle');
+    layer.setHud('疊 · 疊層暫時收起(放開 Alt 回來)', 'idle');
     return;
   }
   if (lastProblem) {
@@ -2280,6 +2285,7 @@ function stop(): void {
   layer?.hideHud();
   manualArmed = false;
   hiddenAll = false;
+  altScan = false;
   lastProblem = '';
   units.clear();
   unitById.clear();

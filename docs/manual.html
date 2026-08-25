@@ -630,7 +630,7 @@ footer {
         <h3 style="margin-top:26px">兩個隨手可用的動作</h3>
         <ul class="plain">
           <li><strong>滑鼠移到譯文上</strong> → 疊層讓開,原文回來。移開就換回譯文。</li>
-          <li><strong>按住 <kbd>Alt</kbd></strong> → 全部疊層切成標註樣式,一眼掃出哪些區塊被翻了、哪些沒有。</li>
+          <li><strong>按住 <kbd>Alt</kbd></strong> → 整層暫時收起,整頁原文一次看光;放開就回來。</li>
         </ul>
       </div>
     </section>
@@ -660,7 +660,7 @@ footer {
           <li><strong>重複的字只翻一次。</strong>卡片牆上十二張卡都寫「詳細を見る」,十二張都 hover 得到,但只送一次 API。</li>
           <li><strong>第二個開始不用等。</strong>一旦有貼片開著,移到隔壁項目會立刻換。</li>
           <li><strong>點得到。</strong>貼片和疊層一樣不吃滑鼠事件,就算蓋到隔壁按鈕,那顆按鈕照樣點得到。</li>
-          <li><strong>按住 <kbd>Alt</kbd> 全部顯示。</strong>和掃視疊層同一顆鍵,一眼看完整條導覽列。</li>
+          <li><strong><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> 全部顯示。</strong>和掃視疊層同一組鍵,一眼看完整條導覽列。</li>
           <li><strong>鍵盤也有。</strong>用 Tab 移到連結上,貼片一樣會出現。</li>
         </ul>
         <div class="note">
@@ -685,8 +685,8 @@ footer {
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>T</kbd></td><td>在這個網域啟用 / 關閉疊層翻譯</td></tr>
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd></td><td>切換「全開」/「點閱」(點閱 = 疊層平常隱藏,滑過才顯示)</td></tr>
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd></td><td>翻譯這一頁;也用來把整頁失敗的區塊全部重試</td></tr>
-            <tr><td class="keycell">按住 <kbd>Alt</kbd></td><td>掃視:疊層切成標註樣式,同時顯示所有 UI 標籤的譯文貼片</td></tr>
-            <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd></td><td>整層收起來 / 放回去 —— 想直接讀原文時用。譯文留著,再按一次立刻回來</td></tr>
+            <tr><td class="keycell">按住 <kbd>Alt</kbd></td><td><strong>暫時收起整層</strong> —— 想瞄一眼原文就按著,放開就回來</td></tr>
+            <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd></td><td>掃視:疊層切成標註樣式,同時顯示所有 UI 標籤的貼片(除錯用)</td></tr>
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></td><td>抽樣面板:原文 / L0 / L1 三欄並列(需先在設定開 debug mode)</td></tr>
           </tbody>
         </table>
