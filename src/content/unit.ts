@@ -32,6 +32,12 @@ export interface Unit {
    * 而疊層在 document 座標 —— 捲動期間先藏起來,停下來再量一次。
    */
   pinned?: boolean;
+  /**
+   * 這個單元蓋的是元素裡的**一段**行內內容,不是整個元素
+   * (鬆散的文字節點、或被圖片切成兩半的段落,見 detect.ts 的 inlineRuns)。
+   * 有 range 時所有幾何都問它,不問 el。
+   */
+  range?: Range;
   /** §4.6 標註樣式 (背景取色失敗或使用者指定) */
   annotation: boolean;
   /** §4.4 單行元素:不加入字級分組,允許橫向溢出 (D15) */

@@ -16,6 +16,28 @@ import type { DocRect, Unit } from './unit';
 const EMPTY: DocRect = { left: 0, top: 0, width: 0, height: 0 };
 
 export function coverRect(unit: Unit): { rect: DocRect; overflows: boolean } {
+  /*
+   * 錨點是一段 Range 的時候,元素矩形完全不能用 —— 那個 `<p>` 或
+   * `<div>` 還裝著表格、圖片、另外半段文字。問 Range 拿到的才是
+   * 「這一段字實際佔的位置」。
+   *
+   * 也不做 scrollHeight 撐開:那是整個元素的內容高度,對一段文字沒有意義。
+   */
+  if (unit.range) {
+    const rects = unit.range.getClientRects();
+    if (rects.length === 0) return { rect: EMPTY, overflows: false };
+    const r = unit.range.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return { rect: EMPTY, overflows: false };
+    return {
+      rect: {
+        left: r.left + window.scrollX,
+        top: r.top + window.scrollY,
+        width: r.width,
+        height: r.height,
+      },
+      overflows: false,
+    };
+  }
   const el = unit.el as HTMLElement;
   /*
    * **沒有任何 client rect = 現在根本沒被畫出來**,一律回零。

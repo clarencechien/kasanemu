@@ -144,7 +144,13 @@ let l0: L0Engine | null = null;
  * 下一次 scan() 的 seen() 會對每個舊元素回 true,findCandidates 於是
  * 一個候選都不產生 —— 症狀是切換管線後狀態列說「沒找到可翻譯的區塊」。
  */
-let unitByEl = new WeakMap<Element, Unit>();
+/**
+ * 元素 → 它產生的單元。**一對多**:鬆散文字與被圖片切開的段落會讓同一個
+ * 元素產生好幾段(見 detect.ts 的 inlineRuns),所以這裡是陣列。
+ * `has()` 的語意仍然是「這個元素掃過了」—— 一個元素的所有段落在同一次
+ * findCandidates 裡一起產生,不會只做一半。
+ */
+let unitByEl = new WeakMap<Element, Unit[]>();
 const units = new Set<Unit>();
 const unitById = new Map<string, Unit>();
 let nextId = 1;
@@ -328,8 +334,10 @@ const usesL1 = (p: Pipeline): boolean => p === 'progressive' || p === 'single';
 function scan(): void {
   if (!layer) return;
   const found = findCandidates(document.body, (el) => unitByEl.has(el));
+  // 同一批裡同一個元素可以出現好幾次(一段一個),所以只擋「上一輪就有的」
+  const before = new Set(found.filter((c) => unitByEl.has(c.el)).map((c) => c.el));
   for (const c of found) {
-    if (unitByEl.has(c.el)) continue;
+    if (before.has(c.el)) continue;
     const style = probeStyle(c.el, settings.weightOffset);
     const unit: Unit = {
       id: `u${nextId++}`,
@@ -341,6 +349,7 @@ function scan(): void {
       geometryRisk: c.geometryRisk,
       ...(c.mediaSplit ? { mediaSplit: c.mediaSplit } : {}),
       ...(c.pinned ? { pinned: true } : {}),
+      ...(c.range ? { range: c.range } : {}),
       /*
        * §4.1 原本是「取不到不透明實色 → 降級為標註樣式」。
        * 改成只有使用者明確要求時才用標註樣式 —— 背景取不到的情況現在由
@@ -365,7 +374,9 @@ function scan(): void {
       inView: false,
       overflowing: false,
     };
-    unitByEl.set(c.el, unit);
+    const list = unitByEl.get(c.el);
+    if (list) list.push(unit);
+    else unitByEl.set(c.el, [unit]);
     units.add(unit);
     unitById.set(unit.id, unit);
     if (unit.tier !== 'skipped') {
@@ -1463,15 +1474,32 @@ function retryUnit(u: Unit): void {
 /**
  * §2.2 疊層 pointer-events: none,所以 hover 只能由來源元素反向驅動。
  */
+/**
+ * 同一個元素可能有好幾段行內單元(被圖片切開的段落、鬆散文字),
+ * 而滑鼠只指著其中一段。用指標位置挑,不然滑到第二段卻讓第一段讓開。
+ */
+function pickUnit(list: readonly Unit[], e: Event): Unit {
+  if (list.length === 1) return list[0]!;
+  const p = e as MouseEvent;
+  if (typeof p.clientX !== 'number') return list[0]!;
+  const x = p.clientX + window.scrollX;
+  const y = p.clientY + window.scrollY;
+  for (const u of list) {
+    const r = u.rect;
+    if (x >= r.left && x <= r.left + r.width && y >= r.top && y <= r.top + r.height) return u;
+  }
+  return list[0]!;
+}
+
 function onMouseOver(e: Event): void {
   if (!layer) return;
   let node: Node | null = e.target as Node | null;
   let found: Unit | null = null;
   while (node && node !== document.body) {
     if (node instanceof Element) {
-      const u = unitByEl.get(node);
-      if (u) {
-        found = u;
+      const list = unitByEl.get(node);
+      if (list && list.length > 0) {
+        found = pickUnit(list, e);
         break;
       }
     }
@@ -1834,15 +1862,16 @@ async function start(): Promise<void> {
     (entries) => {
       let hit = false;
       for (const en of entries) {
-        const u = unitByEl.get(en.target);
-        if (!u) continue;
-        u.inView = en.isIntersecting;
-        if (en.isIntersecting) {
-          // §4.2 第 2 條的計時起點
-          if (u.inViewSince === undefined) u.inViewSince = Date.now();
-          hit = true;
-        } else {
-          u.inViewSince = undefined;
+        // 一個元素可以有好幾段行內單元,每一段都要跟著更新
+        for (const u of unitByEl.get(en.target) ?? []) {
+          u.inView = en.isIntersecting;
+          if (en.isIntersecting) {
+            // §4.2 第 2 條的計時起點
+            if (u.inViewSince === undefined) u.inViewSince = Date.now();
+            hit = true;
+          } else {
+            u.inViewSince = undefined;
+          }
         }
       }
       if (hit) scheduleIntake();
@@ -2511,7 +2540,7 @@ function stop(): void {
   unitById.clear();
   // 重建而不是清空:WeakMap / WeakSet 沒有 clear(),
   // 留著會讓下一次 scan() 認為整頁都已經建過單元
-  unitByEl = new WeakMap<Element, Unit>();
+  unitByEl = new WeakMap<Element, Unit[]>();
   probed = new WeakSet<Unit>();
   setPageScript(null);
   clearTimeout(selectionTimer);

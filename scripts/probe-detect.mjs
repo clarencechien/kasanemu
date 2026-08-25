@@ -29,13 +29,19 @@ try {
 
 const out = mkdtempSync(path.join(tmpdir(), 'ksnm-'));
 const bundle = path.join(out, 'detect.js');
-execFileSync(
-  'npx',
-  ['esbuild', path.join(here, '..', 'src', 'content', 'detect.ts'),
-   '--bundle', '--format=iife', '--global-name=D', '--footer:js=globalThis.D=D;',
-   `--outfile=${bundle}`],
-  { stdio: 'inherit' },
-);
+const geo = path.join(out, 'cover.js');
+const build = (src, name, file) =>
+  execFileSync(
+    'npx',
+    ['esbuild', path.join(here, '..', 'src', 'content', src),
+     '--bundle', '--format=iife', `--global-name=${name}`, `--footer:js=globalThis.${name}=${name};`,
+     `--outfile=${file}`],
+    { stdio: 'inherit' },
+  );
+build('detect.ts', 'D', bundle);
+// 幾何要用**production 的那一支** coverRect,不是在測試裡另外寫一份 ——
+// 判斷邏輯有兩份就會分岔(§CH-2)
+build('cover.ts', 'G', geo);
 
 const exe = process.env['PLAYWRIGHT_BROWSERS_PATH']
   ? path.join(process.env['PLAYWRIGHT_BROWSERS_PATH'], 'chromium')
@@ -44,6 +50,7 @@ const browser = await chromium.launch(exe ? { executablePath: exe } : {});
 const page = await browser.newPage({ viewport: { width: 1100, height: 900 } });
 // MHTML / file:// 的 CSP 會擋掉 addScriptTag,init script 不受影響
 await page.addInitScript({ content: readFileSync(bundle, 'utf8') });
+await page.addInitScript({ content: readFileSync(geo, 'utf8') });
 await page.goto('file://' + fixture);
 
 const got = await page.evaluate(() => {
@@ -60,8 +67,29 @@ const got = await page.evaluate(() => {
   return {
     blocks: blocks.map((c) => ({
       src: c.src, tag: c.el.tagName, media: !!c.mediaSplit, pinned: c.pinned === true,
+      ranged: !!c.range,
       inNav: !!c.el.closest('nav'), inMenu: !!c.el.closest('#menu'),
     })),
+    // 疊層絕對不可以蓋到圖 —— 這是所有 mediaSplit / Range 規則的底線
+    overImage: blocks.filter((c) => {
+      // 用 production 的 coverRect:mediaSplit 的單元會在圖片邊界收住,
+      // 拿元素的 border-box 去比一定會誤報
+      const { rect } = G.coverRect({
+        el: c.el, range: c.range, mediaSplit: c.mediaSplit,
+        style: { border: [0, 0, 0, 0] },
+      });
+      if (rect.width < 1 || rect.height < 1) return false;
+      const r = {
+        top: rect.top - scrollY, bottom: rect.top + rect.height - scrollY,
+        left: rect.left - scrollX, right: rect.left + rect.width - scrollX,
+      };
+      return [...document.querySelectorAll('img')].some((img) => {
+        const m = img.getBoundingClientRect();
+        if (m.width * m.height < 400) return false;
+        return r.top < m.bottom - 2 && m.top < r.bottom - 2
+          && r.left < m.right - 2 && m.left < r.right - 2;
+      });
+    }).map((c) => c.src.slice(0, 40)),
     labels: labels.map((c) => c.src),
   };
 });
@@ -96,6 +124,23 @@ noBlock('Latency dropped', '行內圖片');
 // 每個連結都短、但項目本身是一整段 —— 整份仍然是內容清單
 for (const frag of ['ClickHouse SQL query', 'Elasticsearch ESQL query']) {
   needBlock(frag, '長項目底下的短連結');
+}
+
+// 沒有元素包著的鬆散文字要換錨點(Range),而且一段一個
+for (const frag of ['ClickHouse requires 12 times', 'When the data set is pre-aggregated']) {
+  needBlock(frag, '鬆散文字');
+  const hit = got.blocks.find((b) => b.src.startsWith(frag));
+  if (hit && !hit.ranged) problems.push(`鬆散文字「${frag}」沒用 Range 當錨點,會蓋到整個容器`);
+}
+
+// 圖片夾在中間:切成前後兩段
+for (const frag of ['Runtimes of running the query', 'As discussed, ESQL currently']) {
+  needBlock(frag, '圖片夾在段落中間');
+}
+
+// 底線:任何單元的矩形都不可以壓到圖片上
+if (got.overImage.length > 0) {
+  problems.push(`疊層蓋到圖片:${got.overImage.join(' / ')}`);
 }
 
 // 圖表儲存格:表頭與儲存格必須同一種行為

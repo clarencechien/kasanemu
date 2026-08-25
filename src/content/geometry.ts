@@ -12,8 +12,11 @@ export { coverRect };
  * 所以捲動不需要重算 (§3.4 / D02 的代價僅限重排)。
  */
 export function measureUnit(unit: Unit, extraBleedPx = 0): void {
-  const r = unit.el.getBoundingClientRect();
-  const rects = unit.el.getClientRects();
+  // 有 range 就一切問 range —— 元素的矩形包含這一段以外的東西
+  const source: { getBoundingClientRect(): DOMRect; getClientRects(): DOMRectList } =
+    unit.range ?? unit.el;
+  const r = source.getBoundingClientRect();
+  const rects = source.getClientRects();
   const sx = window.scrollX;
   const sy = window.scrollY;
   /*

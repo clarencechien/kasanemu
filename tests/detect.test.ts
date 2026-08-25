@@ -21,6 +21,15 @@ function mount(html: string): Element {
   g['getComputedStyle'] = dom.window.getComputedStyle.bind(dom.window);
   // jsdom 沒有 layout,getClientRects() 一律空陣列 —— 補一個假的,
   // 否則所有候選都會被「沒有繪製面積」的檢查擋掉
+  // jsdom 沒有 layout,Range 連 getClientRects 都沒有 —— 補一個假的,
+  // 否則所有 Range 錨點的候選都會被「沒有繪製面積」擋掉
+  const fakeRect = { top: 0, left: 0, width: 300, height: 20, bottom: 20, right: 300 };
+  dom.window.Range.prototype.getClientRects = function () {
+    return [fakeRect] as unknown as DOMRectList;
+  };
+  dom.window.Range.prototype.getBoundingClientRect = function () {
+    return fakeRect as DOMRect;
+  };
   dom.window.Element.prototype.getClientRects = function () {
     return [{ top: 0, left: 0, width: 300, height: 20 }] as unknown as DOMRectList;
   };
@@ -815,4 +824,73 @@ test('沒有可見文字的互動子孫不佔長度預算', () => {
     texts.some((t) => t.includes('fairly long link label')),
     `實得 ${JSON.stringify(texts)}`,
   );
+});
+
+/* -------- 換錨點:沒有元素包著的文字 -------- */
+
+test('鬆散文字節點也要翻 —— 用 Range 當錨點', () => {
+  /*
+   * markdown 轉出來的常見形狀:段落文字直接掛在容器上,沒有 <p> 包著。
+   * 拿容器當單元會蓋掉整篇文章,所以改成圈住那一段。
+   */
+  const root = mount(
+    '<div><div><p>A table lives here.</p></div>' +
+      'ClickHouse requires 12 times less disk space than Elasticsearch to store the data.' +
+      '<div><p>Another block.</p></div>' +
+      'When the data set is pre-aggregated, ClickHouse needs 10 times less disk space.' +
+      '</div>',
+  );
+  const got = findCandidates(root, () => false);
+  const ranged = got.filter((c) => c.range !== undefined).map((c) => c.src);
+  assert.equal(ranged.length, 2, `兩段鬆散文字各一個單元,實得 ${JSON.stringify(ranged)}`);
+  assert.ok(ranged[0]!.startsWith('ClickHouse requires 12 times'));
+  assert.ok(ranged[1]!.startsWith('When the data set is pre-aggregated'));
+});
+
+test('容器整體太長不能擋掉個別段落 —— 長度要一段一段量', () => {
+  const long = 'x'.repeat(MAX_UNIT_CHARS - 40);
+  const root = mount(
+    `<div><p>${long}</p>` +
+      'Short loose paragraph that still deserves a translation of its own.' +
+      `<p>${long}</p>` +
+      'Another loose paragraph living between two blocks.' +
+      '</div>',
+  );
+  const ranged = findCandidates(root, () => false)
+    .filter((c) => c.range !== undefined)
+    .map((c) => c.src);
+  assert.equal(ranged.length, 2, `實得 ${JSON.stringify(ranged)}`);
+});
+
+test('圖片夾在段落中間 —— 切成前後兩段,而不是整段放棄', () => {
+  const root = mount(
+    '<p>Runtimes of running the query over the pre-aggregated data set:' +
+      '<span style="display:flex"><img alt="" src="c.png"></span>' +
+      'As discussed, ESQL currently does not support the flattened field type.</p>',
+  );
+  const img = root.querySelector('img')!;
+  img.getBoundingClientRect = () =>
+    ({ top: 40, left: 0, width: 400, height: 200, bottom: 240, right: 400 }) as DOMRect;
+  const ranged = findCandidates(root, () => false)
+    .filter((c) => c.range !== undefined)
+    .map((c) => c.src);
+  assert.equal(ranged.length, 2, `實得 ${JSON.stringify(ranged)}`);
+  assert.ok(ranged[0]!.startsWith('Runtimes of running'));
+  assert.ok(ranged[1]!.startsWith('As discussed'));
+});
+
+test('真正的行內圖片仍然整段放棄 —— 一段文字裡夾著圖,矩形一定蓋到它', () => {
+  const root = mount('<p><img id="i" alt="" src="c.png">Note: percentages are rounded to 5%.</p>');
+  const img = root.querySelector('#i')!;
+  img.getBoundingClientRect = () =>
+    ({ top: 0, left: 0, width: 400, height: 200, bottom: 200, right: 400 }) as DOMRect;
+  assert.deepEqual(findCandidates(root, () => false).map((c) => c.src), []);
+});
+
+test('已經有主人的文字不再收一次 —— <a> 包 <h3> 只出一個單元', () => {
+  const root = mount('<a href="/post"><h3>Bringing the capabilities of Claude to defenders</h3></a>');
+  const got = findCandidates(root, () => false);
+  assert.equal(got.length, 1);
+  assert.equal(got[0]!.el.tagName, 'H3');
+  assert.equal(got[0]!.range, undefined);
 });

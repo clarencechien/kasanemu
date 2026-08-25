@@ -276,6 +276,11 @@ export interface Candidate {
   mediaSplit?: Element;
   /** 在 sticky / fixed 的子樹裡:捲動時 document 座標會跑,先藏起來 */
   pinned?: boolean;
+  /**
+   * 這個單元蓋的不是整個元素,而是元素裡的一段行內內容(見 inlineRuns)。
+   * 幾何一律問 Range,不問元素。
+   */
+  range?: Range;
 }
 
 const HAN = /\p{Script=Han}/u;
@@ -354,7 +359,11 @@ export function hasContainerChild(el: Element): boolean {
 const MEDIA_TAGS = 'img,video,canvas,svg,picture,iframe';
 const MEDIA_MIN_AREA = 400;
 
-export function hasMediaChild(el: Element): boolean {
+export function hasMediaChild(el: Element, includeSelf = false): boolean {
+  if (includeSelf && el.matches(MEDIA_TAGS)) {
+    const own = el.getBoundingClientRect();
+    if (own.width * own.height >= MEDIA_MIN_AREA) return true;
+  }
   const kids = el.querySelectorAll(MEDIA_TAGS);
   for (let i = 0; i < kids.length && i < 12; i++) {
     const r = kids[i]!.getBoundingClientRect();
@@ -380,24 +389,54 @@ export function hasMediaChild(el: Element): boolean {
  *  3. 它自己佔一行(真正的行內圖片就在文字行裡,一定會被蓋到)
  */
 export function mediaSplitOf(el: Element): Element | null {
-  const kids = Array.from(el.children);
-  if (kids.length === 0) return null;
-  let holder: Element | null = null;
-  for (const kid of kids) {
-    const hasMedia =
+  /*
+   * 要走 childNodes,不是 children。
+   *
+   * 踩過一次:`<p>文字<span class="flex"><img></span>文字</p>` 的**元素**子節點
+   * 只有那個 span,所以「它是第一個也是最後一個」成立,程式判定圖片靠在邊上 ——
+   * 而畫面上圖片正夾在兩段文字中間。文字節點沒有元素身分,但它在版面上占位;
+   * 量版面就不能只看元素。
+   */
+  const kids = Array.from(el.childNodes);
+  const carries = (n: Node): boolean => {
+    if (n.nodeType !== 1) return false;
+    const kid = n as Element;
+    return (
       kid.matches(MEDIA_TAGS) ||
       [...kid.querySelectorAll(MEDIA_TAGS)].some((m) => {
         const r = m.getBoundingClientRect();
         return r.width * r.height >= MEDIA_MIN_AREA;
-      });
-    if (!hasMedia) continue;
-    if (holder) return null;
-    holder = kid;
+      })
+    );
+  };
+  const at = kids.map(carries);
+  const first = at.indexOf(true);
+  if (first < 0) return null;
+  const last = at.lastIndexOf(true);
+  /*
+   * 頭尾**連續一段**都算,不是只有一個 —— ClickHouse 的圖表段落常常是
+   * 「一段文字 + 兩張並排的圖」(Query ① 與 Query ②)。
+   * 真正的條件是**文字沒有被圖切成兩半**。
+   */
+  for (let i = first; i <= last; i++) if (!at[i]) return null;
+  const hasText = (from: number, to: number): boolean => {
+    for (let i = from; i < to; i++) {
+      const n = kids[i]!;
+      if (n.nodeType === 3) {
+        if (normalizeText(n.nodeValue ?? '').length > 0) return true;
+      } else if (n.nodeType === 1 && normalizeText((n as Element).textContent ?? '').length > 0) {
+        return true;
+      }
+    }
+    return false;
+  };
+  if (hasText(0, first) && hasText(last + 1, kids.length)) return null;
+  // 每一塊都要自己佔一行,否則圖就在文字行裡
+  for (let i = first; i <= last; i++) {
+    if (!BLOCKISH_DISPLAY.has(getComputedStyle(kids[i] as Element).display)) return null;
   }
-  if (!holder) return null;
-  if (holder !== kids[0] && holder !== kids[kids.length - 1]) return null;
-  if (!BLOCKISH_DISPLAY.has(getComputedStyle(holder).display)) return null;
-  return holder;
+  // 邊界取靠近文字的那一端
+  return (first === 0 ? kids[last] : kids[first]) as Element;
 }
 
 /**
@@ -711,7 +750,11 @@ function walk(el: Element, ctx: WalkCtx, pinned = false): boolean {
    * 記下界線,疊層蓋到那裡為止(見 mediaSplitOf)。
    */
   const split = mediaSplitOf(el);
-  if (!split && hasMediaChild(el)) return false;
+  /*
+   * 圖片夾在文字中間(前後都有字)—— 一個矩形蓋不住,但兩個可以。
+   * 區塊層級的圖片本來就是分隔線,交給 inlineRuns 依它切段。
+   */
+  if (!split && hasMediaChild(el)) return captureRuns(el, ctx, inFlow);
   const skip = split ? new Set([...ctx.srOnly, split]) : ctx.srOnly;
 
   const text = normalizeText(ownText(el, skip));
@@ -762,11 +805,115 @@ function walk(el: Element, ctx: WalkCtx, pinned = false): boolean {
  * 非區塊子元素的文字,有一點對不上就不做 —— 寧可少翻一行,
  * 不要蓋錯地方。
  */
+/**
+ * 容器裡「不屬於任何區塊子節點」的連續行內內容,一段一個。
+ *
+ * 有兩種很常見的版面,單靠元素當錨點永遠接不住:
+ *
+ *   <div class="rich-text">
+ *     <div>…表格…</div>
+ *     ClickHouse requires 12 times less disk space than Elasticsearch…
+ *   </div>
+ *
+ *   <p>文字…<span class="flex"><img></span>As discussed, ESQL currently…</p>
+ *
+ * 第一種的文字**沒有任何元素包著**(markdown 轉出來的鬆散文字節點);
+ * 第二種的圖片夾在中間,把文字切成兩段。兩種都不可能用一個元素矩形蓋住。
+ *
+ * 答案是換錨點:用 Range 圈住那一段,幾何問 `range.getClientRects()`。
+ * 區塊子節點是天然的分隔線 —— 兩段之間必然換行,所以每一段的矩形都是
+ * 完整的幾行,不會出現「從半行開始」那種難蓋的形狀。
+ */
+export function inlineRuns(el: Element): Array<{ range: Range; nodes: Node[] }> {
+  const out: Array<{ range: Range; nodes: Node[] }> = [];
+  let run: Node[] = [];
+  const flush = (): void => {
+    if (run.length === 0) return;
+    const range = document.createRange();
+    range.setStartBefore(run[0]!);
+    range.setEndAfter(run[run.length - 1]!);
+    if (normalizeText(range.toString()).length > 0) out.push({ range, nodes: run });
+    run = [];
+  };
+  for (const node of Array.from(el.childNodes)) {
+    if (node.nodeType === 1 /* ELEMENT_NODE */) {
+      const kid = node as Element;
+      const blockish =
+        kid.matches(CONTAINER_TAGS) || BLOCKISH_DISPLAY.has(getComputedStyle(kid).display);
+      if (blockish) {
+        flush();
+        continue;
+      }
+      if (NON_TEXT_TAGS.has(kid.tagName) || kid.matches(EXCLUDE_SELECTOR)) continue;
+    } else if (node.nodeType !== 3 /* TEXT_NODE */) {
+      continue;
+    }
+    run.push(node);
+  }
+  flush();
+  return out;
+}
+
+/**
+ * 把行內段落收成單元。**一個元素可以產生好幾個**,所以下游的
+ * 「這個元素做過了沒」不能再假設一對一(見 index.ts 的 unitByEl)。
+ */
+function captureRuns(el: Element, ctx: WalkCtx, pinned: boolean): boolean {
+  const cs = getComputedStyle(el);
+  let made = false;
+  for (const { range, nodes } of inlineRuns(el)) {
+    /*
+     * 這一段的文字**已經有主人了嗎**。
+     *
+     * `<a><h3>卡片標題</h3></a>` 的 `<a>` 是行內的,所以整個會被收進一段 run,
+     * 而那段文字早就由 `<h3>` 的單元蓋著了 —— 再收一次就是兩層疊層。
+     * 單元一律建在容器上,所以「這段裡有容器」就等於「有主人」。
+     */
+    const owned = nodes.some((n) => {
+      if (n.nodeType !== 1) return false;
+      const e = n as Element;
+      return ctx.made.has(e) || e.matches(CONTAINER_TAGS) || e.querySelector(CONTAINER_TAGS) !== null;
+    });
+    if (owned) continue;
+    /*
+     * 這一段裡還夾著大圖 —— 那是真正的行內圖片(不是自己佔一行的那種,
+     * 那種會在上面被當成分隔線切開),疊層一定會蓋到它。整段放棄。
+     * 少了這一條,`<p><img><span>說明</span></p>` 會長出一塊蓋住圖的疊層。
+     */
+    if (nodes.some((n) => n.nodeType === 1 && hasMediaChild(n as Element, true))) continue;
+    const text = normalizeText(range.toString());
+    if (!isMeaningfulText(text) || text.length > MAX_UNIT_CHARS) continue;
+    if (looksLikeTargetLang(text)) continue;
+    // 整段都在互動元素裡的短文字仍然是 UI 標籤
+    if (text.length <= UI_LABEL_MAX_CHARS && range.startContainer === range.endContainer) continue;
+    if (range.getClientRects().length === 0) continue;
+    ctx.out.push({
+      el,
+      role: roleOf(el, cs),
+      src: text,
+      geometryRisk: false,
+      range,
+      ...(pinned ? { pinned: true } : {}),
+    });
+    made = true;
+  }
+  if (made) ctx.made.add(el);
+  return made;
+}
+
 function captureInlineText(el: Element, ctx: WalkCtx, pinned: boolean): boolean {
   const text = normalizeText(inlineOwnText(el, ctx.srOnly));
-  if (!isMeaningfulText(text) || text.length > MAX_UNIT_CHARS) return false;
-  if (looksLikeTargetLang(text)) return false;
-  for (const kid of Array.from(el.children)) {
+  if (!isMeaningfulText(text)) return false;
+  /*
+   * 長度與語言的檢查只擋**單一承載元素**那條捷徑,不能擋掉整個函式。
+   *
+   * 這裡踩過一次:`<div class="rich-text">` 底下有五段鬆散文字,
+   * `inlineOwnText()` 把五段接成一條 3000 字的字串,於是
+   * `text.length > MAX_UNIT_CHARS` 直接 return —— 連 Range 的路都沒走到。
+   * 而那五段各自都是正常長度的段落。**把整體拿去量,擋掉的是每一個個體。**
+   */
+  const single = text.length <= MAX_UNIT_CHARS && !looksLikeTargetLang(text);
+  for (const kid of single ? Array.from(el.children) : []) {
     if (kid.matches(CONTAINER_TAGS)) continue;
     /*
      * 承載元素必須自己就是**葉子**。
@@ -805,7 +952,11 @@ function captureInlineText(el: Element, ctx: WalkCtx, pinned: boolean): boolean 
     ctx.made.add(kid);
     return true;
   }
-  return false;
+  /*
+   * 沒有單一承載元素 —— 文字是鬆散的文字節點加行內標籤的混合。
+   * 那就別找元素了,直接圈範圍。
+   */
+  return captureRuns(el, ctx, pinned);
 }
 
 /**
@@ -907,6 +1058,13 @@ export function explainCandidate(el: Element): string[] {
 
   const cs = getComputedStyle(el);
   if (isInvisible(cs)) return [`不可見 (display:${cs.display} visibility:${cs.visibility} opacity:${cs.opacity})`];
+  for (let n: Element | null = el; n && n !== document.body; n = n.parentElement) {
+    if (isAppChrome(n)) {
+      return [
+        `祖先 <${n.tagName.toLowerCase()}> 是應用程式外殼 —— 不畫疊層,但滑上去仍然翻得到`,
+      ];
+    }
+  }
 
   const blockish = BLOCK_TAGS.has(el.tagName) || BLOCKISH_DISPLAY.has(cs.display);
   if (!blockish) return [`不是 block 級 (display: ${cs.display}),文字會併進最近的 block 祖先`];

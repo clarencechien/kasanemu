@@ -42,6 +42,20 @@
         <li><a href="#q2c">Elasticsearch ESQL query</a></li>
       </ul></li>
   </ul>
+  <!-- 鬆散文字:markdown 轉出來的段落沒有 <p> 包著 -->
+  <div id="loose">
+    <div><p>A table would live here.</p></div>
+    ClickHouse requires 12 times less disk space than Elasticsearch to store the data set.
+    <div><p>Another block lives here.</p></div>
+    When the data set is pre-aggregated, ClickHouse needs 10 times less disk space.
+  </div>
+
+  <!-- 圖片夾在段落中間:文字被切成前後兩段 -->
+  <p id="midimg">Runtimes of running the query over the pre-aggregated data set:
+    <span class="imgwrap"><img alt="" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="></span>
+    As discussed, ESQL currently does not support the flattened field type.
+  </p>
+
   <!-- 圖表表格:表頭翻了,儲存格的短連結不能因為「文字全來自連結」就不翻 -->
   <table id="charts">
     <thead><tr><th>Storage size</th><th>Aggregation performance</th></tr></thead>
