@@ -120,10 +120,51 @@ const CONTAINER_TAGS =
   'div,section,article,main,aside,header,footer,nav,ul,ol,dl,table,figure,form,details';
 
 /**
- * 一個翻譯單元的字數上限。段落不會這麼長,超過就一定是容器誤判 ——
- * 最後一道防線,擋掉所有還沒想到的結構。
+ * 一個翻譯單元的字數上限。
+ *
+ * 舊註解寫的是「段落不會這麼長,超過就一定是容器誤判」——
+ * **那個前提是錯的。** stratechery 這一段引言是貨真價實的
+ * `<p class="wp-block-paragraph">`,1576 個字,一個子元素都沒有:
+ *
+ *   "This style of operating will be different now, but ultimately
+ *    we need to invest in having AI agent red teaming that…"
+ *
+ * 使用者的原話:「又一大段沒翻,前面都好好的?」而且三條路全關著 ——
+ * 疊翻撞這個 1000、hover 與選取撞 `ADHOC_MAX_CHARS` 的 500
+ * (log 裡兩則 `selection-skipped {"why":"too-long"}` 就是它)。
+ *
+ * 「是不是容器」本來就有**結構性**的答案:`hasContainerChild()`。
+ * 那條可靠、有測試,而且不會誤傷散文。長度只是最後一道防線,
+ * 用來擋還沒想到的結構,不是用來判斷段落 —— 所以門檻要訂在
+ * 「真實散文絕對到不了」的地方,不是「大部分段落到不了」。
+ *
+ * 4000 字 ≈ 1000 token,單筆仍然塞得進 free 檔的 batch
+ * (takeBatch 保證第一筆一定收,見 queuelogic)。
  */
-export const MAX_UNIT_CHARS = 1000;
+export const MAX_UNIT_CHARS = 4000;
+
+/**
+ * 因為太長被擋掉的區塊。**被擋掉要留下痕跡。**
+ *
+ * 上一版這條規則是完全靜默的:那段 1576 字的引言不是失敗、不是跳過,
+ * 就只是不存在 —— 診斷 log 一行都沒有,只能靠使用者截圖。
+ * 現在門檻拉高之後,撞到它才真的代表「有個結構我沒想到」,
+ * 那更該看得見。和 styleprobe 的 unparsedColors() 同一個做法。
+ */
+const oversized: string[] = [];
+
+function noteOversized(tag: string, len: number, text: string): void {
+  if (oversized.length >= 8) return;
+  oversized.push(`<${tag.toLowerCase()}> ${len} 字:${text.slice(0, 40)}…`);
+}
+
+export function oversizedUnits(): string[] {
+  return [...oversized];
+}
+
+export function resetOversized(): void {
+  oversized.length = 0;
+}
 
 /**
  * 互動元素裡的**短**文字是 UI 標籤,不是內容。
@@ -870,8 +911,11 @@ function walk(el: Element, ctx: WalkCtx, pinned = false): boolean {
    * 因為後者的文字全部來自一個連結。同一張表兩種行為。
    */
   if (!split && isUiLabel(el, ctx.srOnly)) return false;
-  // 最後一道防線:段落不會有一千字
-  if (text.length > MAX_UNIT_CHARS) return false;
+  // 最後一道防線:擋還沒想到的結構(不是判斷段落 —— 見 MAX_UNIT_CHARS)
+  if (text.length > MAX_UNIT_CHARS) {
+    noteOversized(el.tagName, text.length, text);
+    return false;
+  }
   if (looksLikeTargetLang(text)) return false;
   if (ctx.seen(el)) return true; // 已建立過單元,視為已命中,不重複
   if (el.getClientRects().length === 0) return false;

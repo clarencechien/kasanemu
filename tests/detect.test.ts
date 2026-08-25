@@ -8,6 +8,8 @@ import {
   hiddenByDisclosure,
   isMeaningfulText,
   looksLikeTargetLang,
+  oversizedUnits,
+  resetOversized,
 } from '../src/content/detect.ts';
 
 /**
@@ -263,14 +265,37 @@ test('容器裡的段落正常時,單元仍然是段落而不是容器', () => {
   assert.deepEqual(ids(body), ['First para.', 'Second para.']);
 });
 
-test('超過字數上限的區塊不建立單元(容器誤判的最後防線)', () => {
-  const long = 'This sentence is a filler used to exceed the unit cap. '.repeat(30);
+test('超過字數上限的區塊不建立單元(擋還沒想到的結構,不是判斷段落)', () => {
+  const long = 'This sentence is a filler used to exceed the unit cap. '.repeat(120);
   assert.ok(long.length > MAX_UNIT_CHARS);
   const body = mount(`<p>${long}</p>`);
   assert.deepEqual(ids(body), []);
+  // 擋掉要留下痕跡 —— 上一版這條規則完全靜默
+  assert.equal(oversizedUnits().length, 1);
+  resetOversized();
   // 正常長度的段落不受影響
   const ok = mount('<p>A normal paragraph of reasonable length.</p>');
   assert.deepEqual(ids(ok), ['A normal paragraph of reasonable length.']);
+});
+
+test('1500 字的長引言是真的段落,要翻', () => {
+  /*
+   * stratechery 的引言區塊:貨真價實的 <p>,1576 字,一個子元素都沒有。
+   * 舊的 1000 字上限說「段落不會這麼長,超過就一定是容器誤判」——
+   * 那個前提是錯的,而且三條路全關著(疊翻撞 1000,hover 與選取撞 500),
+   * 使用者看到的是「又一大段沒翻,前面都好好的?」
+   *
+   * 「是不是容器」有結構性的答案(hasContainerChild);長度只是
+   * 最後一道防線,門檻該訂在真實散文絕對到不了的地方。
+   */
+  const quote =
+    'This style of operating will be different now, but ultimately we need to invest in having AI agent red teaming that enables defenders to find and remediate vulnerabilities before attackers do. '.repeat(
+      8,
+    );
+  assert.ok(quote.length > 1500 && quote.length < MAX_UNIT_CHARS);
+  const body = mount(`<blockquote><p class="wp-block-paragraph">${quote}</p></blockquote>`);
+  assert.equal(ids(body).length, 1, '整段要成為一個單元');
+  assert.equal(oversizedUnits().length, 0, '不該被記成疑似容器');
 });
 
 test('行內 code 留在句子裡(§3.4 靠佔位符保護,不是靠剝掉)', () => {

@@ -11,7 +11,9 @@ import type {
 import { setDebug, dbg } from '../shared/log';
 import { diag, setDiagScope } from '../shared/diag';
 import {
+  MAX_UNIT_CHARS,
   inExcluded,
+  oversizedUnits,
   INTERACTIVE_SELECTOR,
   explainCandidate,
   findCandidates,
@@ -1239,6 +1241,19 @@ function anchorRectOf(u: Unit): DOMRect | null {
  * 來說是可以讀的;再長就真的是一面牆,那是疊翻的守備範圍。
  */
 const ADHOC_MAX_CHARS = 500;
+
+/**
+ * **選取**的上限,和 hover 分開。
+ *
+ * hover 是被動的 —— 滑鼠掃過去就觸發,保守是對的。
+ * 選取是使用者拉了一段話出來明講「翻這個」,那和按「翻譯這一頁」同一類
+ * (§CP-2:自動的規則可以保守,使用者親手做的動作不行)。
+ * 上一版兩條共用 500,於是那段 1576 字的引言連選起來都被靜靜擋掉,
+ * log 裡兩則 `selection-skipped {"why":"too-long"}` 就是使用者在試。
+ *
+ * 貼片會很高,但那是使用者自己要的,而且比「什麼都沒發生」好。
+ */
+const SELECTION_MAX_CHARS = MAX_UNIT_CHARS;
 const ADHOC_HOPS = 6;
 /**
  * 看過但不合格的元素。mouseover 在導覽列上會反覆打到同一批元素,
@@ -1319,7 +1334,7 @@ function applySelection(): void {
   const why =
     text.length < SELECTION_MIN_CHARS
       ? 'too-short'
-      : text.length > ADHOC_MAX_CHARS
+      : text.length > SELECTION_MAX_CHARS
         ? 'too-long'
         : !isMeaningfulText(text)
           ? 'not-text'
@@ -1941,6 +1956,7 @@ function pageStats(): PageStats {
     device: device ?? undefined,
     l0Timing: l0?.timing(),
     unparsedColors: unparsedColors(),
+    oversized: oversizedUnits(),
     cacheHits: cacheHitsTotal,
     motion: {
       stability: settings.stability,
