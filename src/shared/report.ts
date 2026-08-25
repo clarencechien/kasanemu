@@ -123,6 +123,11 @@ export function buildReport(i: ReportInput): string {
         lines.push('  - **兩側對不起來:訊息掉在中間,或譯文送回來時掉了**');
       }
     }
+    const big = i.stats.oversized ?? [];
+    if (big.length > 0) {
+      lines.push(`- **太長被擋掉 ${big.length} 塊**(疑似容器誤判):`);
+      for (const b of big) lines.push(`  - ${b}`);
+    }
     const bad = i.stats.unparsedColors ?? [];
     if (bad.length > 0) lines.push(`- **顏色解析失敗 ${bad.length} 種**:${bad.join(' · ')}`);
     if (i.stats.stalled) lines.push(`- **停滯 ${Math.round(i.stats.stalledMs / 1000)} 秒:L1 一個都沒回來**`);

@@ -8,7 +8,7 @@ const BLOCK_TAGS = new Set([
 
 /** §3.1 排除清單。script/style/svg 等本來也沒有可讀文字,一併擋掉子樹。 */
 const EXCLUDE_TAGS = new Set([
-  'FORM', 'BUTTON', 'SELECT', 'TEXTAREA',
+  'BUTTON', 'SELECT', 'TEXTAREA',
   'CODE', 'PRE', 'KBD', 'SAMP', 'SCRIPT', 'STYLE', 'SVG', 'NOSCRIPT',
   'IFRAME', 'CANVAS', 'TEMPLATE', 'INPUT', 'OPTION', 'VIDEO', 'AUDIO', 'MATH',
 ]);
@@ -21,7 +21,13 @@ const EXCLUDE_TAGS = new Set([
  * `<div role="navigation">` 寫的**待遇更差**:後者滑上去看得到,
  * 前者整棵消失。同一件事該有同一個答案。
  */
-const CHROME_TAGS = new Set(['NAV', 'HEADER', 'FOOTER', 'ASIDE']);
+/*
+ * FORM 從硬排除降到這裡:報名 / 電子報表單裡的說明文字
+ * (github.blog 的「We do newsletters, too」)以前整段消失,
+ * 現在和導覽列同一級 —— 不畫疊層,滑上去翻得到。
+ * 表單控件本身(BUTTON / SELECT / INPUT / TEXTAREA)仍然硬排除。
+ */
+const CHROME_TAGS = new Set(['NAV', 'HEADER', 'FOOTER', 'ASIDE', 'FORM']);
 
 /**
  * 排除的子樹。
@@ -114,10 +120,51 @@ const CONTAINER_TAGS =
   'div,section,article,main,aside,header,footer,nav,ul,ol,dl,table,figure,form,details';
 
 /**
- * 一個翻譯單元的字數上限。段落不會這麼長,超過就一定是容器誤判 ——
- * 最後一道防線,擋掉所有還沒想到的結構。
+ * 一個翻譯單元的字數上限。
+ *
+ * 舊註解寫的是「段落不會這麼長,超過就一定是容器誤判」——
+ * **那個前提是錯的。** stratechery 這一段引言是貨真價實的
+ * `<p class="wp-block-paragraph">`,1576 個字,一個子元素都沒有:
+ *
+ *   "This style of operating will be different now, but ultimately
+ *    we need to invest in having AI agent red teaming that…"
+ *
+ * 使用者的原話:「又一大段沒翻,前面都好好的?」而且三條路全關著 ——
+ * 疊翻撞這個 1000、hover 與選取撞 `ADHOC_MAX_CHARS` 的 500
+ * (log 裡兩則 `selection-skipped {"why":"too-long"}` 就是它)。
+ *
+ * 「是不是容器」本來就有**結構性**的答案:`hasContainerChild()`。
+ * 那條可靠、有測試,而且不會誤傷散文。長度只是最後一道防線,
+ * 用來擋還沒想到的結構,不是用來判斷段落 —— 所以門檻要訂在
+ * 「真實散文絕對到不了」的地方,不是「大部分段落到不了」。
+ *
+ * 4000 字 ≈ 1000 token,單筆仍然塞得進 free 檔的 batch
+ * (takeBatch 保證第一筆一定收,見 queuelogic)。
  */
-export const MAX_UNIT_CHARS = 1000;
+export const MAX_UNIT_CHARS = 4000;
+
+/**
+ * 因為太長被擋掉的區塊。**被擋掉要留下痕跡。**
+ *
+ * 上一版這條規則是完全靜默的:那段 1576 字的引言不是失敗、不是跳過,
+ * 就只是不存在 —— 診斷 log 一行都沒有,只能靠使用者截圖。
+ * 現在門檻拉高之後,撞到它才真的代表「有個結構我沒想到」,
+ * 那更該看得見。和 styleprobe 的 unparsedColors() 同一個做法。
+ */
+const oversized: string[] = [];
+
+function noteOversized(tag: string, len: number, text: string): void {
+  if (oversized.length >= 8) return;
+  oversized.push(`<${tag.toLowerCase()}> ${len} 字:${text.slice(0, 40)}…`);
+}
+
+export function oversizedUnits(): string[] {
+  return [...oversized];
+}
+
+export function resetOversized(): void {
+  oversized.length = 0;
+}
 
 /**
  * 互動元素裡的**短**文字是 UI 標籤,不是內容。
@@ -253,6 +300,24 @@ export function isUiLabel(el: Element, skip?: ReadonlySet<Element>): boolean {
   if (el.getAttribute('role') === 'heading' && !HEADING_TAGS.has(el.tagName)) {
     if (visibleTextOf(el, skip).length <= UI_LABEL_MAX_CHARS) return true;
   }
+  /*
+   * **真正的標題標籤是內容,不是 UI 標籤。**
+   *
+   * stratechery(以及每一個 WordPress 版型)把文章標題寫成
+   * `<h2 class="entry-title"><a href="…">Autonomy and Innovation</a></h2>` ——
+   * 標題本身就是永久連結。而下面那條「文字全部來自互動子孫」的規則
+   * 看到的是「一個連結、23 個字、沒超過 24」,於是**整篇文章的標題**
+   * 被判成按鈕列,只剩滑上去才看得到譯文。使用者截圖裡內文全翻好了,
+   * 就標題那一行是英文。
+   *
+   * 頁面自己用 `<h2>` 宣告了「這是標題」;它被連結包著只代表可以點,
+   * 不改變它是內容。這條 24 字門檻是為了**自繪的** UI(Gmail 左欄)
+   * 調出來的,而那些用的是 `<div role="heading">` —— 上面那條專門收它。
+   *
+   * 應用程式外殼裡的標題(nav / header / footer / aside 底下的)
+   * 早在 `isAppChrome` 就整棵擋掉了,根本走不到這裡。
+   */
+  if (HEADING_TAGS.has(el.tagName)) return false;
   /*
    * 內容清單整份一起判定,不逐項套長度門檻。
    *
@@ -401,16 +466,28 @@ export function hasContainerChild(el: Element): boolean {
  */
 const MEDIA_TAGS = 'img,video,canvas,svg,picture,iframe';
 const MEDIA_MIN_AREA = 400;
+/*
+ * 兩邊都 ≤32px 的是圖示,不是圖。
+ *
+ * 原本只看面積(≥20×20),而 react.dev 每個標題裡的錨點連結圖示是
+ * 24×24 —— 576 平方px,過了門檻,於是**每一個 `<h2>` 都被當成圖文混排**
+ * 整段跳過。稽核裡 384 段「圖文混排」有一大半是這種行內小圖示。
+ * 圖表不會兩邊都只有 32px;蓋掉一個裝飾性圖示則毫無代價。
+ */
+const ICON_MAX_PX = 32;
+
+function isRealMedia(r: DOMRect): boolean {
+  if (r.width * r.height < MEDIA_MIN_AREA) return false;
+  return r.width > ICON_MAX_PX || r.height > ICON_MAX_PX;
+}
 
 export function hasMediaChild(el: Element, includeSelf = false): boolean {
   if (includeSelf && el.matches(MEDIA_TAGS)) {
-    const own = el.getBoundingClientRect();
-    if (own.width * own.height >= MEDIA_MIN_AREA) return true;
+    if (isRealMedia(el.getBoundingClientRect())) return true;
   }
   const kids = el.querySelectorAll(MEDIA_TAGS);
   for (let i = 0; i < kids.length && i < 12; i++) {
-    const r = kids[i]!.getBoundingClientRect();
-    if (r.width * r.height >= MEDIA_MIN_AREA) return true;
+    if (isRealMedia(kids[i]!.getBoundingClientRect())) return true;
   }
   return false;
 }
@@ -444,13 +521,9 @@ export function mediaSplitOf(el: Element): Element | null {
   const carries = (n: Node): boolean => {
     if (n.nodeType !== 1) return false;
     const kid = n as Element;
-    return (
-      kid.matches(MEDIA_TAGS) ||
-      [...kid.querySelectorAll(MEDIA_TAGS)].some((m) => {
-        const r = m.getBoundingClientRect();
-        return r.width * r.height >= MEDIA_MIN_AREA;
-      })
-    );
+    // 和 hasMediaChild 同一把尺:圖示不算圖(兩份判準會分岔,§CL)
+    if (kid.matches(MEDIA_TAGS) && isRealMedia(kid.getBoundingClientRect())) return true;
+    return [...kid.querySelectorAll(MEDIA_TAGS)].some((m) => isRealMedia(m.getBoundingClientRect()));
   };
   const at = kids.map(carries);
   const first = at.indexOf(true);
@@ -567,6 +640,17 @@ export function isMeaningfulText(text: string): boolean {
  * 判定看 computed style 的特徵,不看 class 名稱 —— 各家命名不同,行為一樣。
  */
 function isScreenReaderOnly(el: Element, cs: CSSStyleDeclaration): boolean {
+  /*
+   * `display: contents` 的元素**自己沒有盒子**,`getClientRects()` 永遠
+   * 是空的 —— 但它的子孫照常畫在畫面上。用「沒有繪製面積」判它是 sr-only
+   * 等於把整個子樹剪掉。
+   *
+   * 這不是邊角:MDN 的 `<main>`、react.dev 的版面包裝都是
+   * `display: contents`,36 站稽核裡最大的一桶(902 段「符合所有規則
+   * 卻沒翻」)就是整個 `<main>` 在這裡被判成螢幕閱讀器專用。
+   * 快照那邊(§CH)早就踩過同一個坑 —— 量測工具對這種元素一律說謊。
+   */
+  if (cs.display === 'contents') return false;
   const clip = cs.clip;
   if (clip && clip !== 'auto' && /rect\(\s*0(?:px)?[,\s]+0(?:px)?[,\s]+0(?:px)?[,\s]+0(?:px)?\s*\)/.test(clip)) {
     return true;
@@ -667,6 +751,18 @@ const TOC_HOSTS = 'nav,aside,[role="navigation"],[role="complementary"]';
 
 function isAppChrome(el: Element): boolean {
   if (!CHROME_TAGS.has(el.tagName) && !el.matches(CHROME_SELECTOR)) return false;
+  /*
+   * `<article>` 裡的 `<header>` / `<footer>` 是**文章的**頭尾,不是站台的。
+   *
+   * Wired 的文章頁把標題、副標、日期全部放在
+   * `<article><header class="ContentHeader">` 裡 —— 於是整篇文章
+   * 最重要的三行字被當成站台外殼,不畫疊層。BBC 也是同一個形狀。
+   * HTML 規格本來就是這樣定義的:sectioning content 裡的 header/footer
+   * 屬於那個 section,只有頂層的才是 banner / contentinfo。
+   */
+  if ((el.tagName === 'HEADER' || el.tagName === 'FOOTER') && el.closest('article') !== null) {
+    return false;
+  }
   if (!el.matches(TOC_HOSTS)) return true;
   return !hasContentList(el);
 }
@@ -815,8 +911,11 @@ function walk(el: Element, ctx: WalkCtx, pinned = false): boolean {
    * 因為後者的文字全部來自一個連結。同一張表兩種行為。
    */
   if (!split && isUiLabel(el, ctx.srOnly)) return false;
-  // 最後一道防線:段落不會有一千字
-  if (text.length > MAX_UNIT_CHARS) return false;
+  // 最後一道防線:擋還沒想到的結構(不是判斷段落 —— 見 MAX_UNIT_CHARS)
+  if (text.length > MAX_UNIT_CHARS) {
+    noteOversized(el.tagName, text.length, text);
+    return false;
+  }
   if (looksLikeTargetLang(text)) return false;
   if (ctx.seen(el)) return true; // 已建立過單元,視為已命中,不重複
   if (el.getClientRects().length === 0) return false;
@@ -901,6 +1000,38 @@ export function inlineRuns(el: Element): Array<{ range: Range; nodes: Node[] }> 
  * 把行內段落收成單元。**一個元素可以產生好幾個**,所以下游的
  * 「這個元素做過了沒」不能再假設一對一(見 index.ts 的 unitByEl)。
  */
+/** 把一段行內節點在「真的媒體」處切開,回傳不含媒體的文字片段與媒體矩形 */
+function splitAtMedia(nodes: Node[]): { segs: Node[][]; media: DOMRect[] } {
+  const segs: Node[][] = [];
+  const media: DOMRect[] = [];
+  let cur: Node[] = [];
+  for (const n of nodes) {
+    if (n.nodeType === 1 && hasMediaChild(n as Element, true)) {
+      if (cur.length > 0) segs.push(cur);
+      cur = [];
+      media.push((n as Element).getBoundingClientRect());
+      continue;
+    }
+    cur.push(n);
+  }
+  if (cur.length > 0) segs.push(cur);
+  return { segs, media };
+}
+
+/**
+ * 這一段文字的疊層會不會蓋到媒體。
+ *
+ * 疊層畫的是 range 的 bounding box(聯集),所以「從半行開始、
+ * 又折到下一行」的段,聯集會把中間的公式一起框進去 —— 幾何是
+ * 實測的,不用猜:相交就放棄那一段,寧可少翻半句,不蓋圖(§3.5)。
+ */
+function coversMedia(r: DOMRect, media: DOMRect[]): boolean {
+  if (r.width < 1 || r.height < 1) return false;
+  return media.some(
+    (m) => r.left < m.right - 2 && m.left < r.right - 2 && r.top < m.bottom - 2 && m.top < r.bottom - 2,
+  );
+}
+
 function captureRuns(el: Element, ctx: WalkCtx, pinned: boolean): boolean {
   /*
    * **上一輪就做過了就別再做。**
@@ -932,26 +1063,40 @@ function captureRuns(el: Element, ctx: WalkCtx, pinned: boolean): boolean {
     });
     if (owned) continue;
     /*
-     * 這一段裡還夾著大圖 —— 那是真正的行內圖片(不是自己佔一行的那種,
-     * 那種會在上面被當成分隔線切開),疊層一定會蓋到它。整段放棄。
-     * 少了這一條,`<p><img><span>說明</span></p>` 會長出一塊蓋住圖的疊層。
+     * 這一段裡夾著大圖(行內數學式、圖表)—— 疊層蓋上去就把圖蓋掉了。
+     *
+     * 舊版在這裡**整段放棄**,而那正是維基百科的日常:一段文字裡
+     * 夾三個行內公式,於是整段一個字都不翻(36 站稽核裡 374 段
+     * 「圖文混排」大多是這一種)。放棄的粒度錯了 —— 該放棄的是
+     * 媒體節點本身,不是它前後的文字。
+     *
+     * 所以照 mediaSplitOf 同一個精神,把 run 在媒體節點處切開,
+     * 前後的文字各自成段;每一段都是完整的行內內容,Range 蓋得住。
+     * `<p><img><span>說明</span></p>` 的行為不變:圖不翻,說明翻。
      */
-    if (nodes.some((n) => n.nodeType === 1 && hasMediaChild(n as Element, true))) continue;
-    const text = normalizeText(range.toString());
-    if (!isMeaningfulText(text) || text.length > MAX_UNIT_CHARS) continue;
-    if (looksLikeTargetLang(text)) continue;
-    // 整段都在互動元素裡的短文字仍然是 UI 標籤
-    if (text.length <= UI_LABEL_MAX_CHARS && range.startContainer === range.endContainer) continue;
-    if (range.getClientRects().length === 0) continue;
-    ctx.out.push({
-      el,
-      role: roleOf(el, cs),
-      src: text,
-      geometryRisk: false,
-      range,
-      ...(pinned ? { pinned: true } : {}),
-    });
-    made = true;
+    const { segs, media } = splitAtMedia(nodes);
+    for (const seg of segs) {
+      const r = document.createRange();
+      r.setStartBefore(seg[0]!);
+      r.setEndAfter(seg[seg.length - 1]!);
+      const text = normalizeText(r.toString());
+      if (!isMeaningfulText(text) || text.length > MAX_UNIT_CHARS) continue;
+      if (looksLikeTargetLang(text)) continue;
+      // 整段都在互動元素裡的短文字仍然是 UI 標籤
+      if (text.length <= UI_LABEL_MAX_CHARS && r.startContainer === r.endContainer) continue;
+      if (r.getClientRects().length === 0) continue;
+      // 段的聯集矩形蓋到同一個 run 裡的媒體 → 這一段放棄(不蓋圖是底線)
+      if (coversMedia(r.getBoundingClientRect(), media)) continue;
+      ctx.out.push({
+        el,
+        role: roleOf(el, cs),
+        src: text,
+        geometryRisk: false,
+        range: r,
+        ...(pinned ? { pinned: true } : {}),
+      });
+      made = true;
+    }
   }
   if (made) ctx.made.add(el);
   return made;
@@ -1120,6 +1265,19 @@ export function explainCandidate(el: Element): string[] {
       return [
         `祖先 <${n.tagName.toLowerCase()}> 是應用程式外殼 —— 不畫疊層,但滑上去仍然翻得到`,
       ];
+    }
+    /*
+     * sr-only 的祖先會讓整個子樹被剪掉,而上一版的 explain 沒有模擬
+     * 這一條 —— 36 站稽核裡 902 段被回報成「符合所有規則」,實際上是
+     * `display:contents` 的 <main> 被誤判 sr-only、整樹剪光。
+     * 除錯工具說謊的代價已經付過四次了(§CL)。
+     */
+    if (n !== el && isScreenReaderOnly(n, getComputedStyle(n))) {
+      return [`祖先 <${n.tagName.toLowerCase()}> 被判成 sr-only(1×1 / clip),子樹整棵跳過`];
+    }
+    // 收折的 <details>:所有量測都會說謊,只有 DOM 說實話(walk 同款規則)
+    if (n.tagName === 'DETAILS' && !n.hasAttribute('open') && el.closest('summary') === null) {
+      return ['在收折的 <details> 裡 —— 打開它就會翻'];
     }
   }
 

@@ -8,6 +8,8 @@ import {
   hiddenByDisclosure,
   isMeaningfulText,
   looksLikeTargetLang,
+  oversizedUnits,
+  resetOversized,
 } from '../src/content/detect.ts';
 
 /**
@@ -263,14 +265,37 @@ test('容器裡的段落正常時,單元仍然是段落而不是容器', () => {
   assert.deepEqual(ids(body), ['First para.', 'Second para.']);
 });
 
-test('超過字數上限的區塊不建立單元(容器誤判的最後防線)', () => {
-  const long = 'This sentence is a filler used to exceed the unit cap. '.repeat(30);
+test('超過字數上限的區塊不建立單元(擋還沒想到的結構,不是判斷段落)', () => {
+  const long = 'This sentence is a filler used to exceed the unit cap. '.repeat(120);
   assert.ok(long.length > MAX_UNIT_CHARS);
   const body = mount(`<p>${long}</p>`);
   assert.deepEqual(ids(body), []);
+  // 擋掉要留下痕跡 —— 上一版這條規則完全靜默
+  assert.equal(oversizedUnits().length, 1);
+  resetOversized();
   // 正常長度的段落不受影響
   const ok = mount('<p>A normal paragraph of reasonable length.</p>');
   assert.deepEqual(ids(ok), ['A normal paragraph of reasonable length.']);
+});
+
+test('1500 字的長引言是真的段落,要翻', () => {
+  /*
+   * stratechery 的引言區塊:貨真價實的 <p>,1576 字,一個子元素都沒有。
+   * 舊的 1000 字上限說「段落不會這麼長,超過就一定是容器誤判」——
+   * 那個前提是錯的,而且三條路全關著(疊翻撞 1000,hover 與選取撞 500),
+   * 使用者看到的是「又一大段沒翻,前面都好好的?」
+   *
+   * 「是不是容器」有結構性的答案(hasContainerChild);長度只是
+   * 最後一道防線,門檻該訂在真實散文絕對到不了的地方。
+   */
+  const quote =
+    'This style of operating will be different now, but ultimately we need to invest in having AI agent red teaming that enables defenders to find and remediate vulnerabilities before attackers do. '.repeat(
+      8,
+    );
+  assert.ok(quote.length > 1500 && quote.length < MAX_UNIT_CHARS);
+  const body = mount(`<blockquote><p class="wp-block-paragraph">${quote}</p></blockquote>`);
+  assert.equal(ids(body).length, 1, '整段要成為一個單元');
+  assert.equal(oversizedUnits().length, 0, '不該被記成疑似容器');
 });
 
 test('行內 code 留在句子裡(§3.4 靠佔位符保護,不是靠剝掉)', () => {
@@ -581,16 +606,25 @@ test('隱形的注入元素不該讓段落被當成容器,文字也不該外洩�
   ]);
 });
 
-test('圖文混排的段落不建立單元 —— 蓋下去會把圖蓋掉', () => {
+test('圖文混排:圖不翻,圖旁邊的文字翻(在媒體處切段)', () => {
+  /*
+   * 舊版整段放棄 —— 而那是維基百科的日常:一段文字裡夾三個行內公式,
+   * 於是整段一個字都不翻。放棄的粒度錯了:該放棄的是媒體節點,
+   * 不是它前後的文字。段的聯集矩形蓋到媒體時仍然放棄(probe 有反例)。
+   */
   const body = mount(`
     <p id="fig"><img id="chart" /><span>Note: cost decline percentages are rounded to the nearest 5%.</span></p>
     <p>Drone delivery is scaling rapidly in the United States this year.</p>
   `);
-  // jsdom 沒有 layout,手動給圖表一個面積
+  // jsdom 沒有 layout,手動給圖表一個面積(mount 的假 rect 在 0,0~300,20,
+  // 把圖放到不相交的位置)
   const chart = body.querySelector('#chart')!;
   chart.getBoundingClientRect = () =>
-    ({ width: 450, height: 300 }) as unknown as DOMRect;
-  assert.deepEqual(ids(body), ['Drone delivery is scaling rapidly in the United States this year.']);
+    ({ top: 100, left: 0, width: 450, height: 300, bottom: 400, right: 450 }) as unknown as DOMRect;
+  assert.deepEqual(ids(body), [
+    'Note: cost decline percentages are rounded to the nearest 5%.',
+    'Drone delivery is scaling rapidly in the United States this year.',
+  ]);
 });
 
 test('行內小圖示不算圖文混排', () => {
@@ -898,7 +932,8 @@ test('圖片夾在段落中間 —— 切成前後兩段,而不是整段放棄',
   assert.ok(ranged[1]!.startsWith('As discussed'));
 });
 
-test('真正的行內圖片仍然整段放棄 —— 一段文字裡夾著圖,矩形一定蓋到它', () => {
+test('段的聯集矩形蓋到媒體 → 那一段放棄(不蓋圖是底線)', () => {
+  // mount 的假 Range rect 在 0,0~300,20;把圖放在同一塊 → 相交 → 放棄
   const root = mount('<p><img id="i" alt="" src="c.png">Note: percentages are rounded to 5%.</p>');
   const img = root.querySelector('#i')!;
   img.getBoundingClientRect = () =>
@@ -930,4 +965,24 @@ test('掃過的元素不會每一輪重新產生 range 候選', () => {
   assert.ok(first.some((c) => c.range !== undefined), '第一輪要收到鬆散文字');
   for (const c of first) seen.add(c.el);
   assert.deepEqual(findCandidates(root, (el) => seen.has(el)), [], '第二輪不該再找到任何東西');
+});
+
+test('文章標題本身是永久連結 —— 標題標籤是內容,不是 UI 標籤', () => {
+  /*
+   * stratechery(以及每個 WordPress 版型)的寫法:
+   *   <h2 class="entry-title"><a href="…">Autonomy and Innovation</a></h2>
+   * 「文字全部來自互動子孫」那條規則看到「一個連結、23 字、沒超過 24」,
+   * 於是整篇文章的標題被判成按鈕列,只剩滑上去才看得到譯文。
+   */
+  const body = mount(
+    '<article><h2 class="entry-title"><a href="/p/">Autonomy and Innovation</a></h2>' +
+      '<p>Not every Western followed the cliche, but the shorthand was consistent.</p></article>',
+  );
+  assert.ok(ids(body).includes('Autonomy and Innovation'), '標題要成為內文單元');
+});
+
+test('自繪 UI 的 role="heading" 仍然是 UI 標籤', () => {
+  // 上一條的反面:24 字門檻是為了 Gmail 左欄那種 <div role="heading"> 調的
+  const body = mount('<div><div role="heading" aria-level="2">Labels</div><a href="#l">Starred</a></div>');
+  assert.deepEqual(ids(body), []);
 });

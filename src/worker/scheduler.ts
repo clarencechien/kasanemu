@@ -5,38 +5,22 @@ import type { Pipeline, Settings, UnitFailure, UnitRequest, UnitResult } from '.
 import { diag } from '../shared/diag';
 import { dbg, warn } from '../shared/log';
 import { callBatch } from './gemini';
-import { estimateTokens, parseBatch } from './protocol';
+import { parseBatch } from './protocol';
+import {
+  MAX_ATTEMPTS,
+  aggregateWaitMs,
+  appendNew,
+  backoffMs,
+  itemTokens,
+  remove,
+  takeBatch,
+  type QueueItem,
+} from './queuelogic';
 import * as cache from './cache';
 import { addPageTokens, checkAllowed, recordSpend } from './budget';
 import { reserve, throttleDown, throttleOverride } from './tokenBucket';
 
-interface QueueItem extends UnitRequest {
-  tabId: number;
-  pageKey: string;
-  tier: Tier;
-  attempts: number;
-  /** feature.md §2.2 花費按模式分開累計 */
-  pipeline: Pipeline;
-  /** feature.md §4.2 距視窗中心的距離,越小越先送 */
-  priority: number;
-  /** 進佇列的時間,用來湊 batch(見 AGGREGATE_MS) */
-  at: number;
-}
-
-/**
- * 升級是零星觸發的(停留滿 1.5 秒的區塊一個一個到期),照單全收的話
- * 每個段落各發一次 API 請求 —— §5.4 給 free 檔的 6 塊/batch 從來沒湊滿過,
- * 而且單筆請求更容易讓小模型回出格式不對的東西(實測 got:0 的空陣列)。
- *
- * 所以還沒湊滿 batch 上限時,讓最舊的項目等一下,湊多一點再送。
- * 代價是第一批 L1 晚 600ms —— 反正 L0 已經在畫面上了。
- */
-const AGGREGATE_MS = 600;
-
 const QUEUE_KEY = 'queue';
-const MAX_ATTEMPTS = 4; // §7.3 最多 4 次
-const BACKOFF_BASE = 2_000;
-const BACKOFF_CAP = 60_000;
 
 let draining = false;
 
@@ -47,6 +31,31 @@ async function loadQueue(): Promise<QueueItem[]> {
 
 async function saveQueue(q: QueueItem[]): Promise<void> {
   await chrome.storage.session.set({ [QUEUE_KEY]: q });
+}
+
+/**
+ * **佇列的每一次寫入都走這裡,一次一個。**
+ *
+ * enqueue(訊息)、reprioritize(捲動)、dropPage(換頁)、drain(排程)
+ * 各自「load → 改 → save」,而它們之間全是 await 邊界 —— 交錯的結果是
+ * 後寫的把先寫的蓋掉:drain 把做完的 batch 移出佇列存檔,捲動觸發的
+ * reprioritize 拿著**舊版佇列**改完優先序存回去,做完的項目就這樣復活、
+ * 再跑一遍(快取擋住了帳單,擋不住多跑的迴圈)。§CR 的 diag 互蓋
+ * 是同一個病:read-modify-write 沒有序列化。
+ *
+ * fn 收到剛讀出來的佇列,回傳新佇列;整段串在同一條 promise chain 上。
+ * 決策本身(切批、去重、退避)在 queuelogic.ts,純函式、有測試。
+ */
+let qchain: Promise<unknown> = Promise.resolve();
+
+function mutateQueue(fn: (q: QueueItem[]) => QueueItem[]): Promise<QueueItem[]> {
+  const p = qchain.then(async () => {
+    const next = fn(await loadQueue());
+    await saveQueue(next);
+    return next;
+  });
+  qchain = p.catch(() => undefined);
+  return p;
 }
 
 function post(tabId: number, msg: ToContent): void {
@@ -83,23 +92,20 @@ export async function enqueue(
   units: UnitRequest[],
   priorities: Record<string, number> = {},
 ): Promise<void> {
-  const q = await loadQueue();
-  const known = new Set(q.map((i) => `${i.tabId}:${i.pageKey}:${i.id}`));
-  for (const u of units) {
-    const k = `${tabId}:${pageKey}:${u.id}`;
-    if (known.has(k)) continue;
-    q.push({
-      ...u,
-      tabId,
-      pageKey,
-      tier,
-      pipeline,
-      attempts: 0,
-      priority: priorities[u.id] ?? 0,
-      at: Date.now(),
-    });
-  }
-  await saveQueue(q);
+  const q = await mutateQueue((prev) =>
+    appendNew(
+      prev,
+      units.map((u) => ({
+        ...u,
+        tabId,
+        pageKey,
+        tier,
+        pipeline,
+        priority: priorities[u.id] ?? 0,
+      })),
+      Date.now(),
+    ).next,
+  );
   diag('info', 'enqueued', { asked: units.length, queue: q.length, tier, pipeline });
   await ensureAlarm(q.length > 0);
   void drain();
@@ -114,16 +120,13 @@ export async function reprioritize(
   pageKey: string,
   priorities: Record<string, number>,
 ): Promise<void> {
-  const q = await loadQueue();
-  let touched = 0;
-  for (const item of q) {
-    if (item.tabId !== tabId || item.pageKey !== pageKey) continue;
-    const p = priorities[item.id];
-    if (p === undefined) continue;
-    item.priority = p;
-    touched++;
-  }
-  if (touched > 0) await saveQueue(q);
+  await mutateQueue((q) =>
+    q.map((item) => {
+      if (item.tabId !== tabId || item.pageKey !== pageKey) return item;
+      const p = priorities[item.id];
+      return p === undefined ? item : { ...item, priority: p };
+    }),
+  );
 }
 
 /**
@@ -177,13 +180,11 @@ export async function queueStatus(
 }
 
 export async function dropPage(tabId: number, pageKey: string): Promise<void> {
-  const q = await loadQueue();
-  await saveQueue(q.filter((i) => !(i.tabId === tabId && i.pageKey === pageKey)));
+  await mutateQueue((q) => q.filter((i) => !(i.tabId === tabId && i.pageKey === pageKey)));
 }
 
 export async function dropTab(tabId: number): Promise<void> {
-  const q = await loadQueue();
-  await saveQueue(q.filter((i) => i.tabId !== tabId));
+  await mutateQueue((q) => q.filter((i) => i.tabId !== tabId));
 }
 
 async function ensureAlarm(needed: boolean): Promise<void> {
@@ -196,37 +197,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/** 從佇列裡切出一個 batch:同 tab / 同 page / 同檔位,受 §5.4 的兩個上限夾 */
-function takeBatch(q: QueueItem[], maxUnits: number, maxTokens: number): QueueItem[] {
-  const head = q[0];
-  if (!head) return [];
-  // feature.md §4.2 佇列排序:距視窗中心越近越優先。
-  // 只在同一個 tab / page / 檔位 / 管線的群組內排序,群組本身照 FIFO。
-  const group = q
-    .filter(
-      (it) =>
-        it.tabId === head.tabId &&
-        it.pageKey === head.pageKey &&
-        it.tier === head.tier &&
-        it.pipeline === head.pipeline,
-    )
-    .sort((a, b) => a.priority - b.priority);
-  const batch: QueueItem[] = [];
-  let tokens = 0;
-  for (const it of group) {
-    if (batch.length >= maxUnits) break;
-    const t = estimateTokens(it.src) + 24;
-    if (batch.length > 0 && tokens + t > maxTokens) break;
-    tokens += t;
-    batch.push(it);
-  }
-  return batch;
-}
 
-function remove(q: QueueItem[], batch: QueueItem[]): QueueItem[] {
-  const ids = new Set(batch.map((b) => `${b.tabId}:${b.pageKey}:${b.id}`));
-  return q.filter((i) => !ids.has(`${i.tabId}:${i.pageKey}:${i.id}`));
-}
 
 export async function drain(): Promise<void> {
   if (draining) return;
@@ -234,7 +205,7 @@ export async function drain(): Promise<void> {
   try {
     const settings = await getSettings();
     for (let guard = 0; guard < 200; guard++) {
-      let q = await loadQueue();
+      const q = await loadQueue();
       if (q.length === 0) {
         await ensureAlarm(false);
         return;
@@ -245,16 +216,14 @@ export async function drain(): Promise<void> {
       const live = throttle ? { ...spec, rpm: throttle.rpm, tpm: throttle.tpm } : spec;
       let batch = takeBatch(q, live.batchUnits, live.batchTokens);
       if (batch.length === 0) {
-        q = remove(q, [head]);
-        await saveQueue(q);
+        await mutateQueue((cur) => remove(cur, [head]));
         continue;
       }
 
       // 還沒湊滿一批,而且最舊的也還沒等夠 → 先等,不要一個區塊發一次請求
-      const oldest = Math.min(...batch.map((b) => b.at));
-      const waited = Date.now() - oldest;
-      if (batch.length < live.batchUnits && waited < AGGREGATE_MS && batch.every((b) => b.attempts === 0)) {
-        await sleep(AGGREGATE_MS - waited);
+      const wait = aggregateWaitMs(batch, live.batchUnits, Date.now());
+      if (wait > 0) {
+        await sleep(wait);
         continue;
       }
 
@@ -270,11 +239,12 @@ export async function drain(): Promise<void> {
       if (hits.length > 0) {
         post(head.tabId, { type: 'results', pageKey: head.pageKey, results: hits });
       }
-      await saveQueue(remove(await loadQueue(), batch.filter((b) => !misses.includes(b))));
+      const done = batch.filter((b) => !misses.includes(b));
+      if (done.length > 0) await mutateQueue((cur) => remove(cur, done));
       batch = misses;
       if (batch.length === 0) continue;
 
-      const planned = batch.reduce((a, b) => a + estimateTokens(b.src) + 24, 0);
+      const planned = batch.reduce((a, b) => a + itemTokens(b), 0);
 
       // ---- §8 保險絲
       const verdict = await checkAllowed(settings, live, head.pageKey, planned);
@@ -286,7 +256,7 @@ export async function drain(): Promise<void> {
           text: verdict.text ?? '保險絲擋下請求',
         });
         await failBatch(batch, 'budget-stop');
-        await saveQueue(remove(await loadQueue(), batch));
+        await mutateQueue((cur) => remove(cur, batch));
         continue;
       }
       if (verdict.text) {
@@ -306,7 +276,7 @@ export async function drain(): Promise<void> {
             text: `${live.modelId} 今日請求數已達設定上限,請在 popup 換檔位或調整 options 配額`,
           });
           await failBatch(batch, 'rate-limit');
-          await saveQueue(remove(await loadQueue(), batch));
+          await mutateQueue((cur) => remove(cur, batch));
           continue;
         }
         dbg('bucket wait', gate);
@@ -362,7 +332,7 @@ async function runBatch(
       if (worst > MAX_ATTEMPTS) {
         warn('連續失敗達上限,永久標記失敗', { status: res.status, ids: batch.map((b) => b.id) });
         await failBatch(batch, res.status === 429 ? 'rate-limit' : 'api-error');
-        await saveQueue(remove(await loadQueue(), batch));
+        await mutateQueue((cur) => remove(cur, batch));
         return;
       }
       if (res.status === 429) {
@@ -374,10 +344,8 @@ async function runBatch(
           text: `429:已把 ${spec.tier} 的節流下調到 ${lowered.rpm} RPM / ${lowered.tpm} TPM,第 ${worst} 次重試`,
         });
       }
-      const q = await loadQueue();
-      const kept = remove(q, batch);
-      await saveQueue([...next, ...kept]);
-      await sleep(Math.min(BACKOFF_CAP, BACKOFF_BASE * 2 ** (worst - 1)));
+      await mutateQueue((cur) => [...next, ...remove(cur, batch)]);
+      await sleep(backoffMs(worst));
       return;
     }
     // 不可重試(例如 400 走完降級階梯、401 key 錯)
@@ -394,7 +362,7 @@ async function runBatch(
       text: `API ${res.status}: ${res.message.slice(0, 160)}`,
     });
     await failBatch(batch, 'api-error');
-    await saveQueue(remove(await loadQueue(), batch));
+    await mutateQueue((cur) => remove(cur, batch));
     return;
   }
 
@@ -436,8 +404,7 @@ async function runBatch(
    */
   if (parsed.stats.got === 0 && batch.every((b) => b.attempts === 0)) {
     diag('warn', 'empty-response-retry', { model: spec.modelId, units: batch.length });
-    const q = await loadQueue();
-    await saveQueue([...batch.map((b) => ({ ...b, attempts: 1 })), ...remove(q, batch)]);
+    await mutateQueue((cur) => [...batch.map((b) => ({ ...b, attempts: 1 })), ...remove(cur, batch)]);
     return;
   }
 
@@ -495,8 +462,10 @@ async function runBatch(
       });
     }
   }
-  const left = remove(await loadQueue(), batch);
-  await saveQueue(
-    retryItems.length > 0 ? [...retryItems.map((b) => ({ ...b, attempts: 1 })), ...left] : left,
-  );
+  await mutateQueue((cur) => {
+    const left = remove(cur, batch);
+    return retryItems.length > 0
+      ? [...retryItems.map((b) => ({ ...b, attempts: 1 })), ...left]
+      : left;
+  });
 }
