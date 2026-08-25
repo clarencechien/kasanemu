@@ -6,7 +6,23 @@ const DOMAIN_KEY_PREFIX = 'domain:';
 
 export async function getSettings(): Promise<Settings> {
   const got = await chrome.storage.local.get(SETTINGS_KEY);
-  return { ...DEFAULT_SETTINGS, ...(got[SETTINGS_KEY] ?? {}) } as Settings;
+  return migrate({ ...DEFAULT_SETTINGS, ...(got[SETTINGS_KEY] ?? {}) } as Settings);
+}
+
+/**
+ * 舊設定的相容(`plan-glossary.md` §9)。
+ *
+ * `noTranslateTerms` 的每一項就是「不翻」,也就是沒有 `to` 的詞 ——
+ * 搬進 `globalGlossary` 之後行為一模一樣。舊使用者不會發現有事發生,
+ * 這正是重點:**遷移不該是一件要使用者處理的事**。
+ *
+ * 只在舊欄位有東西、而新欄位還空著的時候搬,不會反覆疊加。
+ * 這裡不寫回 storage —— 讀取端一律走這個函式,寫入時自然會存到新格式。
+ */
+function migrate(s: Settings): Settings {
+  const old = s.noTranslateTerms ?? [];
+  if (old.length === 0 || (s.globalGlossary ?? []).length > 0) return s;
+  return { ...s, globalGlossary: old.map((from) => ({ from })) };
 }
 
 export async function setSettings(patch: Partial<Settings>): Promise<Settings> {

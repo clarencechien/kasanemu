@@ -3,6 +3,12 @@ import { getSettings, resolveTier } from '../shared/settings';
 import type { ToContent } from '../shared/messages';
 import type { Pipeline, Settings, UnitFailure, UnitRequest, UnitResult } from '../shared/types';
 import { diag } from '../shared/diag';
+import {
+  glossaryFingerprint,
+  promptTerms,
+  resolveGlossary,
+  type Term,
+} from '../shared/glossary';
 import { dbg, warn } from '../shared/log';
 import { callBatch } from './gemini';
 import { parseBatch } from './protocol';
@@ -56,6 +62,18 @@ function mutateQueue(fn: (q: QueueItem[]) => QueueItem[]): Promise<QueueItem[]> 
   });
   qchain = p.catch(() => undefined);
   return p;
+}
+
+/**
+ * 這一頁生效的詞表。**worker 這一側自己解析**,不從內容腳本帶過來 ——
+ * 判斷只有一份(`docs/lessons.md` §1),而 pageKey 裡就有 host。
+ */
+function glossaryFor(pageKey: string, settings: Settings): Term[] {
+  try {
+    return resolveGlossary(new URL(pageKey).hostname, settings);
+  } catch {
+    return resolveGlossary('', settings); // pageKey 壞掉時只用全域詞表
+  }
 }
 
 function post(tabId: number, msg: ToContent): void {
@@ -136,12 +154,20 @@ export async function reprioritize(
 export async function cacheProbe(
   tier: Tier,
   units: Array<{ id: string; src: string; maxChars: number }>,
+  pageKey = '',
 ): Promise<{ hits: UnitResult[] }> {
   const settings = await getSettings();
   const spec = resolveTier(tier, settings);
+  const gloss = glossaryFor(pageKey, settings);
   const hits: UnitResult[] = [];
   for (const u of units) {
-    const k = await cache.keyFor(u.src, settings.targetLang, spec.modelId, u.maxChars);
+    const k = await cache.keyFor(
+      u.src,
+      settings.targetLang,
+      spec.modelId,
+      u.maxChars,
+      glossaryFingerprint(u.src, gloss),
+    );
     const hit = await cache.get(settings.cacheMode, k);
     if (hit !== null) hits.push({ id: u.id, t: hit });
   }
@@ -230,8 +256,15 @@ export async function drain(): Promise<void> {
       // ---- §9 先吃快取,命中的不進 API
       const hits: UnitResult[] = [];
       const misses: QueueItem[] = [];
+      const gloss = glossaryFor(head.pageKey, settings);
       for (const it of batch) {
-        const k = await cache.keyFor(it.src, settings.targetLang, live.modelId, it.maxChars);
+        const k = await cache.keyFor(
+          it.src,
+          settings.targetLang,
+          live.modelId,
+          it.maxChars,
+          glossaryFingerprint(it.src, gloss),
+        );
         const hit = await cache.get(settings.cacheMode, k);
         if (hit !== null) hits.push({ id: it.id, t: hit });
         else misses.push(it);
@@ -322,7 +355,31 @@ async function runBatch(
     maxChars: b.maxChars,
     role: b.role,
   }));
-  const res = await callBatch(settings.apiKey, spec, units, settings.targetLang);
+  const gloss = glossaryFor(pageKey, settings);
+  /*
+   * 路徑 B:把詞表也寫進 prompt(`docs/plan-glossary.md` §4.2)。
+   *
+   * 只在這個檔位**實測過**遵循率的時候做(`spec.glossaryPrompt`),
+   * 使用者可以用 `glossaryPrompt: 'on' | 'off'` 覆蓋。
+   * 關掉不代表詞表失效 —— 佔位符那條路一直都在。
+   */
+  const usePrompt =
+    settings.glossaryPrompt === 'on' ||
+    (settings.glossaryPrompt !== 'off' && spec.glossaryPrompt);
+  const inPrompt = usePrompt
+    ? promptTerms(units.map((u) => u.src), gloss)
+    : { terms: [], dropped: 0 };
+  if (inPrompt.dropped > 0) {
+    diag('warn', 'glossary-truncated', { used: inPrompt.terms.length, dropped: inPrompt.dropped });
+  }
+
+  const res = await callBatch(
+    settings.apiKey,
+    spec,
+    units,
+    settings.targetLang,
+    inPrompt.terms,
+  );
 
   if (!res.ok) {
     if (res.retriable) {
@@ -386,7 +443,13 @@ async function runBatch(
     for (const r of parsed.results) {
       const src = batch.find((b) => b.id === r.id);
       if (!src) continue;
-      const k = await cache.keyFor(src.src, settings.targetLang, spec.modelId, src.maxChars);
+      const k = await cache.keyFor(
+        src.src,
+        settings.targetLang,
+        spec.modelId,
+        src.maxChars,
+        glossaryFingerprint(src.src, gloss),
+      );
       await cache.put(settings.cacheMode, k, r.t);
     }
     if (settings.cacheMode === 'persistent') await cache.evictIfNeeded(settings.persistentCacheMB);

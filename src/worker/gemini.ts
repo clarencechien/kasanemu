@@ -2,6 +2,7 @@ import type { TierSpec } from '../shared/models';
 import { warn, dbg } from '../shared/log';
 import { RESPONSE_SCHEMA, systemPrompt, userPayload } from './protocol';
 import type { UnitRequest } from '../shared/types';
+import type { Term } from '../shared/glossary';
 
 const BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -61,8 +62,14 @@ const LADDER: Variant[] = [
   { name: 'inline-system', thinking: false, schema: false, jsonMime: false, systemInstruction: false },
 ];
 
-function buildBody(v: Variant, spec: TierSpec, units: UnitRequest[], targetLang: string): unknown {
-  const sys = systemPrompt(targetLang);
+function buildBody(
+  v: Variant,
+  spec: TierSpec,
+  units: UnitRequest[],
+  targetLang: string,
+  glossary: readonly Term[],
+): unknown {
+  const sys = systemPrompt(targetLang, glossary);
   const payload = userPayload(units);
   const generationConfig: Record<string, unknown> = {
     temperature: 0.2,
@@ -115,13 +122,14 @@ export async function callBatch(
   spec: TierSpec,
   units: UnitRequest[],
   targetLang: string,
+  glossary: readonly Term[] = [],
 ): Promise<ApiOutcome> {
   let idx = variantByModel.get(spec.modelId) ?? 0;
   let last: ApiErr = { ok: false, status: 0, message: 'no attempt', retriable: false };
 
   while (idx < LADDER.length) {
     const v = LADDER[idx]!;
-    const res = await once(apiKey, spec, units, targetLang, v);
+    const res = await once(apiKey, spec, units, targetLang, v, glossary);
     if (res.ok) {
       variantByModel.set(spec.modelId, idx);
       return res;
@@ -141,6 +149,7 @@ async function once(
   units: UnitRequest[],
   targetLang: string,
   v: Variant,
+  glossary: readonly Term[],
 ): Promise<ApiOutcome> {
   const url = `${BASE}/models/${encodeURIComponent(spec.modelId)}:generateContent`;
   let res: Response;
@@ -148,7 +157,7 @@ async function once(
     res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-      body: JSON.stringify(buildBody(v, spec, units, targetLang)),
+      body: JSON.stringify(buildBody(v, spec, units, targetLang, glossary)),
     });
   } catch (e) {
     return { ok: false, status: 0, message: String(e), retriable: true };

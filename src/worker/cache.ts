@@ -43,8 +43,14 @@ function tx<T>(mode: IDBTransactionMode, fn: (store: IDBObjectStore) => IDBReque
   );
 }
 
-export async function keyFor(src: string, lang: string, modelId: string, maxChars: number): Promise<string> {
-  return cacheKey(src, lang, modelId, maxChars);
+export async function keyFor(
+  src: string,
+  lang: string,
+  modelId: string,
+  maxChars: number,
+  glossary = '',
+): Promise<string> {
+  return cacheKey(src, lang, modelId, maxChars, glossary);
 }
 
 export async function get(mode: CacheMode, k: string): Promise<string | null> {

@@ -80,13 +80,72 @@
         sourceLanguage 是宣告不是偵測,弄錯了它不會報錯,只會安靜地吐出垃圾。
         整頁都是拉丁字母時分不出英文 / 法文 / 德文,那時才用這個值。
       </p>
-      <label>不翻清單(一行一個:公司名、產品名、人名)
-        <textarea id="no-translate" rows="4" spellcheck="false"></textarea>
+    </section>
+
+    <section>
+      <h2>詞表</h2>
+      <p class="hint">
+        一行一條。<code>原文 → 譯法</code> 固定譯法;<strong>只寫原文</strong>就是「不翻」;
+        結尾加 <code>!</code> 是大小寫敏感(縮寫用);<code>#</code> 開頭是註解。
+        <br />
+        詞表的做法是<strong>送出前換成私用區佔位符、翻完再換成你指定的說法</strong> ——
+        模型從頭到尾沒看到那個詞,所以<strong>每個檔位都有效,連 L0 都有效</strong>。
+        代價是周邊語法不會跟著調整:<strong>請登記完整的名詞片語</strong>
+        (寫 <code>attention mechanism</code>,不要只寫 <code>attention</code>)。
+        <br />
+        行內 <code>&lt;code&gt;</code>、<code>kbd</code>、<code>samp</code>、
+        <code>translate="no"</code> 自動納入保護,不必列在這裡。
+      </p>
+
+      <label>全域詞表(所有網站都生效)
+        <textarea id="global-glossary" rows="4" spellcheck="false"
+          placeholder="Kasanemu&#10;attention mechanism → 注意力機制"></textarea>
+      </label>
+
+      <label>具名詞表(<code>=== 名字</code> 起一份新的)
+        <textarea id="glossaries" rows="10" spellcheck="false"
+          placeholder="=== 技術&#10;embedding → 嵌入向量&#10;service mesh → 服務網格&#10;&#10;=== 財經&#10;position → 部位"></textarea>
+      </label>
+
+      <label>綁定(一行一條:<code>網域 → 詞表名, 詞表名</code>)
+        <textarea id="glossary-binding" rows="4" spellcheck="false"
+          placeholder="*.qiita.com → 技術&#10;zenn.dev → 技術&#10;*.bloomberg.com → 財經"></textarea>
       </label>
       <p class="hint">
-        L0 沒有 system prompt 可以交代,所以這些片段會在送出前換成私用區佔位符,
-        翻完再還原;佔位符遺失的區塊一律算失敗,不會交出少了程式碼的譯文。
-        行內 <code>&lt;code&gt;</code>、<code>kbd</code>、<code>samp</code> 自動納入保護,不必列在這裡。
+        網域寫 <code>example.com</code> 是完全相同,<code>*.example.com</code> 連主網域一起算,
+        <code>*</code> 是全部。一個網域可以掛多份,結果是聯集。
+        <br />
+        <strong>為什麼不是每個網域各一份清單:</strong>
+        <code>kubernetes.io</code>、<code>qiita.com</code>、<code>zenn.dev</code>
+        要保護的是同一批術語。逐一設定等於同一份清單抄很多遍,而且新網域永遠是空的。
+      </p>
+
+      <label>把詞表也寫進 prompt
+        <select data-k="glossaryPrompt">
+          <option value="auto">依檔位自動(建議)</option>
+          <option value="on">一律開</option>
+          <option value="off">一律關</option>
+        </select>
+      </label>
+      <p class="hint">
+        額外請模型在句子裡自己安放詞表說法,語法比佔位符通順。
+        <strong>關掉不代表詞表失效</strong> —— 詞表一律以佔位符生效,
+        這個開關只決定要不要「額外」請模型配合。
+        實測(<code>scripts/probe-glossary.mjs</code>)三個檔位的遵循率都是 100%、
+        對 id 紀律零影響,所以自動模式三檔全開;換模型之後要重跑那支腳本再決定。
+      </p>
+
+      <div class="row">
+        <button id="export-glossary">匯出詞表</button>
+        <button id="import-glossary">匯入詞表</button>
+      </div>
+      <input type="file" id="glossary-file" accept="application/json,.json" hidden />
+      <div id="glossary-note" class="note"></div>
+      <p class="hint">
+        詞表是手工整理出來的東西 —— 快取弄丟了再花一次錢就回得來,
+        <strong>詞表弄丟了只能重打</strong>,所以它有自己的匯出匯入(快取那組不含詞表)。
+        匯入是<strong>同名的以檔案為準,本機獨有的保留</strong>:
+        還原備份時你要的是檔案裡的版本,而不是「只補不覆蓋」。
       </p>
     </section>
 

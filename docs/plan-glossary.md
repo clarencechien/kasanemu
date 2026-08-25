@@ -1,6 +1,8 @@
 # 詞表(glossary)規格 v0.1
 
-> 狀態:**規格,未實作。** 動手前先跑 §7 的實驗。
+> 狀態:**已實作**(build 68)。
+> §7 的實驗結論:三個可用檔位的詞表遵循率都是 100%、id 紀律零影響;
+> `gemma-4-26b-a4b-it` 跑不了這個協定,不要放進 TIERS。
 > 相關:`docs/lessons.md` §15、`feature.md` §3.4、PRD §6.4。
 
 ## 1. 現況與問題
@@ -71,9 +73,10 @@
 
 | | 路徑 A 佔位符 | 路徑 B prompt |
 | --- | --- | --- |
-| 26b / 31b | ✅ | ❓ 要實測(§7) |
-| flash-lite | ✅ | 大概可以 |
-| flash | ✅ | 可以 |
+| 31b (free) | ✅ | ✅ 實測 100%(§7) |
+| flash-lite | ✅ | ✅ 實測 100% |
+| flash | ✅ | ✅ 實測 100% |
+| 26b | — | — 連基本協定都跑不了(§7.1) |
 | L0 Translator API | ✅ | ✗ 沒有 prompt |
 | 語法通順 | ✗ 名詞片語要自己登記完整 | ✅ |
 | id 紀律的風險 | 無 | 有(佔 prompt、稀釋規則) |
@@ -183,7 +186,7 @@ function glossaryPromptEnabled(mode, spec: TierSpec): boolean {
 | --- | --- | --- |
 | quality | gemini-3.5-flash | `true` |
 | balanced | gemini-3.5-flash-lite | `true` |
-| free | gemma-4-31b-it | **`false`,除非 §7 的實驗過了** |
+| free | gemma-4-31b-it | `true`(§7 實驗:遵循 100%、id 紀律零影響) |
 
 設定頁三選一:`依檔位自動(建議)` / `一律開` / `一律關`,
 旁邊寫明白:「關掉不代表詞表失效 —— 詞表一律以佔位符生效,
@@ -202,25 +205,123 @@ hash 取**解析後**的 `Term[]`(排序後 JSON)的 `hash.ts` 短雜湊。
 只算**這一筆真的命中的**詞,不是整份詞表 —— 否則加一個無關的詞
 會讓整站的快取失效。
 
-## 7. 動手前先跑的實驗(§lessons「先跑這個實驗」)
+## 7. 實驗結果(2026-08-25,`scripts/probe-glossary.mjs`)
 
-`scripts/probe-gemma.mjs` 加一組 `--glossary` 模式,回答:
+**跑完了。結論:所有可用的檔位詞表遵循率都是 100%,而且 id 紀律零影響。**
 
-> gemma-4-31b-it / gemma-3-26b-it 塞了詞表之後:
-> 1. **遵循率**:該用詞表說法的地方,有幾成真的用了?
-> 2. **副作用**:id 紀律的通過率有沒有下降?(這是關鍵 ——
->    寧可沒有詞表,也不能讓 echo 對位變差)
-> 3. **詞表洩漏**:模型會不會把 `→` 那幾行當成要翻譯的內容輸出?
+每組 2–3 次 × 12 筆(每筆刻意含一個「模型自己會另譯」的詞表詞)× 9 條詞表,
+評分用 **production 的 `parseBatch`**(esbuild bundle 進來,不自己寫一份)。
 
-```bash
-GEMINI_API_KEY=... node scripts/probe-gemma.mjs --glossary --runs=3
-GEMINI_API_KEY=... node scripts/probe-gemma.mjs --glossary --model=gemma-3-26b-it
-GEMINI_API_KEY=... node scripts/probe-gemma.mjs --glossary --model=gemini-3.5-flash-lite
+| 模型 | 延遲中位 | 輸出 | id 紀律(採用) | 帶詞表後 | **詞表遵循** |
+| --- | --- | --- | --- | --- | --- |
+| `gemma-4-26b-a4b-it` | 1.0s | **回 `[]`** | **0%** | — | — |
+| `gemma-4-31b-it` (free) | 9.4s | 32 tok/s | 100% | ±0 | **100%** |
+| `gemini-3.5-flash-lite` (balanced) | 2.6s | ~200 tok/s | 100% | ±0 | **100%** |
+| `gemini-3.5-flash` (quality) | 2.3s | ~133 tok/s | 100% | ±0 | **100%** |
+
+品質訊號全部乾淨:超出 maxChars 0、沒翻 0、簡體 0、詞表洩漏 0、thoughts 0。
+
+### 7.1 26b 不能用(和詞表無關)
+
+`gemma-4-26b-a4b-it` 是 MoE(4B active),快,但**跑不了這個協定**:
+
+- 給 `systemInstruction` → 它**完全忽略**,只看到 JSON payload、
+  回一個 markdown 圍籬包著的 `[]`。3/3 次都是。
+- 改成把 system 併進 user → 有輸出了,但**不遵守輸出契約**:
+  `echo` 塞整句原文、`t` 塞 `"body"`(role 名)。
+
+而 production 的降級階梯**只在收到 400 時往下走**,回 `[]` 不是 400 ——
+所以 26b 會卡在第一階,靠 §AR 的「空陣列重送一次」也救不回來。
+**不要把 26b 放進 TIERS。**
+
+### 7.2 31b 慢,但慢得可以接受
+
+12 筆 9.4 秒(32 tok/s),flash-lite 是 2.6 秒(~200 tok/s)—— **快 3.6 倍**。
+TPM 一樣不代表延遲一樣:31b 是 dense 31B,flash-lite 是託管的推論堆疊。
+
+free 檔本來就是「零帳單、慢一點」的選擇,9 秒對 batch=6 的實際用量
+(頁面上是背景升級,L0 已經在畫面上)可以接受。**不必為了速度換模型。**
+
+### 7.3 譯文品質(眼睛看的那一半)
+
+三個模型的譯文都可用,差別在語感不在正確性:
+
+```
+The attention mechanism scales quadratically with sequence length.
+  31b          注意力機制隨序列長度呈平方級增長。
+  flash-lite   注意力機制的規模隨序列長度呈二次方成長。
+  flash        注意力機制隨序列長度呈二次方縮放。   ← "scales" 直譯成「縮放」,較差
+
+Embedding lookup dominates the memory budget on small devices.
+  31b          在小型裝置上,嵌入向量查詢佔據主導。      ← 漏掉「記憶體預算」
+  flash-lite   嵌入向量查詢佔用了小型裝置的大部分記憶體。
+  flash        嵌入向量查表佔據了小型裝置的主要記憶體預算。  ← 最完整
 ```
 
-**通過條件**:遵循率 ≥ 80%,而且 id 紀律通過率**與不帶詞表時相同**。
-沒過就把該檔的 `glossaryPrompt` 留在 `false` —— 使用者仍然有路徑 A,
-只是名詞片語要自己登記完整。
+31b 偏簡潔(有時漏訊息),flash 偏完整。**都不是「不能用」的等級。**
+
+### 7.4 對規格的影響
+
+- §5 的表格改成:**三檔的 `glossaryPrompt` 預設全部 `true`**。
+  原本寫「free 檔留 false,除非實驗過關」—— 實驗過了。
+- 開關仍然要留(`auto` / `on` / `off`),理由不變:詞表以佔位符為主,
+  prompt 是加分項,而且未來換模型時這個結論要能重驗。
+- 詞表 9 條 / ~120 token 對 free 檔的 `batchTokens: 2000` 是 6%,
+  §4.2 的 30 條 / 600 字上限維持。
+
+### 7.5 佔位符會不會被模型吃掉(路徑 A 的核心假設)
+
+路徑 A 整條路押在「模型會原樣搬運 PUA 字元」上,而那件事之前沒有驗過。
+實測三個模型 × 3 筆(含一筆兩個佔位符):
+
+```
+gemma-4-31b-it          The ⟦0⟧ 機制隨序列長度呈二次方增長。          ✓
+                        在 ⟦1⟧ 之前執行 ⟦0⟧ 以重建索引。             ✓ 順序正確地換了
+gemini-3.5-flash-lite   ⟦0⟧ 查詢佔用了大部分的記憶體預算。            ✓
+gemini-3.5-flash        在執行 ⟦1⟧ 之前先執行 ⟦0⟧ 以重建索引。        ✓
+```
+
+**9/9 全部存活**,而且模型會依中文語序**重排**佔位符 —— 那正是路徑 A
+需要它做的事(它不必懂那個詞,只要別弄丟)。
+
+同一批也照到了 §2 寫的代價:`The ⟦0⟧ 機制` —— 只登記了 `attention`,
+於是 `mechanism` 仍然被翻了一次,還原後變成「注意力機制 機制」。
+**登記完整的名詞片語**這條提示要留在設定頁上。
+
+flash-lite 有一筆把兩個佔位符擠在一起(`在 之前執行 ⟦0⟧ ⟦1⟧`),
+語意還在、佔位符沒少,但句子有點歪 —— 這是路徑 A 的已知代價,
+路徑 B 沒有這個問題。
+
+### 7.6 重跑
+
+```bash
+GEMINI_API_KEY=... node scripts/probe-glossary.mjs --runs=3
+GEMINI_API_KEY=... node scripts/probe-glossary.mjs --models=gemini-3.5-flash
+```
+
+**換模型、改 prompt、改詞表格式之後都要重跑。** 通過條件:
+詞表遵循 ≥ 80%,而且 id 紀律與不帶詞表時相同。
+
+## 7-bis. 這支腳本自己踩到的坑(留給下次)
+
+**三個坑,全部是 `docs/lessons.md` §1「兩份實作必然分岔」的變體。**
+記在這裡是因為它們讓我一度得出三個**完全錯誤的結論**:
+
+| 我以為 | 實際 | 原因 |
+| --- | --- | --- |
+| 「26b 要 87 秒、回不出東西」 | 加了 `thinkingLevel:'minimal'` 是 1 秒 | probe 對 gemma 跳過 `thinkingConfig`,理由是 PRD 開放問題 3 的**問句**,而我把問句當成了答案 |
+| 「31b 的 echo 只有 33%」 | production 的判準是 **100%** | probe 自己寫了嚴格的 echo 比對,丟掉了 §M 花一整輪調出來的 `normalizeEcho` |
+| 「31b/flash-lite 的繁體有簡體字」 | 0 個 | 我把「执行」整個詞塞進字元類,`行` 這個共用字被一起收進來 |
+
+三個教訓:
+
+1. **量測腳本要跑 production 的那一份程式。** 現在 `probe-glossary.mjs`
+   用 esbuild bundle `src/worker/protocol.ts` 進來,直接呼叫 `parseBatch` ——
+   `probe-detect.mjs` 早就是這個做法(§CH-2),我沒有照抄。
+2. **實驗的設定要和 production 的第一階完全一樣。** 不一樣的話量到的是
+   另一個系統的數字,而那個數字看起來一樣可信。
+3. **假警報比漏報更糟。** 「簡體字」那一條會讓「31b 品質有問題」變成
+   一個有證據的錯誤結論,而證據是我自己造的。
 
 ## 8. UI
 
@@ -258,7 +359,7 @@ GEMINI_API_KEY=... node scripts/probe-gemma.mjs --glossary --model=gemini-3.5-fl
   regex 會讓「為什麼這個詞被改了」變成無法回答的問題。
 - **不在 L0 走路徑 B**（它沒有 prompt)。
 
-## 11. 實作順序
+## 11. 實作順序(已完成)
 
 1. §7 的實驗 —— **先跑,結果決定 free 檔的預設。**
 2. 資料模型 + `resolveGlossary()`(純函式,測試先寫)。

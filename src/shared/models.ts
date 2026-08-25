@@ -22,6 +22,13 @@ export interface TierSpec {
   tpm: number;
   rpd: number;
   maxOutputTokens: number;
+  /**
+   * 詞表可以寫進 system prompt 嗎(`docs/plan-glossary.md` §5 路徑 B)。
+   * 這是**實測**出來的能力旗標,不是猜的 —— `scripts/probe-glossary.mjs`
+   * 量到三檔的遵循率都是 100%、id 紀律零影響(§7)。
+   * 換模型之後要重跑那支腳本再決定。
+   */
+  glossaryPrompt: boolean;
   note: string;
 }
 
@@ -38,6 +45,7 @@ export const TIERS: Record<Tier, TierSpec> = {
     tpm: 200_000,
     rpd: 5_000,
     maxOutputTokens: 8192,
+    glossaryPrompt: true,
     note: '要讀進去的長文、術語密集的技術文件',
   },
   balanced: {
@@ -52,6 +60,7 @@ export const TIERS: Record<Tier, TierSpec> = {
     tpm: 200_000,
     rpd: 10_000,
     maxOutputTokens: 8192,
+    glossaryPrompt: true,
     note: '日常瀏覽預設',
   },
   free: {
@@ -66,6 +75,8 @@ export const TIERS: Record<Tier, TierSpec> = {
     tpm: 12_000,
     rpd: 1_000,
     maxOutputTokens: 4096,
+    // 實測 100% 遵循、id 紀律 ±0(§7);26b 連基本協定都跑不了,別放進來
+    glossaryPrompt: true,
     note: '零帳單模式;受免費層 TPM 夾擊',
   },
 };
