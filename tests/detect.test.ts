@@ -941,3 +941,23 @@ test('掃過的元素不會每一輪重新產生 range 候選', () => {
   for (const c of first) seen.add(c.el);
   assert.deepEqual(findCandidates(root, (el) => seen.has(el)), [], '第二輪不該再找到任何東西');
 });
+
+test('文章標題本身是永久連結 —— 標題標籤是內容,不是 UI 標籤', () => {
+  /*
+   * stratechery(以及每個 WordPress 版型)的寫法:
+   *   <h2 class="entry-title"><a href="…">Autonomy and Innovation</a></h2>
+   * 「文字全部來自互動子孫」那條規則看到「一個連結、23 字、沒超過 24」,
+   * 於是整篇文章的標題被判成按鈕列,只剩滑上去才看得到譯文。
+   */
+  const body = mount(
+    '<article><h2 class="entry-title"><a href="/p/">Autonomy and Innovation</a></h2>' +
+      '<p>Not every Western followed the cliche, but the shorthand was consistent.</p></article>',
+  );
+  assert.ok(ids(body).includes('Autonomy and Innovation'), '標題要成為內文單元');
+});
+
+test('自繪 UI 的 role="heading" 仍然是 UI 標籤', () => {
+  // 上一條的反面:24 字門檻是為了 Gmail 左欄那種 <div role="heading"> 調的
+  const body = mount('<div><div role="heading" aria-level="2">Labels</div><a href="#l">Starred</a></div>');
+  assert.deepEqual(ids(body), []);
+});

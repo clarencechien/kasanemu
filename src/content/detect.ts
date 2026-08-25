@@ -260,6 +260,24 @@ export function isUiLabel(el: Element, skip?: ReadonlySet<Element>): boolean {
     if (visibleTextOf(el, skip).length <= UI_LABEL_MAX_CHARS) return true;
   }
   /*
+   * **真正的標題標籤是內容,不是 UI 標籤。**
+   *
+   * stratechery(以及每一個 WordPress 版型)把文章標題寫成
+   * `<h2 class="entry-title"><a href="…">Autonomy and Innovation</a></h2>` ——
+   * 標題本身就是永久連結。而下面那條「文字全部來自互動子孫」的規則
+   * 看到的是「一個連結、23 個字、沒超過 24」,於是**整篇文章的標題**
+   * 被判成按鈕列,只剩滑上去才看得到譯文。使用者截圖裡內文全翻好了,
+   * 就標題那一行是英文。
+   *
+   * 頁面自己用 `<h2>` 宣告了「這是標題」;它被連結包著只代表可以點,
+   * 不改變它是內容。這條 24 字門檻是為了**自繪的** UI(Gmail 左欄)
+   * 調出來的,而那些用的是 `<div role="heading">` —— 上面那條專門收它。
+   *
+   * 應用程式外殼裡的標題(nav / header / footer / aside 底下的)
+   * 早在 `isAppChrome` 就整棵擋掉了,根本走不到這裡。
+   */
+  if (HEADING_TAGS.has(el.tagName)) return false;
+  /*
    * 內容清單整份一起判定,不逐項套長度門檻。
    *
    * 傳 el 本身也成立:`<li>` 的 closest('li') 就是它自己,所以

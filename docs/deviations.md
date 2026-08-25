@@ -2916,3 +2916,41 @@ queue 修了七八次(missing-id 補送、空回應重送、看門狗、對帳),
 湊批等待(`aggregateWaitMs`,重試的不等)—— 全部抽出來,
 一行 chrome API 都沒有,11 條測試把每一條修過的規則釘住。
 scheduler.ts 只剩下 IO 與流程。
+
+## CZ. 文章標題本身是永久連結
+
+使用者:「這個沒翻到」——
+
+```html
+<h2 class="entry-title"><a href="/2026/autonomy-and-innovation/">Autonomy and Innovation</a></h2>
+```
+
+截圖裡整篇內文都翻好了,就標題那一行是英文。
+
+`isUiLabel()` 最後一條規則是「文字**全部**來自互動子孫 → 那是按鈕列」。
+它看到的是「一個連結、23 個字、沒超過 24 字門檻」,於是**整篇文章的
+標題**被判成 UI 標籤,降級成滑上去才看得到的貼片
+(log 裡那則 `adhoc-label {"chars":23,"tag":"H2"}` 就是它)。
+
+這是 stratechery 的寫法,也是**每一個 WordPress 版型**的寫法:
+標題本身就是永久連結。
+
+頁面自己用 `<h2>` 宣告了「這是標題」;被連結包著只代表可以點,
+不改變它是內容。那條 24 字門檻是為了**自繪的** UI 調出來的
+(Gmail 左欄的 Mail / Chat / Labels),而那些用的是
+`<div role="heading">` —— 上面那條規則專門收它,兩者不衝突。
+
+所以:**真正的標題標籤(h1–h6)一律不是 UI 標籤。**
+應用程式外殼裡的標題(nav / header / footer / aside 底下的)早在
+`isAppChrome` 就整棵擋掉了,根本走不到這一條。
+
+fixture 兩個方向都放:永久連結標題要成為 H2 單元,
+`<div role="heading">Labels</div>` 照舊不畫疊層。把規則拿掉,
+probe 立刻報「永久連結標題:整行沒翻(被判成 UI 標籤)」。
+
+stratechery 這一頁也收進 `scripts/sites.txt` 的回歸集。修完之後
+那頁剩下的 31 段全部驗過,沒有一段是規則錯:頁尾的文章卡(外殼,
+hover 可及)、分享 widget(`.robots-nocontent`,設計上排除)、
+導覽與抬頭。**唯一真正的缺口是一段 1576 字的段落超過
+`MAX_UNIT_CHARS = 1000`** —— 那是既有的設計上限(L1 payload 與
+疊層幾何),不在這一輪動它,但它現在是靜默的,值得單獨處理。

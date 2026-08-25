@@ -146,6 +146,15 @@ for (const frag of ['ClickHouse SQL query', 'Elasticsearch ESQL query']) {
 noBlock('Download this file', 'aria-hidden 且看不見的提示框');
 needBlock('Download the dataset', 'aria-hidden 提示框的外層段落');
 
+// 文章標題本身是連結 —— 標題標籤是內容,不是 UI 標籤
+{
+  const t = got.blocks.find((b) => b.src === 'Autonomy and Innovation');
+  if (!t) problems.push('永久連結標題:整行沒翻(被判成 UI 標籤)');
+  else if (t.tag !== 'H2') problems.push(`永久連結標題:單元落在 ${t.tag},應該是 H2`);
+}
+// 反面:自繪 UI 的 role="heading" 仍然是 UI 標籤
+noBlock('Labels', '自繪 UI 的區塊標題');
+
 // display:contents 的包裝沒有盒子,但子孫是活生生的內容
 needBlock('Understanding the reduce method', 'display:contents 底下的標題');
 needBlock('The reduce method executes', 'display:contents 底下的段落');

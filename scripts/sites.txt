@@ -2,6 +2,7 @@
 # 選「文章頁」而不是首頁:偵測的難點在內文版型,不在入口頁。
 
 ## 美國:新聞與評論
+https://stratechery.com/2026/autonomy-and-innovation/
 https://www.bbc.com/news/articles/c0k3700zljjo
 https://edition.cnn.com/2025/01/20/tech/openai-stargate-project
 https://www.theverge.com/2024/1/24/24049343/apple-vision-pro-review
