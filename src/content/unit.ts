@@ -27,6 +27,11 @@ export interface Unit {
    * (detect.ts 的 mediaSplitOf)。
    */
   mediaSplit?: Element;
+  /**
+   * 來源在 sticky / fixed 的子樹裡:它的 document 座標會隨捲動改變,
+   * 而疊層在 document 座標 —— 捲動期間先藏起來,停下來再量一次。
+   */
+  pinned?: boolean;
   /** §4.6 標註樣式 (背景取色失敗或使用者指定) */
   annotation: boolean;
   /** §4.4 單行元素:不加入字級分組,允許橫向溢出 (D15) */

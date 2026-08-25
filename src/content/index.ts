@@ -194,6 +194,10 @@ let flushTimer = 0;
 let enqueueTimer = 0;
 let dwellTimer = 0;
 let reprioTimer = 0;
+/** 捲動停止後把 pinned 疊層放回來的計時器 */
+let pinnedTimer = 0;
+/** 目前有幾個 pinned 單元(0 就完全不必理會捲動) */
+let pinnedCount = 0;
 let motionTimer = 0;
 let scrollRaf = 0;
 let settleTimer = 0;
@@ -329,6 +333,7 @@ function scan(): void {
       style,
       geometryRisk: c.geometryRisk,
       ...(c.mediaSplit ? { mediaSplit: c.mediaSplit } : {}),
+      ...(c.pinned ? { pinned: true } : {}),
       /*
        * §4.1 原本是「取不到不透明實色 → 降級為標註樣式」。
        * 改成只有使用者明確要求時才用標註樣式 —— 背景取不到的情況現在由
@@ -576,8 +581,15 @@ function flush(): void {
      */
     layer.setCovered(u, !isRendered(u.el) || u.rect.width < 1 || u.rect.height < 1);
     // 還在動就一直藏著(座標每個 frame 都在變);靜下來才放出來
-    layer.setStale(u, !settled());
+    /*
+     * 釘住的來源(sticky / fixed)在捲動期間 document 座標一直在動,
+     * 而疊層在 document 座標 —— 每一幀追著跑會比合成器慢一格而抖動
+     * (build 14 的教訓),所以走和內層捲動同一條路:先藏起來,
+     * 停下來再一次量、一次顯示。只藏這幾個,一般段落照常留在畫面上。
+     */
+    layer.setStale(u, !settled() || (u.pinned === true && !scrollIdle()));
   }
+  pinnedCount = [...units].filter((u) => u.pinned === true).length;
   const hidden = [...units].filter((u) => u.box && !isRendered(u.el)).length;
   if (hidden !== lastHiddenCount) {
     lastHiddenCount = hidden;
@@ -2280,6 +2292,14 @@ function checkSettled(): void {
   flushNow();
 }
 
+/**
+ * 頁面捲動停了嗎?只有 pinned 單元在意這件事 ——
+ * 一般段落在 document 座標裡不會因為捲動而改變位置。
+ */
+function scrollIdle(): boolean {
+  return performance.now() - lastScrollAt >= MOTION_SETTLE_MS;
+}
+
 function noteMotion(): void {
   lastMotionAt = performance.now();
   if (settleTick === 0) settleTick = window.setTimeout(checkSettled, MOTION_SETTLE_MS);
@@ -2318,6 +2338,21 @@ function onScroll(e: Event): void {
    */
   if (chipUnit || layer?.chipsVisible()) closeChip(true);
   if (!scrollRaf) scrollRaf = requestAnimationFrame(scrollSync);
+  /*
+   * pinned 單元靠 flush 才會重新量、重新顯示,而 flush 不會自己因為
+   * 「捲動停了」被排程。沒有這個計時器,右側浮動目次會在第一次捲動後
+   * 永遠藏著 —— 藏起來容易,記得放回來才是重點。
+   */
+  if (pinnedCount > 0 && !pinnedTimer) {
+    pinnedTimer = window.setTimeout(function tick(): void {
+      if (!scrollIdle()) {
+        pinnedTimer = window.setTimeout(tick, MOTION_SETTLE_MS);
+        return;
+      }
+      pinnedTimer = 0;
+      scheduleFlush(true);
+    }, MOTION_SETTLE_MS);
+  }
   if (reprioTimer) return;
   reprioTimer = window.setTimeout(() => {
     reprioTimer = 0;
@@ -2341,6 +2376,9 @@ function stop(): void {
   io = ro = mo = null;
   clearInterval(dwellTimer);
   dwellTimer = 0;
+  clearTimeout(pinnedTimer);
+  pinnedTimer = 0;
+  pinnedCount = 0;
   document.removeEventListener('mouseover', onMouseOver, true);
   document.removeEventListener('mouseleave', onDocLeave);
   document.removeEventListener('focusin', onFocusIn, true);

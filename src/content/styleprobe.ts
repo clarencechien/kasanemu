@@ -285,8 +285,47 @@ export function annotFg(textColor: string): string {
   return lightText(textColor) ? '#F0A868' : '#993C1D';
 }
 
+/** 這個節點自己有沒有非空白的文字子節點 */
+function hasDirectText(el: Element): boolean {
+  for (const node of Array.from(el.childNodes)) {
+    if (node.nodeType === 3 && (node.nodeValue ?? '').trim().length > 0) return true;
+  }
+  return false;
+}
+
+/**
+ * 真正把字畫出來的那個元素。
+ *
+ * `<li><a>Introduction</a></li>` 的墨水顏色是 `<a>` 的(目次是黃字),
+ * 但單元建在 `<li>` 上 —— 照 `<li>` 的 computed color 畫就變成白字。
+ * 同一份目次裡,包著子清單那一項的單元剛好落在 `<a>` 上(見
+ * detect.ts 的 captureInlineText),於是**一份目次裡兩種顏色**,
+ * 使用者的原話是「有些有黃字 有些有白字 不是相同 class 嗎」。
+ *
+ * class 一樣,我們問的元素不一樣。文字整段裝在單一子元素裡的時候,
+ * 就往下問到那一層為止 —— 有直接文字節點就停(段落裡夾一個連結時,
+ * 主色仍然是段落的)。
+ *
+ * **只取顏色。** padding / border / 圓角要留給單元自己那個盒子,
+ * 混用會讓譯文相對原文位移(`<a class="block py-1">` 有上下內距,
+ * 它的 `<li>` 沒有)。
+ */
+function inkSource(el: Element): Element {
+  let node = el;
+  // 四層夠了:再深就不是「整段裝在一個元素裡」,是我們認錯了
+  for (let i = 0; i < 4; i++) {
+    if (hasDirectText(node)) break;
+    const kids = node.children;
+    if (kids.length !== 1) break;
+    node = kids[0]!;
+  }
+  return node;
+}
+
 export function probeStyle(el: Element, weightOffset: number): ProbedStyle {
   const cs = getComputedStyle(el);
+  const ink = inkSource(el);
+  const color = ink === el ? cs.color : getComputedStyle(ink).color;
   const fontSizePx = px(cs.fontSize) || 16;
   // line-height 'normal' 沒有 px 值可繼承;CJK 需要比拉丁的 ~1.2 稍鬆
   const lineHeightPx = cs.lineHeight === 'normal' ? fontSizePx * 1.28 : px(cs.lineHeight) || fontSizePx * 1.28;
@@ -299,7 +338,7 @@ export function probeStyle(el: Element, weightOffset: number): ProbedStyle {
     targetWeight: targetWeight(sourceWeight, fontSizePx, weightOffset),
     isSerif: isSerifStack(cs.fontFamily),
     sourceStack: cs.fontFamily,
-    color: cs.color,
+    color,
     textAlign: cs.textAlign,
     direction: cs.direction,
     fontStyle: cs.fontStyle,
@@ -307,7 +346,7 @@ export function probeStyle(el: Element, weightOffset: number): ProbedStyle {
     border: [px(cs.borderTopWidth), px(cs.borderRightWidth), px(cs.borderBottomWidth), px(cs.borderLeftWidth)],
     borderRadius: cs.borderRadius,
     // 取不到就依文字亮度挑一個對比色,不要固定用淺色底(見 backgroundForText)
-    background: bg.color ?? backgroundForText(cs.color),
+    background: bg.color ?? backgroundForText(color),
     backgroundRisk: bg.risk,
   };
 }

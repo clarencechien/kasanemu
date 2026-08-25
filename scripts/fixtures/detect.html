@@ -27,12 +27,34 @@
   <p id="withinlineimg">Latency dropped
     <img class="inline-img" alt="badge" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==">
     by a factor of five in the tests we ran.</p>
+  <!-- 每個連結都短,但項目本身是一整段:整份還是內容清單 -->
+  <ul id="querylist">
+    <li><p><strong>Query 1</strong>: a full data scan aggregating the whole data set.</p>
+      <ul>
+        <li><a href="#q1a">ClickHouse SQL query</a></li>
+        <li><a href="#q1b">Elasticsearch DSL query</a></li>
+        <li><a href="#q1c">Elasticsearch ESQL query</a></li>
+      </ul></li>
+    <li><p><strong>Query 2</strong>: filters the data set before aggregating.</p>
+      <ul>
+        <li><a href="#q2a">ClickHouse SQL query</a></li>
+        <li><a href="#q2b">Elasticsearch DSL query</a></li>
+        <li><a href="#q2c">Elasticsearch ESQL query</a></li>
+      </ul></li>
+  </ul>
 </article>
 
-<!-- 浮動目次:sticky,內文層碰不得,只能靠加翻層 -->
+<!-- 浮動目次:sticky 而且在 <nav> 裡,兩條舊規則各擋了它一次 -->
 <nav class="pinned"><ul id="pinnedtoc">
   <li><a href="#a">Introduction</a></li>
   <li><a href="#b">Count aggregations in ClickHouse and Elasticsearch</a></li>
   <li><a href="#c">Benchmark results</a></li>
+</ul></nav>
+
+<!-- 真的選單:每一項都短,維持外殼待遇 -->
+<nav id="menu"><ul>
+  <li><a href="#m1">Products</a></li>
+  <li><a href="#m2">Pricing</a></li>
+  <li><a href="#m3">Docs</a></li>
 </ul></nav>
 </body></html>

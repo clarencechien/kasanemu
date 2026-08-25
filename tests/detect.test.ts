@@ -145,15 +145,27 @@ test('§3.1 表格儲存格、清單、標題都是單元,並帶上 role', () =>
   ]);
 });
 
-test('§3.5 position: sticky / fixed 的元素及其子樹跳過', () => {
+test('§3.5 sticky / fixed 不再整棵跳過,但要標記成 pinned', () => {
+  /*
+   * 舊版整棵跳過,理由是捲動時疊層會脫位 —— 那條規則寫在
+   * 「動就先藏起來」那套機制之前。現在標記起來,捲動期間藏這幾個就好。
+   * 整棵跳過的代價太大:浮動目次往往是整篇文章的導覽。
+   */
   const body = mount(
     '<div style="position: sticky"><p>Sticky toolbar label</p></div>' +
       '<div style="position: fixed"><p>Fixed banner text</p></div>' +
       '<p>Normal flow text.</p>',
   );
-  assert.deepEqual(ids(body), ['Normal flow text.']);
+  const got = findCandidates(body, () => false);
+  assert.deepEqual(
+    got.map((c) => [c.src, c.pinned === true]),
+    [
+      ['Sticky toolbar label', true],
+      ['Fixed banner text', true],
+      ['Normal flow text.', false],
+    ],
+  );
 });
-
 test('§3.1 display:none / visibility:hidden / opacity:0 的子樹跳過', () => {
   const body = mount(
     '<p style="display: none">Hidden by display</p>' +
@@ -651,4 +663,67 @@ test('表格不會因為 tbody / tr 不在容器清單裡就被收成一個大�
   const root = mount('<table><tr><th>Tier</th><td>Balanced</td></tr></table>');
   const texts = findCandidates(root, () => false).map((c) => c.src);
   assert.deepEqual(texts, ['Tier', 'Balanced']);
+});
+
+/* -------- 外殼還是內容:同一個證據,同一個結論 -------- */
+
+const SIDEBAR_TOC = `<nav><ul>
+  <li><a href="#1">Introduction</a></li>
+  <li><a href="#2">Count aggregations in ClickHouse and Elasticsearch</a></li>
+  <li><a href="#3">Benchmark setup</a></li>
+  <li><a href="#4">Summary</a></li>
+</ul></nav>`;
+
+test('<nav> 不再整棵排除 —— 裡面是目次的話照翻', () => {
+  const texts = findCandidates(mount(SIDEBAR_TOC), () => false).map((c) => c.src);
+  assert.ok(texts.includes('Introduction'), `實得 ${JSON.stringify(texts)}`);
+  assert.ok(texts.includes('Summary'));
+});
+
+test('<nav> 裡是真的選單就維持外殼待遇:不畫疊層,但滑上去看得到', () => {
+  const menu = `<nav><ul>
+    <li><a href="#1">Products</a></li>
+    <li><a href="#2">Pricing</a></li>
+    <li><a href="#3">Docs</a></li>
+    <li><a href="#4">Contact</a></li>
+  </ul></nav>`;
+  const root = mount(menu);
+  assert.deepEqual(findCandidates(root, () => false).map((c) => c.src), []);
+  assert.deepEqual(findLabels(root, 50).map((c) => c.src), [
+    'Products', 'Pricing', 'Docs', 'Contact',
+  ]);
+});
+
+test('下拉選單不會因為子選單的字加起來很長就被當成內容', () => {
+  const root = mount(`<nav><ul>
+    <li><a href="#1">Products</a><ul><li><a href="#a">Cloud</a></li><li><a href="#b">Local</a></li></ul></li>
+    <li><a href="#2">Pricing</a></li>
+    <li><a href="#3">Docs</a></li>
+  </ul></nav>`);
+  assert.deepEqual(findCandidates(root, () => false).map((c) => c.src), []);
+});
+
+test('清單的長度證據看項目本身,不是只看裡面的連結', () => {
+  /*
+   * 每個連結都 ≤24 字,但項目本身有一整段說明 —— 那是內容清單。
+   * 只量連結的話,段落翻了、底下三個連結不翻。
+   */
+  const root = mount(`<article><ul>
+    <li><p><strong>Query 1</strong>: this is a full data scan aggregating the whole data set.</p>
+      <ul>
+        <li><a href="#a">ClickHouse SQL query</a></li>
+        <li><a href="#b">Elasticsearch DSL query</a></li>
+        <li><a href="#c">Elasticsearch ESQL query</a></li>
+      </ul></li>
+    <li><p><strong>Query 2</strong>: this one filters the data set before aggregating.</p>
+      <ul>
+        <li><a href="#d">ClickHouse SQL query</a></li>
+        <li><a href="#e">Elasticsearch DSL query</a></li>
+        <li><a href="#f">Elasticsearch ESQL query</a></li>
+      </ul></li>
+  </ul></article>`);
+  const texts = findCandidates(root, () => false).map((c) => c.src);
+  for (const want of ['ClickHouse SQL query', 'Elasticsearch DSL query', 'Elasticsearch ESQL query']) {
+    assert.ok(texts.includes(want), `子連結 ${want} 該翻,實得 ${JSON.stringify(texts)}`);
+  }
 });

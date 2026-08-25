@@ -52,7 +52,10 @@ const got = await page.evaluate(() => {
   for (const c of blocks) seen.add(c.el);
   const labels = D.findLabels(document.body, 200, (el) => seen.has(el));
   return {
-    blocks: blocks.map((c) => ({ src: c.src, tag: c.el.tagName, media: !!c.mediaSplit })),
+    blocks: blocks.map((c) => ({
+      src: c.src, tag: c.el.tagName, media: !!c.mediaSplit, pinned: c.pinned === true,
+      inNav: !!c.el.closest('nav'), inMenu: !!c.el.closest('#menu'),
+    })),
     labels: labels.map((c) => c.src),
   };
 });
@@ -84,10 +87,21 @@ else if (!withImg.media) problems.push('圖片自己佔一行的段落沒帶 med
 // 行內圖片 → 照舊整段跳過(疊層一定會蓋到圖)
 noBlock('Latency dropped', '行內圖片');
 
-// sticky 目次:內文層碰不得,但要留在加翻層(滑上去看得到)
-if (!got.labels.includes('Introduction')) {
-  problems.push('浮動目次:sticky 子樹不能有內文疊層,又被踢出加翻層 → 什麼都沒有');
+// 每個連結都短、但項目本身是一整段 —— 整份仍然是內容清單
+for (const frag of ['ClickHouse SQL query', 'Elasticsearch ESQL query']) {
+  needBlock(frag, '長項目底下的短連結');
 }
+
+// sticky 的 <nav> 目次:兩條舊規則(§3.5 與 EXCLUDE_TAGS)各擋了它一次
+const pinned = got.blocks.filter((b) => b.inNav && !b.inMenu);
+if (pinned.length === 0) problems.push('浮動目次完全沒有內文疊層');
+else if (!pinned.every((b) => b.pinned)) {
+  problems.push('浮動目次的單元沒標記 pinned,捲動時會脫位');
+}
+
+// 真的選單維持外殼待遇:不畫疊層,但滑上去看得到
+if (got.blocks.some((b) => b.inMenu)) problems.push('選單不該有常駐疊層');
+if (!got.labels.includes('Products')) problems.push('選單被踢出加翻層 → 什麼都沒有');
 
 console.log(JSON.stringify(got, null, 1));
 if (problems.length > 0) {

@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { JSDOM } from 'jsdom';
 import { bleedFor, inkOverflow } from '../src/content/bleed.ts';
 import {
   annotBg,
@@ -8,6 +9,7 @@ import {
   isSerifStack,
   lightText,
   parseColor,
+  probeStyle,
   resetColorCache,
   rgbToCss,
   targetWeight,
@@ -157,4 +159,27 @@ test('標註配色跟著頁面明暗走,不寫死淺色', () => {
   assert.equal(lightText('rgb(36, 41, 47)'), false);
   assert.ok(annotBg('rgb(36, 41, 47)').startsWith('rgba(230'));
   assert.equal(annotFg('rgb(36, 41, 47)'), '#993C1D');
+});
+
+/*
+ * 目次一半黃字一半白字:class 一樣,我們問的元素不一樣。
+ * `<li><a>Introduction</a></li>` 的墨水是 <a> 的,單元卻建在 <li> 上。
+ */
+test('文字整段裝在單一子元素裡時,顏色取那一層', () => {
+  const dom = new JSDOM(
+    '<!doctype html><body>' +
+      '<li id="wrapped"><a style="color: rgb(250, 255, 105)">Introduction</a></li>' +
+      '<p id="mixed" style="color: rgb(223, 223, 223)">Read the <a style="color: rgb(250, 255, 105)">docs</a> first.</p>' +
+      '<li id="two"><a style="color: rgb(250, 255, 105)">A</a><span style="color: red">B</span></li>' +
+      '</body>',
+  );
+  const g = globalThis as unknown as Record<string, unknown>;
+  g['document'] = dom.window.document;
+  g['getComputedStyle'] = dom.window.getComputedStyle.bind(dom.window);
+  g['matchMedia'] = () => ({ matches: false });
+  const at = (id: string): string => probeStyle(dom.window.document.getElementById(id)!, 100).color;
+
+  assert.equal(at('wrapped'), 'rgb(250, 255, 105)', '整段裝在 <a> 裡 → 取 <a> 的黃');
+  assert.equal(at('mixed'), 'rgb(223, 223, 223)', '段落自己有文字 → 主色仍然是段落的');
+  assert.equal(at('two'), 'rgb(0, 0, 0)', '兩個子元素 → 不猜,用自己的');
 });
