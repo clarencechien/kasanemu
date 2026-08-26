@@ -69,6 +69,7 @@ import {
 import { clearMeasureCache } from './measure';
 import { activeText, hasText, type Unit } from './unit';
 import { dedupeByText, labelBudget } from './annotate';
+import { ImageAnnotator, imageUnder } from './imageanno';
 import { buildSnapshot } from './snapshot';
 
 setDiagScope('content');
@@ -141,6 +142,38 @@ let settings: Settings;
 let glossary: Term[] = [];
 let state: DomainState;
 let layer: OverlayLayer | null = null;
+
+/**
+ * 圖片加註(`docs/plan-images.md`)。
+ *
+ * 生命週期在 `imageanno.ts`,這裡只接線:送訊息、畫上去、chip 文案。
+ * `index.ts` 已經三千行,再塞一套狀態機只會讓兩件事互相絆住。
+ */
+const imageAnno = new ImageAnnotator(
+  {
+    request(url, lane) {
+      send({ type: 'translate-image', pageKey, url, lane, tier: state.tier });
+    },
+    showImage(rect, placed) {
+      layer?.showImage(rect, placed);
+    },
+    hideImage() {
+      layer?.hideImage();
+    },
+    setActivePin(n) {
+      layer?.setActivePin(n);
+    },
+    cue(el, text, tone) {
+      imageCue = text === null ? null : { el, text, tone };
+      renderChips();
+    },
+  },
+  () => settings.imageMode !== 'off' && running,
+  () => settings.imageAlwaysOn,
+);
+
+/** 圖片 chip 的內容。和 UI 標籤貼片共用同一條渲染路 */
+let imageCue: { el: Element; text: string; tone: 'idle' | 'busy' | 'warn' } | null = null;
 
 /**
  * feature.md §6 最後一條:環境不支援 Translator API 時自動退回 single 並明確告知。
@@ -308,6 +341,7 @@ function onRouteChange(): void {
   const key = makePageKey();
   if (key !== pageKey) {
     send({ type: 'drop-page', pageKey });
+    imageAnno.reset();
     pageKey = key;
     unlockScales(units); // §4.4 規則 3
   }
@@ -1490,16 +1524,46 @@ function visibleLabels(): Unit[] {
 
 /** 把目前該顯示的貼片畫出來(hover 一個,或 Alt 掃視一整批) */
 function renderChips(): void {
-  if (!layer || !settings.annotate) return;
-  const list = altScan ? visibleLabels() : chipUnit ? [chipUnit] : [];
-  if (list.length === 0) {
+  if (!layer) return;
+  const items: ChipItem[] = [];
+  /*
+   * 圖片的 cue 走同一條渲染路。
+   *
+   * 它和 UI 標籤貼片是同一種東西(暫態、指名才出現、不蓋原文),
+   * 差別只在內容是狀態不是譯文 —— 兩套渲染只會分岔(`lessons.md` §1)。
+   */
+  if (imageCue) {
+    const r = imageCue.el.getBoundingClientRect();
+    items.push({
+      // 圖角:和 mockup 一致,不擋圖的內容
+      anchor: { left: r.right - 8, top: r.top + 8, width: 0, height: 0 },
+      text: imageCue.text,
+      tone: imageCue.tone === 'warn' ? 'warn' : 'l1',
+      /*
+       * 圖片 cue 的配色是**固定**的,不從原文取樣。
+       *
+       * 內文貼片抄原文的顏色是為了不突兀;圖片 cue 相反 —— 它要在
+       * 任何底色的圖上都看得見,而圖的底色是什麼都有可能。
+       */
+      style: {
+        background: 'rgba(10,16,22,.88)',
+        color: '#48CBBE',
+        line: '#48CBBE',
+        bar: '#48CBBE',
+        fontSizePx: 11,
+      },
+    });
+  }
+  if (settings.annotate) {
+    const list = altScan ? visibleLabels() : chipUnit ? [chipUnit] : [];
+    for (const u of list) {
+      const item = chipItemFor(u);
+      if (item) items.push(item);
+    }
+  }
+  if (items.length === 0) {
     layer.hideChips();
     return;
-  }
-  const items: ChipItem[] = [];
-  for (const u of list) {
-    const item = chipItemFor(u);
-    if (item) items.push(item);
   }
   layer.showChips(items);
 }
@@ -1710,9 +1774,16 @@ function onMouseOver(e: Event): void {
    * 加翻層:內文區塊優先(它有自己的畫法),否則試 UI 標籤,
    * 再否則臨時加翻 —— 指到什麼就翻什麼,不讓偵測規則的縫變成「都不會翻」。
    */
-  const label = found
-    ? null
-    : (labelAt(e.target) ?? imageAltAt(e.target) ?? adhocLabelAt(e.target));
+  /*
+   * 圖片加註走自己的一條路(`onImageMove`),而且**排在文字前面**:
+   * 指標在圖上時,使用者要的是圖上的字,不是圖的 alt。
+   */
+  const onImage = settings.imageMode !== 'off' && imageUnder(e.target) !== null;
+
+  const label =
+    found || onImage
+      ? null
+      : (labelAt(e.target) ?? imageAltAt(e.target) ?? adhocLabelAt(e.target));
   if (label) openChip(label);
   else if (chipUnit && chipUnit !== selectionUnit) closeChip();
 
@@ -1739,6 +1810,8 @@ function onKeyDown(e: KeyboardEvent): void {
   if (e.key === 'Alt' && !e.shiftKey && !hiddenAll) {
     hiddenAll = true;
     layer?.setHiddenAll(true);
+    // 對稱律的另一半(§2.5):文字掀開看原文,圖片就是收掉加註看原圖
+    layer?.hideImage();
     closeChip(true);
     updateHud();
   }
@@ -2117,6 +2190,7 @@ async function start(): Promise<void> {
 
   layer = new OverlayLayer();
   layer.setMode(state.mode);
+  layer.setVeilStrength(settings.imageVeil);
   await checkModelId();
 
   io = new IntersectionObserver(
@@ -2167,6 +2241,13 @@ async function start(): Promise<void> {
   });
 
   document.addEventListener('mouseover', onMouseOver, true);
+  /*
+   * 錨點的命中測試要**連續的座標** —— `mouseover` 只在跨元素邊界時觸發,
+   * 而錨點是畫在疊層上的,滑鼠在同一張圖裡移動不會產生新的 mouseover。
+   * 疊層是 pointer-events: none,所以命中只能自己算(imagegeo.pinAt)。
+   */
+  document.addEventListener('mousemove', onImageMove, { passive: true, capture: true });
+  document.addEventListener('click', onImageClick, true);
   document.addEventListener('mouseleave', onDocLeave);
   document.addEventListener('focusin', onFocusIn, true);
   document.addEventListener('selectionchange', onSelectionChange);
@@ -2769,6 +2850,8 @@ function stop(): void {
   sawInnerScroll = false;
   cacheHitsTotal = 0;
   document.removeEventListener('mouseover', onMouseOver, true);
+  document.removeEventListener('mousemove', onImageMove, true);
+  document.removeEventListener('click', onImageClick, true);
   document.removeEventListener('mouseleave', onDocLeave);
   document.removeEventListener('focusin', onFocusIn, true);
   document.removeEventListener('selectionchange', onSelectionChange);
@@ -2869,6 +2952,41 @@ function stale(kind: string, from: string, n: number): void {
   diag('warn', 'stale-message', { kind, n, from: from.slice(-24), now: pageKey.slice(-24) });
 }
 
+/**
+ * 圖片上的滑鼠移動。
+ *
+ * 節流到每幀一次:`mousemove` 在 60Hz 下一秒幾十次,而每次都要問
+ * `getBoundingClientRect` 與跑一遍命中測試。
+ */
+let imageMoveRaf = 0;
+let lastImageMove: { target: EventTarget | null; x: number; y: number } | null = null;
+
+function onImageMove(e: MouseEvent): void {
+  if (settings.imageMode === 'off') return;
+  lastImageMove = { target: e.target, x: e.clientX, y: e.clientY };
+  if (imageMoveRaf) return;
+  imageMoveRaf = requestAnimationFrame(() => {
+    imageMoveRaf = 0;
+    const m = lastImageMove;
+    if (m) imageAnno.move(m.target, m.x, m.y);
+  });
+}
+
+/**
+ * Alt+click 升級到 L1(`docs/plan-images.md` §3.1)。
+ *
+ * **只有帶 Alt 才接手**:圖片常常是連結(卡片、相簿),普通的點擊要讓它
+ * 照常導航。Alt+click 在瀏覽器預設是「下載連結」,而使用者在圖片上按
+ * Alt 的意圖幾乎不會是下載 —— 這個鍵位和「按住 Alt 看原文」也一致。
+ */
+function onImageClick(e: MouseEvent): void {
+  if (!e.altKey || settings.imageMode === 'off') return;
+  if (imageAnno.upgrade(e.target)) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+}
+
 chrome.runtime.onMessage.addListener((raw: ToContent, _sender, reply) => {
   if (!raw || typeof raw !== 'object') return;
   switch (raw.type) {
@@ -2878,6 +2996,16 @@ chrome.runtime.onMessage.addListener((raw: ToContent, _sender, reply) => {
       // 而 log 裡看不出來到底有沒有走到這條路。
       if (raw.pageKey !== pageKey) return stale(raw.type, raw.pageKey, raw.results.length);
       applyResults(raw.results);
+      break;
+    }
+    case 'image-result': {
+      if (raw.pageKey !== pageKey) return stale(raw.type, raw.pageKey, raw.blocks.length);
+      imageAnno.onResult(raw.url, raw.hash, raw.lane, raw.blocks);
+      break;
+    }
+    case 'image-error': {
+      if (raw.pageKey !== pageKey) return;
+      imageAnno.onError(raw.url, raw.reason);
       break;
     }
     case 'failures': {

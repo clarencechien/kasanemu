@@ -1,4 +1,5 @@
 import type { DisplayMode, Settings } from '../shared/types';
+import type { PlacedBlock } from './imagegeo';
 import { fontFaceCss, fontStack } from './fonts';
 import { annotBg, annotFg, hintColor } from './styleprobe';
 import { LETTER_SPACING_EM, activeText, effectiveFontSize, type Unit } from './unit';
@@ -297,6 +298,120 @@ const LAYER_CSS = `
 .panel .l1 { color: #ffe0a3; }
 @media (prefers-reduced-motion: reduce) {
   .box, .ghost { transition: none; }
+}
+
+/* ═══════════════════════════════════ 圖片加註(docs/plan-images.md §2.1) */
+/*
+ * 加註,不是重繪。
+ *
+ * v0.1 的做法是取樣背景色畫不透明貼片,兩個死穴:配色永遠有例外(破版),
+ * 小字縮到 11px 以下必糊。改走 sukemu 的 acetate —— 毛玻璃把原文壓暗退後,
+ * 譯文帶白色光暈浮在其上。不用知道背景色、不裁切原圖、譯文長一點就長一點,
+ * 因為使用者知道底下是原圖,移開滑鼠就還他。
+ *
+ * 疊在 document 座標裡(和內文疊層同一層),由瀏覽器自己跟著捲 ——
+ * 不是 fixed + JS 追 scrollY,那條路 build 14 付過學費了。
+ */
+.imgwrap {
+  position: absolute;
+  left: var(--ksnm-ix);
+  top: var(--ksnm-iy);
+  width: var(--ksnm-iw);
+  height: var(--ksnm-ih);
+  opacity: 0;
+  transition: opacity .22s ease;
+  contain: layout style;
+}
+.imgwrap.show { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .imgwrap { transition: none; } }
+
+.iblk {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  overflow: hidden;
+}
+.iblk .veil {
+  position: absolute;
+  inset: -2px;
+  border-radius: 2px;
+  backdrop-filter: blur(1.4px) saturate(.55) brightness(1.16);
+  -webkit-backdrop-filter: blur(1.4px) saturate(.55) brightness(1.16);
+  background: linear-gradient(
+    160deg,
+    rgba(206, 238, 255, calc(var(--ksnm-veil, .30) * .9)),
+    rgba(228, 244, 255, calc(var(--ksnm-veil, .30) * .55))
+  );
+  box-shadow: inset 0 0 0 1px rgba(72, 203, 190, .30);
+}
+.iblk .itx {
+  position: relative;
+  width: 100%;
+  line-height: 1.22;
+  font-weight: 700;
+  word-break: break-word;
+  color: #FF4A14;
+  /* 白色光暈:讓譯文在深底與淺底上都浮得起來,而且一眼看得出是加上去的 */
+  text-shadow: 0 0 2px #fff, 0 0 6px rgba(255, 255, 255, .9), 0 1px 0 rgba(255, 255, 255, .8);
+}
+/* 版面信心低:框線換警示色,提醒這一塊要自己看原圖 */
+.iblk.low .veil { box-shadow: inset 0 0 0 1px rgba(255, 74, 20, .45); }
+.iblk.vert .itx { writing-mode: vertical-rl; }
+
+/* 字太小疊不下的改走編號錨點(§2.3) */
+.ipin {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+  background: #FF4A14;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, .92), 0 1px 5px rgba(0, 0, 0, .4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  font-weight: 500;
+  color: #fff;
+  line-height: 1;
+}
+.ipin.on { transform: scale(1.35); }
+
+/* 放大檢視:進黑窗本身就是「我要讀字」,所以加註在這裡常駐 */
+.zoom {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 8, 12, .9);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  /*
+   * **整層唯一會吃滑鼠事件的東西**(chip 之外的第二個例外)。
+   *
+   * 理由很窄:黑窗開著的時候使用者的意圖百分之百是「讀這張圖」,
+   * 點到底下的頁面只會是意外。關掉它就立刻回到 pointer-events: none。
+   */
+  pointer-events: auto;
+}
+.zoom.show { display: flex; }
+.zoom .zimg {
+  position: relative;
+  max-width: calc(100vw - 60px);
+  max-height: calc(100vh - 60px);
+}
+.zoom .zimg img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.zoom .zhint {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 14px;
+  text-align: center;
+  font-size: 11px;
+  color: #8fa0b0;
 }
 `;
 
@@ -682,6 +797,139 @@ export class OverlayLayer {
      */
     if (level === 'busy' || level === 'warn') return;
     this.hudTimer = window.setTimeout(() => el.classList.remove('show'), 3200);
+  }
+
+
+  /* ═══════════════════════════════════════════ 圖片加註(plan-images §3.2) */
+
+  private imgWrap: HTMLDivElement | null = null;
+  private zoomBox: HTMLDivElement | null = null;
+
+  /** 疊膜強度。0 = 完全不壓暗,0.6 = 很重。設定頁的滑桿寫進來 */
+  setVeilStrength(v: number): void {
+    this.layer.style.setProperty('--ksnm-veil', String(Math.max(0, Math.min(0.6, v))));
+  }
+
+  /**
+   * 把一張圖的加註畫上去。
+   *
+   * `rect` 是**文件座標** —— 和內文疊層同一個座標系,所以捲動由瀏覽器負責,
+   * JS 不追。`placed` 已經是圖片本地的 px(見 imagegeo.placeBlocks)。
+   */
+  showImage(rect: { left: number; top: number; width: number; height: number },
+            placed: readonly PlacedBlock[]): void {
+    const w = this.imgWrap ?? this.makeImgWrap();
+    w.style.setProperty('--ksnm-ix', `${rect.left}px`);
+    w.style.setProperty('--ksnm-iy', `${rect.top}px`);
+    w.style.setProperty('--ksnm-iw', `${rect.width}px`);
+    w.style.setProperty('--ksnm-ih', `${rect.height}px`);
+    w.replaceChildren(...placed.map((p) => this.blockNode(p)));
+    w.classList.add('show');
+  }
+
+  hideImage(): void {
+    this.imgWrap?.classList.remove('show');
+  }
+
+  imageVisible(): boolean {
+    return this.imgWrap?.classList.contains('show') === true;
+  }
+
+  /** 錨點的 hover 態。命中測試在 content 那邊算(疊層收不到滑鼠事件) */
+  setActivePin(n: number): void {
+    if (!this.imgWrap) return;
+    for (const el of this.imgWrap.querySelectorAll('.ipin')) {
+      el.classList.toggle('on', Number((el as HTMLElement).dataset['n']) === n);
+    }
+  }
+
+  private makeImgWrap(): HTMLDivElement {
+    const w = document.createElement('div');
+    w.className = 'imgwrap';
+    this.layer.appendChild(w);
+    this.imgWrap = w;
+    return w;
+  }
+
+  private blockNode(p: PlacedBlock): HTMLElement {
+    if (p.kind === 'pin') {
+      const pin = document.createElement('div');
+      pin.className = 'ipin';
+      pin.dataset['n'] = String(p.n);
+      pin.style.left = `${p.x + p.w / 2}px`;
+      pin.style.top = `${p.y + p.h / 2}px`;
+      pin.textContent = String(p.n);
+      return pin;
+    }
+    const box = document.createElement('div');
+    box.className = `iblk${p.low ? ' low' : ''}${p.vertical ? ' vert' : ''}`;
+    box.style.left = `${p.x}px`;
+    box.style.top = `${p.y}px`;
+    box.style.width = `${p.w}px`;
+    box.style.height = `${p.h}px`;
+    box.style.fontSize = `${p.fontPx}px`;
+    box.style.fontFamily = fontStack(false, 'sans-serif');
+    const veil = document.createElement('span');
+    veil.className = 'veil';
+    const tx = document.createElement('span');
+    tx.className = 'itx';
+    tx.textContent = p.zh;
+    box.append(veil, tx);
+    return box;
+  }
+
+  /**
+   * 放大檢視(§3.3)。
+   *
+   * 站方有自己的 lightbox 時不出這個入口 —— 跟著站方走,加註靠同 src
+   * 重錨定跟過去。這裡是給**沒有 lightbox 的站**用的:claude.com 那篇的
+   * 2042px 截圖行內只顯示 565px,連英文讀者都得另開分頁。
+   */
+  showZoom(src: string, natural: { w: number; h: number }): HTMLDivElement {
+    const z = this.zoomBox ?? this.makeZoom();
+    const holder = z.querySelector('.zimg') as HTMLDivElement;
+    const img = holder.querySelector('img') as HTMLImageElement;
+    img.src = src;
+    // 等比放大到視窗允許的最大尺寸;實際幾何等 img 載入後由呼叫端量
+    const maxW = window.innerWidth - 60;
+    const maxH = window.innerHeight - 60;
+    const scale = Math.min(maxW / natural.w, maxH / natural.h);
+    holder.style.width = `${Math.round(natural.w * scale)}px`;
+    holder.style.height = `${Math.round(natural.h * scale)}px`;
+    z.classList.add('show');
+    return holder;
+  }
+
+  /** 放大檢視裡的加註常駐(進黑窗就是「我要讀字」) */
+  setZoomBlocks(placed: readonly PlacedBlock[]): void {
+    const holder = this.zoomBox?.querySelector('.zimg');
+    if (!holder) return;
+    for (const old of holder.querySelectorAll('.iblk, .ipin')) old.remove();
+    for (const p of placed) holder.appendChild(this.blockNode(p));
+  }
+
+  hideZoom(): void {
+    this.zoomBox?.classList.remove('show');
+  }
+
+  zoomVisible(): boolean {
+    return this.zoomBox?.classList.contains('show') === true;
+  }
+
+  private makeZoom(): HTMLDivElement {
+    const z = document.createElement('div');
+    z.className = 'zoom';
+    const holder = document.createElement('div');
+    holder.className = 'zimg';
+    holder.appendChild(document.createElement('img'));
+    const hint = document.createElement('div');
+    hint.className = 'zhint';
+    hint.textContent = 'Esc 或點黑處關閉 · 按住 Alt 看原圖';
+    z.append(holder, hint);
+    // .zoom 是 fixed,和 .chip 同理由:不能待在帶 clip-path 的 .layer 裡
+    this.root.appendChild(z);
+    this.zoomBox = z;
+    return z;
   }
 
   hideHud(): void {

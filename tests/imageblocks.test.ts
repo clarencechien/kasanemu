@@ -6,6 +6,7 @@ import {
   MIN_PATCH_FONT_PX,
   fontSizeFor,
   looksConcatenated,
+  looksVertical,
   normalizeBoxes,
   patchable,
   sanitizeBlocks,
@@ -14,6 +15,8 @@ import {
   drawnRect,
   mapBox,
   parsePosition,
+  pinAt,
+  placeBlocks,
   worthTranslating,
 } from '../src/content/imagegeo.ts';
 
@@ -286,4 +289,130 @@ test('真實輸出:面積項吸收兩個檔位的框粒度差異', () => {
   const l = split('lite-shot', 1200);
   assert.ok(g.maxFs <= 40 && l.maxFs <= 40, '都不該超過上限');
   assert.ok(Math.abs(g.maxFs - l.maxFs) < 15, `兩檔的字級量級差太多:${g.maxFs} vs ${l.maxFs}`);
+});
+
+/* ------------------------------------------------- 區塊 → 畫得出來的東西 */
+
+test('placeBlocks:同一份資料兩個尺寸,錨點與疊字自動分流', () => {
+  const fx = loadVision('lite-shot');
+  const { blocks } = sanitizeBlocks(fx.blocks, fx.nw, fx.nh);
+
+  const at = (W: number): { veil: number; pin: number } => {
+    const H = (W * fx.nh) / fx.nw;
+    const drawn = drawnRect({ w: fx.nw, h: fx.nh }, { w: W, h: H }, 'contain', parsePosition('50% 50%'));
+    const placed = placeBlocks(blocks, drawn, { w: W, h: H });
+    return {
+      veil: placed.filter((p) => p.kind === 'veil').length,
+      pin: placed.filter((p) => p.kind === 'pin').length,
+    };
+  };
+  const small = at(340);
+  const big = at(1200);
+  assert.equal(small.veil, 0, '繞圖的縮圖上全是錨點');
+  assert.ok(big.veil > 10, '放大檢視要鋪開成疊字');
+  // 不必重問模型 —— 換個尺寸再算一次就好
+  assert.equal(small.veil + small.pin, big.veil + big.pin, '兩邊的總塊數要一樣');
+});
+
+test('placeBlocks:錨點編號連號,疊字不佔號', () => {
+  const drawn = drawnRect({ w: 1000, h: 1000 }, { w: 400, h: 400 }, 'contain', parsePosition('50% 50%'));
+  const placed = placeBlocks(
+    [
+      { box: [0, 0, 200, 500], text: 'big', zh: '大字', c: 1 },
+      { box: [300, 0, 310, 60], text: 'tiny a', zh: '小甲', c: 1 },
+      { box: [400, 0, 410, 60], text: 'tiny b', zh: '小乙', c: 1 },
+    ],
+    drawn,
+    { w: 400, h: 400 },
+  );
+  assert.deepEqual(placed.map((p) => p.kind), ['veil', 'pin', 'pin']);
+  assert.deepEqual(placed.filter((p) => p.kind === 'pin').map((p) => p.n), [1, 2]);
+  assert.equal(placed[0]!.n, 0, '疊字不佔編號');
+});
+
+test('code 樣式的字不加註 —— 程式碼原樣留著才有用', () => {
+  const drawn = drawnRect({ w: 1000, h: 1000 }, { w: 800, h: 800 }, 'contain', parsePosition('50% 50%'));
+  const placed = placeBlocks(
+    [
+      { box: [0, 0, 100, 400], text: 'npm install', zh: 'npm install', c: 1, kind: 'code' },
+      { box: [200, 0, 300, 400], text: 'Install it', zh: '安裝它', c: 1 },
+    ],
+    drawn,
+    { w: 800, h: 800 },
+  );
+  assert.equal(placed.length, 1);
+  assert.equal(placed[0]!.zh, '安裝它');
+});
+
+test('低信心標記傳到畫面上 —— 使用者要知道哪一塊該自己看原圖', () => {
+  const drawn = drawnRect({ w: 1000, h: 1000 }, { w: 800, h: 800 }, 'contain', parsePosition('50% 50%'));
+  const placed = placeBlocks(
+    [{ box: [0, 0, 100, 400], text: 'x', zh: '疑問', c: 0.4 }],
+    drawn,
+    { w: 800, h: 800 },
+  );
+  assert.equal(placed[0]!.low, true);
+});
+
+test('被 cover 裁掉的區塊不畫 —— 使用者看不到的地方不該冒出加註', () => {
+  const drawn = drawnRect({ w: 1000, h: 500 }, { w: 400, h: 400 }, 'cover', parsePosition('50% 50%'));
+  const placed = placeBlocks(
+    [
+      { box: [400, 0, 500, 40], text: 'cut', zh: '被裁掉', c: 1 },
+      { box: [400, 450, 500, 550], text: 'mid', zh: '中間', c: 1 },
+    ],
+    drawn,
+    { w: 400, h: 400 },
+  );
+  assert.equal(placed.length, 1);
+  assert.equal(placed[0]!.zh, '中間');
+});
+
+test('錨點命中測試:疊層收不到滑鼠事件,所以要自己算', () => {
+  const drawn = drawnRect({ w: 1000, h: 1000 }, { w: 400, h: 400 }, 'contain', parsePosition('50% 50%'));
+  const placed = placeBlocks(
+    [{ box: [300, 300, 312, 360], text: 'tiny', zh: '小', c: 1 }],
+    drawn,
+    { w: 400, h: 400 },
+  );
+  const pin = placed.find((p) => p.kind === 'pin')!;
+  const cx = pin.x + pin.w / 2;
+  const cy = pin.y + pin.h / 2;
+  assert.ok(pinAt(placed, cx, cy), '正中央要命中');
+  assert.ok(pinAt(placed, cx + 10, cy), '半徑內要命中(錨點只有 14px,要求精準太苛)');
+  assert.equal(pinAt(placed, cx + 60, cy), null, '離太遠不該命中');
+});
+
+/* --------------------------------------------------------------- 直排偵測 */
+
+test('直排的框又高又窄且是 CJK → 標低信心(兩檔模型都讀壞)', () => {
+  /*
+   * 實測(§13-4):「秋の特別展示」被讀成「秋祭」、
+   * 「開催期間 十月一日から」被讀成「興展兼囊」——
+   * 模型把直排當橫排讀,字跨欄串起來。而且**沒有一塊回 v: true**。
+   *
+   * 但它有給別的訊號:c 掉到 0.5–0.9,加上框的形狀(實測 204×15)。
+   * 兩個合起來就能標出來 —— 不靜默做錯。
+   */
+  const { blocks } = sanitizeBlocks([
+    { box: [94, 381, 298, 396], text: '開催ただし(税場盟', zh: '舉辦，但是', c: 0.9 },
+  ]);
+  assert.equal(blocks[0]!.v, true, '沒認出直排');
+  assert.ok(blocks[0]!.c <= 0.5, '直排要標低信心');
+});
+
+test('又高又窄但不是 CJK → 不算直排(側邊欄標籤那種)', () => {
+  const { blocks } = sanitizeBlocks([
+    { box: [100, 10, 400, 40], text: 'SIDEBAR', zh: '側邊欄', c: 1 },
+  ]);
+  assert.notEqual(blocks[0]!.v, true);
+  assert.equal(blocks[0]!.c, 1);
+});
+
+test('正常的橫排 CJK 不會被誤判成直排', () => {
+  const { blocks } = sanitizeBlocks([
+    { box: [100, 100, 130, 500], text: '台風18号 鹿児島', zh: '颱風18號 鹿兒島', c: 1 },
+  ]);
+  assert.notEqual(blocks[0]!.v, true);
+  assert.equal(blocks[0]!.c, 1);
 });

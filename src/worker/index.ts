@@ -23,6 +23,9 @@ import {
   enqueue,
   queueStatus,
   reprioritize,
+  translateImage,
+  dropPageImages,
+  drainImages,
 } from './scheduler';
 import { totals } from './budget';
 import * as cache from './cache';
@@ -99,7 +102,15 @@ chrome.runtime.onMessage.addListener((raw: ToWorker, sender, reply) => {
           break;
         }
         case 'drop-page': {
-          if (tabId >= 0) await dropPage(tabId, raw.pageKey);
+          if (tabId >= 0) {
+            await dropPage(tabId, raw.pageKey);
+            await dropPageImages(tabId, raw.pageKey);
+          }
+          reply({ ok: true });
+          break;
+        }
+        case 'translate-image': {
+          if (tabId >= 0) await translateImage(tabId, raw.pageKey, raw.url, raw.lane, raw.tier);
           reply({ ok: true });
           break;
         }
@@ -156,7 +167,11 @@ chrome.commands.onCommand.addListener((command) => {
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'drain') void drain();
+  if (alarm.name === 'drain') {
+    void drain();
+    // service worker 被回收時圖片佇列也停在半路,alarm 醒來要一起叫回去
+    void drainImages();
+  }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {

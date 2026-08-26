@@ -1,4 +1,5 @@
 import type { Tier } from './models';
+import type { ImageBlock } from './imageblocks';
 import type {
   DomainState,
   Pipeline,
@@ -48,7 +49,22 @@ export type ToWorker =
    * worker 佇列的現況。`ids` 給的話,回傳其中哪幾筆還在佇列裡 ——
    * 看門狗要靠它分辨「塞在後面」和「真的不見了」。
    */
-  | { type: 'page-status'; pageKey: string; ids?: string[] };
+  | { type: 'page-status'; pageKey: string; ids?: string[] }
+  /**
+   * 一張圖的加註(`docs/plan-images.md` §5)。
+   *
+   * `lane` 決定用哪個模型與哪條併發道:`l0` 是 hover 自動觸發的免費檔,
+   * `l1` 是使用者 Alt+click 明確點名的付費檔。兩條分開排隊 ——
+   * 免費的慢(實測 9–68 秒)不能把使用者剛點的那張堵在後面。
+   */
+  | {
+      type: 'translate-image';
+      pageKey: string;
+      url: string;
+      lane: 'l0' | 'l1';
+      /** 這個網域選的檔位。`lane: 'l0'` 時會被忽略 —— 免費那條路一律走 free */
+      tier: Tier;
+    };
 
 /** worker → content,以及 popup → content */
 export type ToContent =
@@ -56,6 +72,17 @@ export type ToContent =
   | { type: 'failures'; pageKey: string; failures: UnitFailure[] }
   | { type: 'notice'; pageKey: string; level: 'info' | 'warn' | 'error'; text: string }
   | { type: 'domain-state'; host: string; state: DomainState }
+  /** 一張圖翻好了。`hash` 是圖片 bytes 的指紋 —— 同 src 的放大檢視靠它認親 */
+  | {
+      type: 'image-result';
+      pageKey: string;
+      url: string;
+      hash: string;
+      lane: 'l0' | 'l1';
+      blocks: ImageBlock[];
+    }
+  /** 失敗要說得出原因:「太大」和「辨識失敗」對使用者是兩件事 */
+  | { type: 'image-error'; pageKey: string; url: string; reason: string; retriable: boolean }
   /** translate-page:手動觸發,同時也是失敗區塊的重試入口 */
   | { type: 'command'; command: 'toggle-enabled' | 'toggle-mode' | 'translate-page' }
   /** feature.md §5.2 popup 讀本頁的階層統計 */

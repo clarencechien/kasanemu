@@ -147,8 +147,10 @@ jsdom 沒有 layout,所以**凡是牽涉幾何的規則都用真瀏覽器驗**(p
 npm run probe:detect     # 選取規則(scripts/fixtures/detect.html)
 npm run probe:colors     # 背景與前景色解析(lab / oklch / 半透明疊色)
 npm run probe:snapshot   # 匯出的 HTML 快照能不能疊、能不能看原文
+npm run probe:image      # 圖片加註的幾何:object-fit 換算、字級分流、文件座標
 GEMINI_API_KEY=... npm run probe:gemma       # 模型行為:thinking、schema、echo 對位
 GEMINI_API_KEY=... node scripts/probe-glossary.mjs   # 詞表遵循率 + 速度品質對打
+gemini_key=... node scripts/probe-vision.mjs 圖.png  # 圖片加註:打包 production 的 vision.ts
 ```
 
 fixture 裡刻意裝著**會弄壞它的東西**(`docs/lessons.md` §2):`display:contents`
@@ -163,17 +165,19 @@ src/
             glossary(詞表解析:純函式,content 與 worker 共用同一份判斷)
             imageblocks(圖片區塊:座標防呆 · 字級 · 信心。同樣兩邊共用)
   content/  detect(選取規則)· cover/geometry/measure/bleed(幾何)· styleprobe(顏色)
-            imagegeo(圖片座標:object-fit / position 換算,純函式)
+            imagegeo(圖片座標:object-fit / position 換算 · 字級分流,純函式)
+            imageanno(圖片加註的生命週期:hover → L0、Alt+click → L1)
             overlay(closed shadow DOM)· annotate(加翻層)· snapshot(匯出)
             l0(Translator API)· queue(L0 併發池)· mask(佔位符)· lang · motion
             upgrade(升級管線的純判斷)· unit · device · fonts · index(協調)
   worker/   gemini · protocol(batch 協定與 id 紀律)· scheduler(IO 與流程)
+            vision(視覺請求)· imagefetch(bytes/縮圖/指紋)· imagequeue(兩條道)
             queuelogic(切批/去重/退避的純函式)· tokenBucket · budget · cache · index
   options/  設定頁(金鑰、三檔、視覺、捲動策略、快取、保險絲、匯入匯出)
   popup/    啟用、管線、檔位、L0 語言包、本頁階層統計、花費、匯出 log / 頁面 / 快取
-scripts/    audit-sites · audit-coverage · probe-{detect,colors,snapshot,gemma}
+scripts/    audit-sites · audit-coverage · probe-{detect,colors,snapshot,gemma,image,vision}
             fetch-fonts(subset 打包)· zip · sites.txt · fixtures/
-tests/      248 個 node:test;fixtures/vision/ 是真實 API 回應(地面實況)
+tests/      268 個 node:test;fixtures/vision/ 是真實 API 回應(地面實況)
 docs/       lessons(通則)· deviations(逐件記錄)· acceptance(人工驗收)
             fonts(subset 實測)· plan-annotation(加翻層規格)
             plan-glossary(詞表規格 + 模型實測)· plan-images(圖片翻譯規格)

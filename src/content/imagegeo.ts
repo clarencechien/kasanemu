@@ -11,7 +11,12 @@
 
 // 副檔名是刻意的:node --experimental-strip-types 解不了無副檔名的**值**匯入,
 // 而這個檔要被 node:test 直接載入(queuelogic.ts 因為同一個理由這樣寫)
-import { BOX_SCALE } from '../shared/imageblocks.ts';
+import {
+  BOX_SCALE,
+  LOW_CONFIDENCE,
+  fontSizeFor,
+  patchable,
+} from '../shared/imageblocks.ts';
 
 export interface Rect {
   x: number;
@@ -148,4 +153,108 @@ export const IMAGE_MIN_H = 100;
 
 export function worthTranslating(rect: { w: number; h: number }): boolean {
   return rect.w >= IMAGE_MIN_W && rect.h >= IMAGE_MIN_H;
+}
+
+/* ----------------------------------------------------- 區塊 → 畫得出來的東西 */
+
+/** 一塊加註在圖片本地座標上的最終樣子 */
+export interface PlacedBlock {
+  /** 相對圖片 content box 左上角的 px */
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** 疊字才有意義的字級 */
+  fontPx: number;
+  text: string;
+  zh: string;
+  /** 版面信心低於門檻:框線換警示色,提醒使用者自己看原圖 */
+  low: boolean;
+  vertical: boolean;
+  /** 疊字(veil)還是編號錨點(pin)—— 唯一的量尺是字級 */
+  kind: 'veil' | 'pin';
+  /** pin 的編號,從 1 開始;veil 是 0 */
+  n: number;
+}
+
+/**
+ * 一組區塊 → 一組畫得出來的東西。
+ *
+ * **同一份資料在不同顯示尺寸下會得到不同結果**,而這正是設計的一部分
+ * (`docs/plan-images.md` §2.3):繞圖的 340px 縮圖上全是錨點,
+ * 點開放大檢視就自動鋪成疊字 —— 不必重問模型,只是換個 `box` 再算一次。
+ */
+export function placeBlocks(
+  blocks: readonly ImageBlockLike[],
+  drawn: Rect,
+  clip: { w: number; h: number },
+): PlacedBlock[] {
+  const out: PlacedBlock[] = [];
+  let pin = 0;
+  for (const b of blocks) {
+    // code 樣式的字不加註:程式碼原樣留著才有用(§3.2)
+    if (b.kind === 'code') continue;
+    const r = mapBox(b.box, drawn, clip);
+    if (!r) continue;
+    const label = b.zh || b.text;
+    if (label.length === 0) continue;
+    const fontPx = fontSizeFor(r.w, r.h, [...label].length, b.v === true);
+    const veil = patchable(fontPx);
+    if (!veil) pin++;
+    out.push({
+      x: r.x,
+      y: r.y,
+      w: r.w,
+      h: r.h,
+      fontPx,
+      text: b.text,
+      zh: label,
+      low: b.c < LOW_CONFIDENCE,
+      vertical: b.v === true,
+      kind: veil ? 'veil' : 'pin',
+      n: veil ? 0 : pin,
+    });
+  }
+  return out;
+}
+
+/** `placeBlocks` 只讀這幾個欄位,不必綁死整個 ImageBlock */
+export interface ImageBlockLike {
+  box: [number, number, number, number];
+  text: string;
+  zh: string;
+  c: number;
+  v?: boolean;
+  kind?: 'text' | 'code';
+}
+
+/**
+ * 游標落在哪個錨點上。
+ *
+ * 疊層是 `pointer-events: none`,所以**錨點自己收不到滑鼠事件** ——
+ * 命中測試只能由 content script 拿座標算。這不是繞路,是那條硬規則
+ * 的必然結果:頁面永遠比疊層先拿到事件。
+ *
+ * 半徑放寬到 14px:錨點畫出來只有 14px 寬,要求精準命中太苛。
+ */
+export const PIN_HIT_RADIUS = 14;
+
+export function pinAt(
+  placed: readonly PlacedBlock[],
+  localX: number,
+  localY: number,
+): PlacedBlock | null {
+  let best: PlacedBlock | null = null;
+  let bestD = PIN_HIT_RADIUS * PIN_HIT_RADIUS;
+  for (const p of placed) {
+    if (p.kind !== 'pin') continue;
+    const cx = p.x + p.w / 2;
+    const cy = p.y + p.h / 2;
+    const d = (localX - cx) ** 2 + (localY - cy) ** 2;
+    if (d <= bestD) {
+      bestD = d;
+      best = p;
+    }
+  }
+  return best;
 }
