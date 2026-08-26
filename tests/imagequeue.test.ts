@@ -216,7 +216,46 @@ test('併發從 in-flight 集合算,不另外記數字', () => {
   assert.equal(nextJobs(q, new Set(['l1:a', 'l1:b']), 1000).run.length, 0);
 });
 
-test('service worker 被回收後留下的孤兒,下次醒來要當成過期收掉', () => {
+test('派出去過的工作在 worker 被回收後要**重派**,不是收掉', () => {
+  /*
+   * **使用者回報的「滑開再回來重試 都沒有成功過」就是這個。**
+   *
+   * log 上兩次都停在 ageMs: 61000 —— alarm(被 Chrome 夾到 60 秒)醒來時
+   * 看到一筆跑了一分鐘的 gemma 工作,套上「掃過就走」那條 10 秒的規則
+   * 把它殺了,然後叫使用者自己重試。但使用者根本沒有捲走,他在等。
+   *
+   * 分辨的線索是 startedAt:派出去過 = 有人在等它,沒派出去過才是「掃過就走」。
+   */
+  const q = [job({ url: 'a', at: 0, startedAt: 0 })];
+  const { run, drop } = nextJobs(q, new Set(), 61_000);
+  assert.equal(drop.length, 0, '派出去過的工作被當成掃過就走殺掉了');
+  assert.equal(run.length, 1, '孤兒要重派');
+});
+
+test('沒派出去過的舊 l0 才是「掃過就走」,照樣收掉', () => {
+  const q = [job({ url: 'a', at: 0 })];
+  const { run, drop } = nextJobs(q, new Set(), STALE_L0_MS + 1);
+  assert.equal(drop.length, 1);
+  assert.equal(run.length, 0);
+});
+
+test('重派過頭的孤兒要收掉 —— 永遠回不來的工作不可以被叫醒無限次', () => {
+  const q = [job({ url: 'a', at: 0, startedAt: 0, attempts: 2 })];
+  const { run, drop } = nextJobs(q, new Set(), 61_000);
+  assert.equal(drop.length, 1, '試過上限還是收掉');
+  assert.equal(run.length, 0);
+});
+
+test('孤兒排在新來的前面 —— 使用者已經等過一輪了', () => {
+  const q = [
+    job({ url: 'fresh', at: 1000 }),
+    job({ url: 'orphan', at: 0, startedAt: 0 }),
+  ];
+  const { run } = nextJobs(q, new Set(), 61_000);
+  assert.equal(run[0]!.url, 'orphan');
+});
+
+test('沒派出去過而且超過孤兒上限的,不分 lane 一律收掉', () => {
   /*
    * MV3 的 worker 在請求途中被回收:runImage 停在半路,in-flight 集合
    * 隨著 worker 一起消失,但佇列在 storage.session 裡活著。

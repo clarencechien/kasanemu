@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import {
   BOX_SCALE,
   MIN_PATCH_FONT_PX,
+  SINGLE_LINE_CHARS,
   fontSizeFor,
   looksConcatenated,
   looksVertical,
@@ -13,7 +14,6 @@ import {
 } from '../src/shared/imageblocks.ts';
 import {
   drawnRect,
-  growToFit,
   imageMode,
   mapBox,
   parsePosition,
@@ -346,7 +346,12 @@ test('imageMode:多數決,不是「有一塊放不下就全部退回錨點」', 
   assert.equal(imageMode([]), 'veil');
 });
 
-test('疊字模式下塞不下的那幾塊把框撐大,而不是換一種語彙', () => {
+test('疊字模式下塞不下的那幾塊把字級拉到下限,框不動', () => {
+  /*
+   * 譯文有自己的貼片(overlay 的 `.itx`),寬度由字決定、允許長出框外
+   * (§3.2)。所以玻璃該蓋的只有原文那一塊 —— 撐大玻璃會蓋掉旁邊
+   * 本來看得到的圖。
+   */
   const drawn = drawnRect({ w: 1000, h: 1000 }, { w: 600, h: 600 }, 'contain', parsePosition('50% 50%'));
   const blocks = [
     { box: [0, 0, 120, 600], text: 'a', zh: '標題一', c: 1 },
@@ -354,25 +359,24 @@ test('疊字模式下塞不下的那幾塊把框撐大,而不是換一種語彙'
     { box: [400, 0, 520, 600], text: 'c', zh: '標題三', c: 1 },
     { box: [600, 0, 720, 600], text: 'd', zh: '標題四', c: 1 },
     // 這一塊自己算是塞不下的
-    { box: [900, 0, 906, 40], text: 'note', zh: '附註文字', c: 1 },
+    { box: [900, 0, 906, 40], text: 'N/A', zh: '不適用', c: 1 },
   ];
   const placed = placeBlocks(blocks, drawn, { w: 600, h: 600 });
-  assert.equal(placed.every((p) => p.kind === 'veil'), true);
-  const grown = placed[4]!;
-  assert.ok(grown.fontPx >= MIN_PATCH_FONT_PX, `撐大之後字級還是太小:${grown.fontPx}`);
-  assert.ok(grown.h > (6 / 1000) * 600, '框沒被撐大');
-  // 撐大以框心為錨,而且夾在圖內
-  assert.ok(grown.x >= 0 && grown.y >= 0, '撐出圖片左上角外面了');
-  assert.ok(grown.x + grown.w <= 600 + 0.001 && grown.y + grown.h <= 600 + 0.001, '撐出圖片右下角外面了');
+  assert.equal(placed.every((p) => p.kind === 'veil'), true, '多數放得下 → 整張疊字');
+  const small = placed[4]!;
+  assert.equal(small.fontPx, MIN_PATCH_FONT_PX, '字級要拉到下限');
+  assert.ok(small.h < 10, `框被撐大了:${small.h}`);
+  assert.ok(small.w < 30, `框被撐寬了:${small.w}`);
 });
 
-test('撐大不會把框撐出圖外 —— 貼著邊的塊往內縮', () => {
-  const drawn = drawnRect({ w: 1000, h: 1000 }, { w: 200, h: 200 }, 'contain', parsePosition('50% 50%'));
-  const r = growToFit({ x: 0, y: 0, w: 4, h: 3 }, 20, false, { w: 200, h: 200 });
-  assert.ok(r.x >= 0 && r.y >= 0);
-  assert.ok(r.x + r.w <= 200.001 && r.y + r.h <= 200.001);
-  assert.ok(r.w <= 200 && r.h <= 200);
-  void drawn;
+test('短標籤走單行 —— 「不適用」不可以被折成兩行', () => {
+  /*
+   * 使用者回報:「圖中間那個不適用 如果真的太小 應該加長 label 不要折字」。
+   * 折行的判斷在 overlay(貼片才知道自己多寬),這裡釘住那條界線本身:
+   * 標籤長度 ≤ SINGLE_LINE_CHARS 就是「標籤」,不是句子。
+   */
+  assert.ok([...'不適用'].length <= SINGLE_LINE_CHARS);
+  assert.ok([...'Elasticsearch ESQL 查詢'].length > SINGLE_LINE_CHARS, '整句還是該折');
 });
 
 test('code 樣式的字不加註 —— 程式碼原樣留著才有用', () => {

@@ -62,11 +62,22 @@ const CASES = [
 const W = 480;
 const H = 120;
 
+/*
+ * 三種擺法量三件事:
+ * `bare` 是對照(原文本來多清楚)、`veil` 量原文退了多少、
+ * `plate` 是**沒有字的貼片**(墨要對比的就是這片底)、`ink` 是實際樣子。
+ */
 const stage = (bg, fg, mode) => `
 <div class="stage" style="background:${bg}">
   <div class="orig" style="color:${fg}">Elasticsearch ESQL</div>
   ${mode === 'bare' ? '' : `<div class="wrap"><div class="iblk" style="left:0;top:0;width:${W}px;height:${H}px">
-    <span class="veil"></span>${mode === 'ink' ? `<span class="itx" style="font-size:34px">彈性搜尋 ESQL</span>` : ''}
+    <span class="veil"></span>${
+      mode === 'ink'
+        ? `<span class="itx" style="font-size:34px">彈性搜尋 ESQL</span>`
+        : mode === 'plate'
+          ? `<span class="itx" style="font-size:34px;color:transparent;text-shadow:none">彈性搜尋 ESQL</span>`
+          : ''
+    }
   </div></div>`}
 </div>`;
 
@@ -79,7 +90,7 @@ const page = `<!doctype html><meta charset=utf-8>
   .wrap { position:absolute; inset:0; }
 </style>
 <div id="all">${CASES.map((c) =>
-  ['bare', 'veil', 'ink'].map((m) => stage(c.bg, c.fg, m)).join(''),
+  ['bare', 'veil', 'plate', 'ink'].map((m) => stage(c.bg, c.fg, m)).join(''),
 ).join('')}</div>`;
 
 const exe = process.env['PLAYWRIGHT_BROWSERS_PATH']
@@ -87,7 +98,7 @@ const exe = process.env['PLAYWRIGHT_BROWSERS_PATH']
   : undefined;
 const browser = await chromium.launch(exe ? { executablePath: exe } : {});
 const ctx = await browser.newContext({
-  viewport: { width: W + 20, height: H * CASES.length * 3 + 20 },
+  viewport: { width: W + 20, height: H * CASES.length * 4 + 20 },
   deviceScaleFactor: 1,
 });
 const p = await ctx.newPage();
@@ -145,12 +156,13 @@ console.log('|---|---|---|---|');
 let worstResidual = 0;
 let worstInk = Infinity;
 for (let i = 0; i < CASES.length; i++) {
-  const bare = stats[i * 3];
-  const veil = stats[i * 3 + 1];
-  const ink = stats[i * 3 + 2];
+  const bare = stats[i * 4];
+  const veil = stats[i * 4 + 1];
+  const plate = stats[i * 4 + 2];
+  const ink = stats[i * 4 + 3];
   const residual = ratio(veil.p04, veil.p96);
-  // 譯文的墨(最暗那一撮)對上 veil 收出來的那片底(中位數)
-  const inkC = ratio(ink.p02, veil.p50);
+  // 譯文的墨(最暗那一撮)對上**它自己的貼片**(中位數)
+  const inkC = ratio(ink.p02, plate.p50);
   worstResidual = Math.max(worstResidual, residual);
   worstInk = Math.min(worstInk, inkC);
   console.log(

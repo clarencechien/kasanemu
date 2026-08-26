@@ -160,15 +160,15 @@ const imageAnno = new ImageAnnotator(
     hideImage() {
       layer?.hideImage();
     },
-    setActivePin(n) {
-      layer?.setActivePin(n);
+    setActivePin(n, block) {
+      layer?.setActivePin(n, block);
     },
     cue(el, text, tone, action) {
       imageCue = text === null ? null : { el, text, tone, action };
       renderChips();
     },
-    openZoom(src, natural) {
-      const holder = layer?.showZoom(src, natural);
+    openZoom(src, natural, reserve) {
+      const holder = layer?.showZoom(src, natural, reserve);
       if (!holder) return null;
       const r = holder.getBoundingClientRect();
       return { w: r.width, h: r.height };

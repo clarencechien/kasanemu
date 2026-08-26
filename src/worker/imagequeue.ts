@@ -28,6 +28,21 @@ export interface ImageJob {
   tier: Tier;
   at: number;
   attempts: number;
+  /**
+   * 這筆工作**已經被派出去跑過**的時間點。
+   *
+   * 有這個欄位才分得出兩種「久」:
+   *
+   * - 沒有 `startedAt` 而且很舊 = **使用者早就捲過去了**,收掉(省配額)。
+   * - 有 `startedAt` 但不在 in-flight 裡 = **worker 在半路被回收了**,
+   *   這是孤兒 —— 使用者還在等,要**重新派工**,不是收掉。
+   *
+   * 使用者回報「滑開再回來重試 都沒有成功過」就是這裡分不出來:
+   * log 上兩次都是 `ageMs: 61000`,那是 alarm(被 Chrome 夾到 60 秒)
+   * 醒來時看到一筆跑了一分鐘的 gemma 工作,套上「掃過就走」那條 10 秒的
+   * 規則把它殺了(`docs/deviations.md` §DJ)。
+   */
+  startedAt?: number;
 }
 
 export const LANE_CONCURRENCY: Record<'l0' | 'l1', number> = { l0: 1, l1: 2 };
@@ -74,9 +89,23 @@ export function nextJobs(
   now: number,
 ): { run: ImageJob[]; drop: ImageJob[] } {
   const idle = queue.filter((j) => !inFlight.has(jobKey(j)));
-  // **只有沒在跑的**才可能過期
+  /*
+   * **只有沒在跑的**才可能被收掉,而「沒在跑」有兩種:
+   *
+   * - 從來沒派出去過 → 「掃過就走」那條線(l0 十秒)管它。
+   * - 派出去過但不在 in-flight → worker 被回收留下的**孤兒**。
+   *   使用者還在等,所以**重派**,不收 —— 除非重派太多次或實在太舊。
+   */
+  const orphan = idle.filter(
+    (j) => j.startedAt !== undefined && j.attempts < IMAGE_MAX_ATTEMPTS && now - j.at <= ORPHAN_MS,
+  );
+  const orphanKeys = new Set(orphan.map(jobKey));
   const drop = idle.filter(
-    (j) => (j.lane === 'l0' && now - j.at > STALE_L0_MS) || now - j.at > ORPHAN_MS,
+    (j) =>
+      !orphanKeys.has(jobKey(j)) &&
+      ((j.lane === 'l0' && j.startedAt === undefined && now - j.at > STALE_L0_MS) ||
+        now - j.at > ORPHAN_MS ||
+        (j.startedAt !== undefined && j.attempts >= IMAGE_MAX_ATTEMPTS)),
   );
   const dropped = new Set(drop.map(jobKey));
   const alive = idle.filter((j) => !dropped.has(jobKey(j)));
@@ -88,7 +117,10 @@ export function nextJobs(
   for (const lane of ['l1', 'l0'] as const) {
     const slots = LANE_CONCURRENCY[lane] - running[lane];
     if (slots <= 0) continue;
-    run.push(...alive.filter((j) => j.lane === lane).slice(0, slots));
+    // 孤兒排在前面:使用者已經等過一輪了,不該再排到新來的後面
+    const mine = alive.filter((j) => j.lane === lane);
+    mine.sort((a, b) => Number(b.startedAt !== undefined) - Number(a.startedAt !== undefined));
+    run.push(...mine.slice(0, slots));
   }
   return { run, drop };
 }

@@ -12,9 +12,7 @@
 // 副檔名是刻意的:node --experimental-strip-types 解不了無副檔名的**值**匯入,
 // 而這個檔要被 node:test 直接載入(queuelogic.ts 因為同一個理由這樣寫)
 import {
-  AREA_PACK,
   BOX_SCALE,
-  LINE_FILL,
   LOW_CONFIDENCE,
   MIN_PATCH_FONT_PX,
   fontSizeFor,
@@ -229,11 +227,17 @@ export function placeBlocks(
       out.push({ ...c.r, fontPx: c.fontPx, ...common, kind: 'pin', n: pin });
       continue;
     }
-    // 疊字模式:少數塞不下的把框撐大到放得下,而不是退回另一種語彙
-    const r = c.fits ? c.r : growToFit(c.r, c.chars, common.vertical, clip);
+    /*
+     * 疊字模式:少數塞不下的**把字級拉到下限,框不動**。
+     *
+     * 早一版是把框撐大到放得下 —— 那是「譯文站在玻璃上」時的做法。
+     * 現在譯文有自己的貼片(overlay 的 `.itx`),貼片的寬度由字決定、
+     * 而且允許長出框外(§3.2),所以撐大玻璃反而會蓋掉旁邊本來看得到的
+     * 圖 —— 玻璃該蓋的只有原文那一塊。
+     */
     out.push({
-      ...r,
-      fontPx: c.fits ? c.fontPx : MIN_PATCH_FONT_PX,
+      ...c.r,
+      fontPx: Math.max(c.fontPx, MIN_PATCH_FONT_PX),
       ...common,
       kind: 'veil',
       n: 0,
@@ -265,41 +269,6 @@ export function imageMode(fits: readonly boolean[]): 'veil' | 'pin' {
   return ok / fits.length >= VEIL_MAJORITY ? 'veil' : 'pin';
 }
 
-/**
- * 把框撐大到 11px 的字放得下,以框心為錨。
- *
- * 這是 `fontSizeFor` 的反解,所以兩邊**共用 `LINE_FILL` / `AREA_PACK`**;
- * 常數各寫一份就會分岔,而分岔的症狀是「撐大了還是判定塞不下」。
- * 允許超出原框是規格給的(§3.2「譯文超框:允許超出 box」),但仍夾在
- * 圖片 rect 內 —— 加註跑到圖外面就變成頁面上的垃圾。
- */
-export function growToFit(
-  r: Rect,
-  chars: number,
-  vertical: boolean,
-  clip: { w: number; h: number },
-): Rect {
-  const min = MIN_PATCH_FONT_PX;
-  let w = r.w;
-  let h = r.h;
-  // 單行方向:字級 = 該邊 × LINE_FILL
-  if (vertical) w = Math.max(w, min / LINE_FILL);
-  else h = Math.max(h, min / LINE_FILL);
-  // 面積:chars 個字要 min² × AREA_PACK 的空間
-  const need = min * min * Math.max(1, chars) * AREA_PACK;
-  const grow = Math.sqrt(need / Math.max(1, w * h));
-  if (grow > 1) {
-    w *= grow;
-    h *= grow;
-  }
-  w = Math.min(w, clip.w);
-  h = Math.min(h, clip.h);
-  const x = clamp(r.x + r.w / 2 - w / 2, 0, Math.max(0, clip.w - w));
-  const y = clamp(r.y + r.h / 2 - h / 2, 0, Math.max(0, clip.h - h));
-  return { x, y, w, h };
-}
-
-const clamp = (n: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, n));
 
 /** `placeBlocks` 只讀這幾個欄位,不必綁死整個 ImageBlock */
 export interface ImageBlockLike {

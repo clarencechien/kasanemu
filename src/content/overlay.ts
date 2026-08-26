@@ -1,5 +1,6 @@
 import type { DisplayMode, Settings } from '../shared/types';
 import type { PlacedBlock } from './imagegeo';
+import { SINGLE_LINE_CHARS } from '../shared/imageblocks';
 import { fontFaceCss, fontStack } from './fonts';
 import { annotBg, annotFg, hintColor } from './styleprobe';
 import { LETTER_SPACING_EM, activeText, effectiveFontSize, type Unit } from './unit';
@@ -229,13 +230,26 @@ export const LAYER_CSS = `
   );
 }
 .chip.warn::before { background: #c0392b; }
-/* 可按的貼片(只有圖片 cue) */
+/*
+ * 可按的貼片(只有圖片 cue)。
+ *
+ * 看起來要像**按鈕**:整層其他東西一律不吃滑鼠事件,所以「這個可以點」
+ * 沒有任何上下文可以推論 —— 只能靠自己長得不一樣。
+ */
 .chip.act {
   pointer-events: auto;
   cursor: pointer;
   user-select: none;
+  font-weight: 600;
+  padding: 4px 11px 4px 12px;
+  border-color: rgba(255, 74, 20, .55);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .22), inset 0 1px 0 rgba(255, 255, 255, .18);
 }
-.chip.act:hover { filter: brightness(1.25); }
+.chip.act:hover {
+  filter: brightness(1.25);
+  border-color: #FF4A14;
+  transform: translateY(-1px);
+}
 /* 兩層都失敗:顯示原文,但要看得出來這是「翻不出來」而不是譯文 */
 .chip.warn { font-style: italic; }
 @media (prefers-reduced-motion: reduce) {
@@ -328,6 +342,8 @@ export const LAYER_CSS = `
   opacity: 0;
   transition: opacity .22s ease;
   contain: layout style;
+  /* 貼片可以長出自己的框,但**不可以長出圖片** —— 邊界在這一層 */
+  overflow: hidden;
 }
 .imgwrap.show { opacity: 1; }
 @media (prefers-reduced-motion: reduce) { .imgwrap { transition: none; } }
@@ -338,55 +354,84 @@ export const LAYER_CSS = `
   align-items: center;
   justify-content: center;
   text-align: center;
-  overflow: hidden;
+  /*
+   * **不裁切**:譯文的貼片是自己撐開的,短標籤會橫向長出框外
+   * (§3.2「譯文超框:允許超出 box」)。真正的邊界是圖片本身,
+   * 由 .imgwrap 的 overflow 管。
+   */
+  overflow: visible;
 }
 /*
- * veil 的濾鏡:**用 contrast 收斂,不是用 brightness 壓暗**。
+ * veil = **毛玻璃**,不是壓平。
  *
- * 抄過來的原始配方是 brightness(1.16),在淺底黑字上有效 —— 底色被推向
- * 白、黑字相對退後。但 brightness 是**乘法**,深底白字上白的還是白、
- * 黑的乘完還是黑,對比一點都沒掉:使用者在 ClickHouse 的深色 bar chart 上
- * 看到的就是這個,原文和譯文兩層字互相打架(「EESQL」「6791 ms」疊字)。
+ * 走過兩版才回到這裡,兩版都留下數字(docs/plan-images.md §13-7):
  *
- * contrast() 是**方向無關**的:它把所有像素往中灰收,深底淺底收完落在
- * 同一條亮帶上。0 → .41×1.72 ≈ .70,1 → .59×1.72 ≈ 1.0 —— 原文在帶內只剩
- * 約 3:1 的對比、再加 2px 模糊,退到背景;而**加註永遠站在一片可預期的
- * 亮底上**,所以譯文的顏色可以定死,不必知道底下是什麼。
+ * - 抄來的 brightness(1.16):方向寫死,深底白字上原文殘留 9.7:1,
+ *   等於沒蓋(§DH)。
+ * - 換成 contrast(.2) 收斂:量得過(殘留 1.6:1),但把整塊壓成一片
+ *   不透明亮帶 —— 使用者的話是「看起來不像毛玻璃」。收斂的代價是
+ *   **底下那張圖也一起沒了**,而「你知道底下是原圖」正是這個設計的前提。
  *
- * 這也是 PRD §2.2「疊層背景永遠不透明」那條規則的精神在圖片上的版本:
- * 兩層字互相干擾是視覺問題,和底下是活的文字還是點陣圖無關。
+ * 現在的分工是:**玻璃負責讓原文退場,貼片負責讓譯文站住**。
+ *
+ * 重模糊(9px)在任何底色上都會把字糊成色塊 —— 它不需要知道底色,
+ * 因為它破壞的是**筆劃**不是明度。而明度被保留下來,所以看得出底下
+ * 是深色圖表還是白底截圖:那就是毛玻璃感。
+ * 代價是玻璃場的亮度不可預測,所以譯文不能直接站在上面 —— 它自己帶底。
  */
 .iblk .veil {
   position: absolute;
   inset: -3px;
-  border-radius: 2px;
-  backdrop-filter: blur(2px) saturate(.35) contrast(.2) brightness(1.72);
-  -webkit-backdrop-filter: blur(2px) saturate(.35) contrast(.2) brightness(1.72);
+  border-radius: 3px;
+  backdrop-filter: blur(9px) saturate(.6);
+  -webkit-backdrop-filter: blur(9px) saturate(.6);
   background: linear-gradient(
     160deg,
-    rgba(255, 251, 244, calc(var(--ksnm-veil, .30) * 1.15)),
-    rgba(244, 250, 255, calc(var(--ksnm-veil, .30) * .85))
+    rgba(255, 252, 247, calc(var(--ksnm-veil, .30) * .87)),
+    rgba(240, 248, 255, calc(var(--ksnm-veil, .30) * .60))
   );
-  box-shadow: inset 0 0 0 1px rgba(38, 150, 140, .30);
+  /* 上緣一道白、下緣一點影:玻璃片的厚度感,也是「這是加上去的」的訊號 */
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .55),
+    inset 0 0 0 1px rgba(120, 170, 190, .22),
+    0 1px 4px rgba(0, 0, 0, .13);
 }
+/*
+ * 譯文帶自己的底。
+ *
+ * 量出來的理由(§13-7):玻璃保留明度,所以玻璃場在深色圖表上還是深的,
+ * 深墨橘站上去只有 2.4:1。給它一片貼片之後是 7.9:1,而且**四種底色一致**
+ * —— 因為墨和底都是我們自己畫的,不再取決於底下那張圖。
+ *
+ * 貼片是 inline 的:**它的寬度由字決定**,所以短標籤往橫向長,
+ * 不會折成「不適 / 用」那樣兩行(使用者原話:「如果真的太小 應該加長
+ * label 不要折字」)。
+ */
 .iblk .itx {
   position: relative;
-  width: 100%;
-  line-height: 1.22;
+  max-width: none;
+  line-height: 1.24;
   font-weight: 700;
+  color: #8E2605;
+  background: rgba(255, 252, 247, .92);
+  padding: .04em .32em;
+  border-radius: 4px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .18);
+  /* 短標籤一行到底;長句才折 —— 折行點由 .itx.wrap 打開 */
+  white-space: nowrap;
+}
+.iblk .itx.wrap {
+  white-space: normal;
   word-break: break-word;
-  /*
-   * 深墨橘,不是 chip 用的 #FF4A14。veil 收出來的是**亮帶**,而 #FF4A14 的
-   * 相對亮度(.24)和亮帶下緣幾乎一樣 —— 同色不同明度,等於沒有對比。
-   * 同一個色系往下拉到 .08,在亮帶兩端都有 4:1 以上;白光暈負責和原圖的
-   * 淺色細節分家,也維持「標註色只給譯文」那條紀律(§2.1)。
-   */
-  color: #9A2A06;
-  text-shadow: 0 0 2px #fff, 0 0 6px rgba(255, 255, 255, .95), 0 1px 0 rgba(255, 255, 255, .9);
 }
 /* 版面信心低:框線換警示色,提醒這一塊要自己看原圖 */
-.iblk.low .veil { box-shadow: inset 0 0 0 1px rgba(196, 58, 12, .55); }
-.iblk.vert .itx { writing-mode: vertical-rl; }
+.iblk.low .veil {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .5),
+    inset 0 0 0 1px rgba(196, 58, 12, .55),
+    0 1px 4px rgba(0, 0, 0, .13);
+}
+.iblk.vert .itx { writing-mode: vertical-rl; white-space: nowrap; }
 
 /* 字太小疊不下的改走編號錨點(§2.3) */
 .ipin {
@@ -405,7 +450,44 @@ export const LAYER_CSS = `
   color: #fff;
   line-height: 1;
 }
-.ipin.on { transform: scale(1.35); }
+.ipin.on { transform: scale(1.35); z-index: 2; }
+
+/*
+ * 錨點的貼片 —— §2.3 說的「hover pin 出貼片」。
+ *
+ * **這一段以前不存在。** setActivePin 只把圓點放大 1.35 倍就收工,
+ * 於是一張 15 個錨點的圖等於**一個字都讀不到**:圓點標出了位置,
+ * 卻沒有任何地方顯示譯文(使用者原話:「點了標號也沒有 tooltip」)。
+ *
+ * 樣式跟著譯文貼片走(同一片米白底、同一支深墨橘),因為它們是**同一件事**
+ * 的兩種擺法:字大就地疊,字小移到旁邊。兩種語彙看起來要像一家人。
+ */
+.ipop {
+  position: absolute;
+  max-width: 260px;
+  padding: 5px 9px 6px;
+  border-radius: 6px;
+  background: rgba(255, 252, 247, .97);
+  color: #8E2605;
+  font-weight: 700;
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .3), inset 0 0 0 1px rgba(142, 38, 5, .18);
+  /* 錨點在圖上任何位置,貼片要能往左往上翻 —— 由 JS 決定,這裡只負責畫 */
+  transform: translate(var(--ksnm-px, 0), var(--ksnm-py, 0));
+  z-index: 3;
+  pointer-events: none;
+}
+/* 原文小一號、灰一階:是佐證不是主角(標註色只給譯文) */
+.ipop .src {
+  display: block;
+  margin-top: 3px;
+  font-weight: 500;
+  font-size: 11px;
+  line-height: 1.35;
+  color: rgba(60, 52, 48, .72);
+}
 
 /* 放大檢視:進黑窗本身就是「我要讀字」,所以加註在這裡常駐 */
 .zoom {
@@ -428,10 +510,75 @@ export const LAYER_CSS = `
 .zoom.show { display: flex; }
 .zoom .zimg {
   position: relative;
+  flex: 0 0 auto;
   max-width: calc(100vw - 60px);
   max-height: calc(100vh - 60px);
 }
 .zoom .zimg img { display: block; width: 100%; height: 100%; object-fit: contain; }
+
+/*
+ * 註解清單 —— 錨點在圖上標位置,清單在旁邊給字。
+ *
+ * 沒有這一塊的話,一張 15 個錨點的截圖點開放大檢視還是 15 個圓點:
+ * 使用者的原話是「放大檢視要怎麼放大 點了標號也沒有 tooltip」。
+ * 錨點模式本來就是 sukemu 的「C 註解」,而註解的另一半就是清單
+ * (handoff §7 那條「用 order:-1 + sticky,不要 scrollIntoView」)。
+ *
+ * 只在錨點模式出現:整張疊字的圖旁邊掛一份清單是重複的。
+ */
+.zoom .zlist {
+  flex: 0 1 320px;
+  align-self: stretch;
+  margin: 30px 30px 30px 18px;
+  overflow-y: auto;
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+  scrollbar-width: thin;
+}
+.zoom.haslist .zlist { display: flex; }
+.zoom .zrow {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  background: rgba(255, 252, 247, .93);
+  color: #8E2605;
+  font-weight: 700;
+  text-align: left;
+}
+.zoom .zrow .no {
+  justify-self: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #FF4A14;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 18px;
+  text-align: center;
+}
+.zoom .zrow .src {
+  display: block;
+  margin-top: 2px;
+  font-weight: 500;
+  font-size: 11px;
+  color: rgba(60, 52, 48, .7);
+}
+/*
+ * 選中的那一列**移到最上面並且釘住**,不用 scrollIntoView ——
+ * 那會讓整個畫面跳(sukemu handoff §7 的陷阱清單原文)。
+ */
+.zoom .zrow.on {
+  order: -1;
+  position: sticky;
+  top: 0;
+  box-shadow: 0 0 0 2px #FF4A14, 0 4px 12px rgba(0, 0, 0, .45);
+}
 .zoom .zhint {
   position: fixed;
   left: 0;
@@ -888,12 +1035,48 @@ export class OverlayLayer {
     return this.imgWrap?.classList.contains('show') === true;
   }
 
-  /** 錨點的 hover 態。命中測試在 content 那邊算(疊層收不到滑鼠事件) */
-  setActivePin(n: number): void {
-    if (!this.imgWrap) return;
-    for (const el of this.imgWrap.querySelectorAll('.ipin')) {
+  /**
+   * 錨點的 hover 態:圓點放大**並且出貼片**。
+   *
+   * 命中測試在 content 那邊算(疊層收不到滑鼠事件),所以這裡拿到的是
+   * 已經算好的那一塊 —— 位置也一起帶進來,免得這一層再算一次幾何。
+   */
+  setActivePin(n: number, block?: { x: number; y: number; w: number; h: number; zh: string; text: string }): void {
+    const w = this.imgWrap;
+    if (!w) return;
+    for (const el of w.querySelectorAll('.ipin')) {
       el.classList.toggle('on', Number((el as HTMLElement).dataset['n']) === n);
     }
+    w.querySelector('.ipop')?.remove();
+    if (n === 0 || !block) return;
+
+    const pop = document.createElement('div');
+    pop.className = 'ipop';
+    pop.textContent = block.zh;
+    if (block.text && block.text !== block.zh) {
+      const src = document.createElement('span');
+      src.className = 'src';
+      src.textContent = block.text;
+      pop.append(src);
+    }
+    /*
+     * 先放上去量,再決定往哪邊翻。
+     *
+     * 不能用固定的偏移:錨點可能在圖的右下角,貼片會整片跑到圖外面,
+     * 而 `.imgwrap` 是 `overflow: hidden` —— 使用者會看到一片被切掉的白。
+     */
+    const cx = block.x + block.w / 2;
+    const cy = block.y + block.h / 2;
+    pop.style.left = `${cx}px`;
+    pop.style.top = `${cy + 12}px`;
+    w.append(pop);
+    const pr = pop.getBoundingClientRect();
+    const wr = w.getBoundingClientRect();
+    // 右邊放不下就往左翻;下面放不下就翻到錨點上方
+    const flipX = cx + pr.width + 14 > wr.width;
+    const flipY = cy + 12 + pr.height > wr.height;
+    pop.style.setProperty('--ksnm-px', flipX ? `${-pr.width - 12}px` : '12px');
+    pop.style.setProperty('--ksnm-py', flipY ? `${-pr.height - 26}px` : '0px');
   }
 
   private makeImgWrap(): HTMLDivElement {
@@ -925,7 +1108,8 @@ export class OverlayLayer {
     const veil = document.createElement('span');
     veil.className = 'veil';
     const tx = document.createElement('span');
-    tx.className = 'itx';
+    // 短標籤一行到底(不折字);長句才允許折行
+    tx.className = `itx${[...p.zh].length > SINGLE_LINE_CHARS ? ' wrap' : ''}`;
     tx.textContent = p.zh;
     box.append(veil, tx);
     return box;
@@ -938,13 +1122,19 @@ export class OverlayLayer {
    * 重錨定跟過去。這裡是給**沒有 lightbox 的站**用的:claude.com 那篇的
    * 2042px 截圖行內只顯示 565px,連英文讀者都得另開分頁。
    */
-  showZoom(src: string, natural: { w: number; h: number }): HTMLDivElement {
+  showZoom(src: string, natural: { w: number; h: number }, reserve = 0): HTMLDivElement {
     const z = this.zoomBox ?? this.makeZoom();
     const holder = z.querySelector('.zimg') as HTMLDivElement;
     const img = holder.querySelector('img') as HTMLImageElement;
-    img.src = src;
-    // 等比放大到視窗允許的最大尺寸;實際幾何等 img 載入後由呼叫端量
-    const maxW = window.innerWidth - 60;
+    if (img.src !== src) img.src = src;
+    /*
+     * 等比放大到視窗允許的最大尺寸;實際幾何等 img 載入後由呼叫端量。
+     *
+     * `reserve` 是**右邊要留給註解清單的寬度**。呼叫端先用 0 排一次、
+     * 看出是錨點模式,再帶著寬度回來排第二次 —— 因為「有沒有清單」
+     * 取決於排版結果,而排版又取決於畫布多大。這個循環只能靠排兩次打開。
+     */
+    const maxW = window.innerWidth - 60 - reserve;
     const maxH = window.innerHeight - 60;
     const scale = Math.min(maxW / natural.w, maxH / natural.h);
     holder.style.width = `${Math.round(natural.w * scale)}px`;
@@ -953,16 +1143,67 @@ export class OverlayLayer {
     return holder;
   }
 
-  /** 放大檢視裡的加註常駐(進黑窗就是「我要讀字」) */
+  /**
+   * 放大檢視裡的加註常駐(進黑窗就是「我要讀字」)。
+   *
+   * 錨點模式**同時**畫清單:圓點標位置,清單給字。少了清單,一張 15 個
+   * 錨點的截圖點開放大檢視還是 15 個圓點,什麼都讀不到。
+   */
   setZoomBlocks(placed: readonly PlacedBlock[]): void {
-    const holder = this.zoomBox?.querySelector('.zimg');
-    if (!holder) return;
+    const z = this.zoomBox;
+    const holder = z?.querySelector('.zimg');
+    if (!z || !holder) return;
     for (const old of holder.querySelectorAll('.iblk, .ipin')) old.remove();
     for (const p of placed) holder.appendChild(this.blockNode(p));
+
+    const list = z.querySelector('.zlist') as HTMLDivElement | null;
+    if (!list) return;
+    const pins = placed.filter((p) => p.kind === 'pin');
+    z.classList.toggle('haslist', pins.length > 0);
+    list.replaceChildren(
+      ...pins.map((p) => {
+        const row = document.createElement('div');
+        row.className = 'zrow';
+        row.dataset['n'] = String(p.n);
+        const no = document.createElement('span');
+        no.className = 'no';
+        no.textContent = String(p.n);
+        const body = document.createElement('span');
+        body.textContent = p.zh;
+        if (p.text && p.text !== p.zh) {
+          const src = document.createElement('span');
+          src.className = 'src';
+          src.textContent = p.text;
+          body.append(src);
+        }
+        row.append(no, body);
+        // 清單在 .zoom 裡,而 .zoom 是整層唯二吃滑鼠事件的東西 —— 這裡收得到
+        row.addEventListener('mouseenter', () => this.setZoomPin(p.n));
+        row.addEventListener('mouseleave', () => this.setZoomPin(0));
+        return row;
+      }),
+    );
+  }
+
+  /**
+   * 放大檢視裡選中一條註解:圓點亮起來,對應的那一列移到最上面並釘住。
+   *
+   * **不用 `scrollIntoView`** —— 那會讓整個畫面跳(sukemu handoff §7
+   * 的陷阱清單原文)。`order: -1 + sticky` 達到同樣的效果而畫面不動。
+   */
+  private setZoomPin(n: number): void {
+    const z = this.zoomBox;
+    if (!z) return;
+    for (const el of z.querySelectorAll('.zimg .ipin')) {
+      el.classList.toggle('on', Number((el as HTMLElement).dataset['n']) === n);
+    }
+    for (const el of z.querySelectorAll('.zrow')) {
+      el.classList.toggle('on', Number((el as HTMLElement).dataset['n']) === n);
+    }
   }
 
   hideZoom(): void {
-    this.zoomBox?.classList.remove('show');
+    this.zoomBox?.classList.remove('show', 'haslist');
   }
 
   /** 放大檢視裡的圖現在畫成多大(視窗變化後重算加註要用) */
@@ -990,10 +1231,12 @@ export class OverlayLayer {
     const holder = document.createElement('div');
     holder.className = 'zimg';
     holder.appendChild(document.createElement('img'));
+    const list = document.createElement('div');
+    list.className = 'zlist';
     const hint = document.createElement('div');
     hint.className = 'zhint';
-    hint.textContent = 'Esc 或點黑處關閉 · 按住 Alt 看原圖';
-    z.append(holder, hint);
+    hint.textContent = 'Esc 或點黑處關閉 · 按住 Alt 看原圖 · 滑過編號看對應位置';
+    z.append(holder, list, hint);
     z.addEventListener('click', (e) => {
       // 只有點在圖以外的黑處才關;點到圖上是想看清楚,不是想離開
       if (e.target === z) this.zoomDismiss?.();

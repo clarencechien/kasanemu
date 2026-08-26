@@ -25,6 +25,9 @@ import {
 /** 滑上圖片停多久才送 L0。和 UI 標籤的 180ms 不同 —— 這個要花配額 */
 export const IMAGE_HOVER_MS = 500;
 
+/** 放大檢視右邊留給註解清單的寬度(和 overlay 的 `.zlist` 對齊) */
+export const ZOOM_LIST_W = 356;
+
 export { IMAGE_WATCHDOG_MS };
 
 
@@ -45,11 +48,12 @@ export interface ImageHost {
     placed: readonly PlacedBlock[],
   ): void;
   hideImage(): void;
-  setActivePin(n: number): void;
+  /** 錨點的 hover 態。帶著那一塊的位置與文字 —— 貼片要畫得出東西來 */
+  setActivePin(n: number, block?: PlacedBlock): void;
   /** chip 文案。null 代表收起來;`action` 有值時貼片可以按 */
   cue(el: Element, text: string | null, tone: 'idle' | 'busy' | 'warn', action?: string): void;
   /** 開放大檢視,回傳圖片實際被畫成多大(等 img 載入後量的) */
-  openZoom(src: string, natural: { w: number; h: number }): { w: number; h: number } | null;
+  openZoom(src: string, natural: { w: number; h: number }, reserve?: number): { w: number; h: number } | null;
   setZoomBlocks(placed: readonly PlacedBlock[]): void;
   closeZoom(): void;
 }
@@ -221,7 +225,7 @@ export class ImageAnnotator {
       const n = hit?.n ?? 0;
       if (n !== this.activePin) {
         this.activePin = n;
-        this.host.setActivePin(n);
+        this.host.setActivePin(n, hit ?? undefined);
       }
     }
   }
@@ -356,10 +360,17 @@ export class ImageAnnotator {
      * 站方自己有 lightbox 就不出(§2.4)—— 跟著站方走,加註靠同 src 認親。
      */
     const canZoom = pins > 0 && !hasNativeZoom(img);
+    /*
+     * 文案要說得出**動作**,不是狀態。
+     *
+     * 使用者的原話是「放大檢視要怎麼放大」—— 舊文案「⤢ 放大檢視(15 處小字)」
+     * 看起來像一個標籤,而它其實是一顆按鈕。可按的 cue 全世界只有這一個
+     * (§3.3 的窄例外),所以它必須自己講出來。
+     */
     this.host.cue(
       img,
       canZoom
-        ? `⤢ 放大檢視(${pins} 處小字)`
+        ? `⤢ 點這裡放大讀 · ${pins} 條註解`
         : entry.tier === 'l0'
           ? '↑ Alt+click 升級'
           : `L1 · ${this.placed.length} 塊`,
@@ -392,29 +403,45 @@ export class ImageAnnotator {
     const size = this.host.openZoom(url, natural);
     if (!size) return false;
     this.zoomUrl = url;
-    this.paintZoom(size, entry, natural);
+    this.paintZoom(size, entry, natural, url);
     diag('info', 'image-zoom', { blocks: entry.blocks.length });
     return true;
   }
 
+  private place(size: { w: number; h: number }, entry: ImageEntry, natural: { w: number; h: number }) {
+    // 放大檢視一律 contain 置中,所以 drawn 就是整個 size
+    const drawn = drawnRect(natural, size, 'contain', { x: { pct: 0.5 }, y: { pct: 0.5 } });
+    return placeBlocks(entry.blocks, drawn, size);
+  }
+
+  /**
+   * 放大檢視的排版。
+   *
+   * **要排兩次**,而且這不是浪費:「右邊要不要留位置給註解清單」取決於
+   * 排出來是不是錨點模式,而排版又取決於畫布多寬 —— 循環只能靠排兩次
+   * 打開。第一次用整個視窗看模式,是錨點就縮回去再排一次。
+   */
   private paintZoom(
     size: { w: number; h: number },
     entry: ImageEntry,
     natural: { w: number; h: number },
+    url: string,
   ): void {
-    // 放大檢視一律 contain 置中,所以 drawn 就是整個 size
-    const drawn = drawnRect(natural, size, 'contain', {
-      x: { pct: 0.5 },
-      y: { pct: 0.5 },
-    });
-    this.host.setZoomBlocks(placeBlocks(entry.blocks, drawn, size));
+    const first = this.place(size, entry, natural);
+    const needsList = first.some((p) => p.kind === 'pin');
+    if (!needsList) {
+      this.host.setZoomBlocks(first);
+      return;
+    }
+    const shrunk = this.host.openZoom(url, natural, ZOOM_LIST_W);
+    this.host.setZoomBlocks(this.place(shrunk ?? size, entry, natural));
   }
 
   /** 視窗改變大小時重畫(放大檢視是 fit 到視窗的) */
   relayoutZoom(size: { w: number; h: number }, natural: { w: number; h: number }): void {
     if (!this.zoomUrl) return;
     const entry = this.byUrl.get(this.zoomUrl);
-    if (entry) this.paintZoom(size, entry, natural);
+    if (entry) this.paintZoom(size, entry, natural, this.zoomUrl);
   }
 
   closeZoom(): void {
@@ -454,6 +481,8 @@ const FRIENDLY: Record<string, string> = {
   stale: '等太久已取消 · 滑開再滑回來重試',
   empty: '圖片是空的',
   'fetch-timeout': '這張圖抓不下來 · 再點一次重試',
+  // 重派過還是沒回來 —— 別再叫使用者「滑開再滑回來」,那條路已經走過了
+  'gave-up': '試過兩次都沒回應 · 點一下再試',
 };
 
 /**

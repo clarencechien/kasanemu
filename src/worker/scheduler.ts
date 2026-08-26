@@ -644,7 +644,12 @@ export async function drainImages(): Promise<void> {
     const { drop } = picked;
     if (drop.length > 0) {
       // 掃過就走的 hover、以及 worker 被回收留下的孤兒
-      diag('info', 'image-stale', { n: drop.length, ageMs: Date.now() - drop[0]!.at });
+      diag('info', 'image-stale', {
+        n: drop.length,
+        ageMs: Date.now() - drop[0]!.at,
+        // 「使用者捲走了」和「試了兩次都沒回來」是兩件事,chip 上說的話也不同
+        started: drop.filter((j) => j.startedAt !== undefined).length,
+      });
       await mutateImageQueue((cur) => removeJobs(cur, drop));
       /*
        * **丟掉要告訴 content。**
@@ -658,7 +663,8 @@ export async function drainImages(): Promise<void> {
           type: 'image-error',
           pageKey: j.pageKey,
           url: j.url,
-          reason: 'stale',
+          // 派出去過卻收在這裡 = 重派過還是沒回來,不是「你捲走了」
+          reason: j.startedAt === undefined ? 'stale' : 'gave-up',
           retriable: true,
         });
       }
@@ -668,11 +674,63 @@ export async function drainImages(): Promise<void> {
   } finally {
     imageDraining = false;
   }
+  if (run.length > 0) {
+    /*
+     * 派出去之前先記一筆 `startedAt`。
+     *
+     * 這是**唯一**能在下一個 worker 生命週期裡分辨兩件事的線索:
+     * 「使用者早就捲過去了」和「worker 在半路被回收了」。記憶體裡的
+     * in-flight 集合隨 worker 一起消失,佇列不會(§DJ)。
+     */
+    const started = Date.now();
+    const marks = new Set(run.map(jobKey));
+    const retries = run.filter((j) => j.startedAt !== undefined).length;
+    if (retries > 0) {
+      // 看得見才修得動:上一版這條路是沉默的,log 上只留下一句騙人的 image-stale
+      diag('info', 'image-reclaim', { n: retries });
+    }
+    await mutateImageQueue((cur) =>
+      cur.map((j) =>
+        marks.has(jobKey(j))
+          ? // 重派的要記次數,否則一筆永遠回不來的工作會被叫醒無限次
+            { ...j, startedAt: started, attempts: j.startedAt === undefined ? j.attempts : j.attempts + 1 }
+          : j,
+      ),
+    );
+  }
   for (const job of run) {
     // 不 await:做完的工作自己回頭敲門,派工這一段才不會被請求的壽命綁住
-    void runImage(job).finally(() => {
+    void runImage({ ...job, startedAt: Date.now() }).finally(() => {
       void drainImages();
     });
+  }
+  keepAlive(run.length > 0 || inFlight.size > 0);
+}
+
+/**
+ * 有工作在跑的時候不讓 service worker 被回收。
+ *
+ * MV3 的 worker 閒置 30 秒就收,而 gemma 實測 9–68 秒 —— 等於**每一張
+ * 免費檔的圖都在賭**。使用者回報的「滑開再回來重試 都沒有成功過」,
+ * log 上兩次都停在 `ageMs: 61000`:worker 死了,alarm(被 Chrome 夾到
+ * 60 秒)醒來收屍。
+ *
+ * alarm 是**事後**的救生索,這個是**事前**的:呼叫任何一個擴充 API 都會
+ * 把那 30 秒的閒置計時歸零,所以 20 秒敲一次就夠。沒工作就停 ——
+ * 讓 worker 該睡的時候睡,是 MV3 的本意,不是要繞過它。
+ */
+let keepTimer: ReturnType<typeof setInterval> | null = null;
+const KEEPALIVE_MS = 20_000;
+
+function keepAlive(on: boolean): void {
+  if (on && keepTimer === null) {
+    keepTimer = setInterval(() => {
+      // 呼叫本身就是目的:把閒置計時歸零。回傳值沒有人要
+      void chrome.runtime.getPlatformInfo().catch(() => undefined);
+    }, KEEPALIVE_MS);
+  } else if (!on && keepTimer !== null) {
+    clearInterval(keepTimer);
+    keepTimer = null;
   }
 }
 
@@ -831,6 +889,7 @@ async function runImage(job: ImageJob): Promise<void> {
     await imageFailed(job, `internal:${String(e).slice(0, 80)}`, false);
   } finally {
     inFlight.delete(key);
+    if (inFlight.size === 0) keepAlive(false);
   }
 }
 

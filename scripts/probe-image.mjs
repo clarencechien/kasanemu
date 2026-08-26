@@ -204,6 +204,18 @@ if (after !== got.plain.docTop) {
  * 這裡把它裝起來,畫一張圖與一次放大檢視,再從外面驗它畫了什麼。
  */
 const render = await p.evaluate(([fx, cx]) => {
+  /*
+   * shadow root 是 closed 的,所以從外面看不進去 —— 但這裡要驗的正是
+   * **裡面畫了什麼**(貼片有沒有字、清單有沒有列)。攔 attachShadow 拿到
+   * 那個 root:動的是 probe 這一側,production 不必為了被驗而開後門。
+   */
+  const real = Element.prototype.attachShadow;
+  let shadow = null;
+  Element.prototype.attachShadow = function (init) {
+    const r = real.call(this, { ...init, mode: 'open' });
+    shadow = r;
+    return r;
+  };
   const { blocks } = IG.sanitizeBlocks(fx.blocks, fx.nw, fx.nh);
   const chartBlocks = IG.sanitizeBlocks(cx.blocks, cx.nw, cx.nh).blocks;
   const layer = new IG.OverlayLayer();
@@ -250,8 +262,31 @@ const render = await p.evaluate(([fx, cx]) => {
     { w: zr.width, h: (zr.width * cx.nh) / cx.nw },
   );
 
+  /*
+   * 錨點貼片:規格 §2.3 的「hover pin 出貼片」。
+   * 這一段以前根本不存在,而**沒有任何測試會發現** —— 圓點畫得好好的,
+   * 只是點下去什麼都沒有。所以這裡直接問 DOM 有沒有那片貼片、上面有沒有字。
+   */
+  const firstPin = zplaced.find((b) => b.kind === 'pin') ?? placed.find((b) => b.kind === 'pin');
+  layer.setActivePin(firstPin ? firstPin.n : 0, firstPin);
+  const popEl = shadow?.querySelector('.ipop');
+  const popText = popEl?.textContent ?? '';
+  layer.setActivePin(0);
+  const popGone = shadow?.querySelector('.ipop') === null;
+
+  // 註解清單:錨點標位置,清單給字。少了它,放大檢視還是 53 個圓點
+  const rows = shadow?.querySelectorAll('.zrow').length ?? 0;
+  const hasList = shadow?.querySelector('.zoom')?.classList.contains('haslist') ?? false;
+
+  Element.prototype.attachShadow = real;
   // 從 host 外面能看到的只有它存在;內部要靠 layer 自己回報
   return {
+    popText,
+    popHasZh: firstPin ? popText.includes(firstPin.zh) : false,
+    popGone,
+    rows,
+    hasList,
+    pinCount: zplaced.filter((b) => b.kind === 'pin').length,
     inlineVeil: placed.filter((b) => b.kind === 'veil').length,
     inlinePin: placed.filter((b) => b.kind === 'pin').length,
     zoomVeil: zplaced.filter((b) => b.kind === 'veil').length,
@@ -275,6 +310,16 @@ if (!render.zoomVisible) problems.push('showZoom 之後放大檢視沒顯示');
 if (!render.throughWithAnno) problems.push('加註擋住了滑鼠 —— 圖上點不到底下的頁面');
 if (!render.blockedWhileZoom) problems.push('放大檢視開著卻沒擋住點擊 —— 會點到底下的頁面');
 if (!render.throughAfterClose) problems.push('關掉放大檢視之後滑鼠還是穿不過去');
+// §2.3「hover pin 出貼片」—— 這一段以前沒實作,而圓點照樣畫得好好的
+if (!render.popHasZh) {
+  problems.push(`錨點沒有出貼片,或貼片上沒有譯文:「${render.popText}」`);
+}
+if (!render.popGone) problems.push('滑開之後貼片沒有收掉');
+// 錨點標位置,清單給字 —— 少了清單,放大檢視還是一堆讀不到的圓點
+if (!render.hasList) problems.push('錨點模式的放大檢視沒有掛註解清單');
+if (render.rows !== render.pinCount) {
+  problems.push(`清單列數對不上錨點數:${render.rows} vs ${render.pinCount}`);
+}
 if (render.zoomVeil > 0 && render.zoomPin > 0) {
   problems.push('放大檢視裡混用了兩種語彙');
 }
