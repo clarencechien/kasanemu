@@ -10,6 +10,8 @@
 
 import { diag } from '../shared/diag';
 import type { ImageBlock } from '../shared/imageblocks';
+// 時限彼此有順序,所以住在同一個檔案裡(`shared/imagetiming.ts` 的開頭有那張圖)
+import { IMAGE_WATCHDOG_MS } from '../shared/imagetiming.ts';
 import {
   drawnRect,
   parsePosition,
@@ -22,6 +24,12 @@ import {
 
 /** 滑上圖片停多久才送 L0。和 UI 標籤的 180ms 不同 —— 這個要花配額 */
 export const IMAGE_HOVER_MS = 500;
+
+/** 放大檢視右邊留給註解清單的寬度(和 overlay 的 `.zlist` 對齊) */
+export const ZOOM_LIST_W = 356;
+
+export { IMAGE_WATCHDOG_MS };
+
 
 /** 一張圖現在的狀態 */
 export interface ImageEntry {
@@ -40,9 +48,14 @@ export interface ImageHost {
     placed: readonly PlacedBlock[],
   ): void;
   hideImage(): void;
-  setActivePin(n: number): void;
-  /** chip 文案。null 代表收起來 */
-  cue(el: Element, text: string | null, tone: 'idle' | 'busy' | 'warn'): void;
+  /** 錨點的 hover 態。帶著那一塊的位置與文字 —— 貼片要畫得出東西來 */
+  setActivePin(n: number, block?: PlacedBlock): void;
+  /** chip 文案。null 代表收起來;`action` 有值時貼片可以按 */
+  cue(el: Element, text: string | null, tone: 'idle' | 'busy' | 'warn', action?: string): void;
+  /** 開放大檢視,回傳圖片實際被畫成多大(等 img 載入後量的) */
+  openZoom(src: string, natural: { w: number; h: number }, reserve?: number): { w: number; h: number } | null;
+  setZoomBlocks(placed: readonly PlacedBlock[]): void;
+  closeZoom(): void;
 }
 
 /**
@@ -59,6 +72,37 @@ export function imageUnder(target: EventTarget | null): HTMLImageElement | null 
   const r = img.getBoundingClientRect();
   if (!worthTranslating({ w: r.width, h: r.height })) return null;
   return img;
+}
+
+/**
+ * 這個站自己就有放大檢視嗎(`docs/plan-images.md` §2.4)。
+ *
+ * 有的話**不出我們的入口** —— 跟著站方走,加註靠同 src 認親跟過去。
+ * 兩個都出只會讓使用者面對兩顆意思一樣的按鈕,而且站方那顆通常做得更好
+ * (它知道自己的高解析原圖在哪)。
+ *
+ * 訊號:
+ * - `cursor: zoom-in` —— ClickHouse 那篇每張圖上都蓋著一顆
+ *   `button.cursor-zoom-in`,實測就是這個
+ * - 連到圖片檔的 `<a>` —— WordPress 與大多數相簿外掛的寫法
+ * - 常見縮放外掛的類別名(medium-zoom / react-medium-image-zoom / lightbox)
+ */
+export function hasNativeZoom(img: HTMLImageElement): boolean {
+  if (img.closest('[data-rmiz],[class*="lightbox" i],[class*="medium-zoom" i]')) return true;
+  const link = img.closest('a[href]');
+  if (link instanceof HTMLAnchorElement && /\.(png|jpe?g|gif|webp|avif)([?#]|$)/i.test(link.href)) {
+    return true;
+  }
+  // 圖片本身或蓋在它上面的透明按鈕
+  if (getComputedStyle(img).cursor === 'zoom-in') return true;
+  const parent = img.parentElement;
+  if (parent) {
+    if (getComputedStyle(parent).cursor === 'zoom-in') return true;
+    for (const sib of parent.children) {
+      if (sib !== img && getComputedStyle(sib).cursor === 'zoom-in') return true;
+    }
+  }
+  return false;
 }
 
 /** 圖片本地座標系:點陣圖實際畫在 content box 的哪裡 */
@@ -97,6 +141,8 @@ export class ImageAnnotator {
   private failed = new Map<string, string>();
 
   private hoverTimer = 0;
+  /** url → 看門狗的 timer id */
+  private watchdogs = new Map<string, number>();
   private current: HTMLImageElement | null = null;
   private placed: PlacedBlock[] = [];
   private activePin = 0;
@@ -110,8 +156,46 @@ export class ImageAnnotator {
   reset(): void {
     this.byUrl.clear();
     this.inFlight.clear();
+    for (const t of this.watchdogs.values()) clearTimeout(t);
+    this.watchdogs.clear();
     this.failed.clear();
     this.leave();
+  }
+
+  /** 送出一個請求:登記 in-flight 並上看門狗 */
+  private send(img: HTMLImageElement, url: string, lane: 'l0' | 'l1', busy: string): void {
+    this.inFlight.add(url);
+    this.host.cue(img, busy, 'busy');
+    this.host.request(url, lane);
+    const prev = this.watchdogs.get(url);
+    if (prev) clearTimeout(prev);
+    this.watchdogs.set(
+      url,
+      window.setTimeout(() => this.giveUp(url), IMAGE_WATCHDOG_MS),
+    );
+  }
+
+  private clearWatchdog(url: string): void {
+    const t = this.watchdogs.get(url);
+    if (t) clearTimeout(t);
+    this.watchdogs.delete(url);
+  }
+
+  /**
+   * 看門狗響了:沒有人回話。
+   *
+   * **「卡住」不可以是一個能永久停留的狀態**(`docs/lessons.md` §12 那條
+   * 在文字管線學到的)。這裡不假裝知道原因,只把狀態交還給使用者:
+   * 清掉 in-flight,圖角說得出「再試一次」。
+   */
+  private giveUp(url: string): void {
+    this.watchdogs.delete(url);
+    if (!this.inFlight.delete(url)) return;
+    this.failed.set(url, '沒有回應 · 滑開再滑回來重試');
+    diag('warn', 'image-watchdog', { waitedMs: IMAGE_WATCHDOG_MS });
+    if (this.current && this.urlOf(this.current) === url) {
+      this.host.cue(this.current, '沒有回應 · 滑開再滑回來重試', 'warn');
+    }
   }
 
   private urlOf(img: HTMLImageElement): string {
@@ -141,7 +225,7 @@ export class ImageAnnotator {
       const n = hit?.n ?? 0;
       if (n !== this.activePin) {
         this.activePin = n;
-        this.host.setActivePin(n);
+        this.host.setActivePin(n, hit ?? undefined);
       }
     }
   }
@@ -166,14 +250,14 @@ export class ImageAnnotator {
     this.hoverTimer = window.setTimeout(() => {
       this.hoverTimer = 0;
       if (this.current !== img) return;
-      this.inFlight.add(url);
-      this.host.cue(img, '辨識中 ·(免費 · 較慢)', 'busy');
-      this.host.request(url, 'l0');
+      this.send(img, url, 'l0', '辨識中 ·(免費 · 較慢)');
       diag('info', 'image-hover', { lane: 'l0' });
     }, IMAGE_HOVER_MS);
   }
 
   private leave(): void {
+    // 放大檢視開著的時候滑鼠早就離開原圖了,收掉會把它一起關掉
+    if (this.zoomUrl !== null) return;
     if (this.hoverTimer) {
       clearTimeout(this.hoverTimer);
       this.hoverTimer = 0;
@@ -184,6 +268,29 @@ export class ImageAnnotator {
     this.activePin = 0;
     // 對稱律:移開就還原圖(除非使用者選了常駐)
     if (!this.alwaysOn()) this.host.hideImage();
+  }
+
+  /**
+   * 新出現的 `<img>` 如果是**翻過的同一張圖**,直接畫上去(§2.4)。
+   *
+   * 站方的 lightbox 開出來的是**新的元素但同一個 src**(ClickHouse 那篇
+   * 實測就是這樣)。沒有這一條的話,使用者點開黑窗會看到一張沒有加註的圖,
+   * 得再滑上去一次才出現 —— 而他剛剛才在縮圖上看過。
+   *
+   * 只認**已經翻過的**:這條路不觸發任何請求,純粹是把手上的東西畫出來。
+   */
+  adopt(img: HTMLImageElement): boolean {
+    if (!this.enabled()) return false;
+    const r = img.getBoundingClientRect();
+    if (!worthTranslating({ w: r.width, h: r.height })) return false;
+    const entry = this.byUrl.get(this.urlOf(img));
+    if (!entry || entry.blocks.length === 0) return false;
+    // 已經指著同一個元素就不用重畫
+    if (this.current === img) return false;
+    this.current = img;
+    this.render(img, entry);
+    diag('info', 'image-adopt', { tier: entry.tier });
+    return true;
   }
 
   /**
@@ -200,10 +307,8 @@ export class ImageAnnotator {
     const known = this.byUrl.get(url);
     if (known?.tier === 'l1') return false;
     if (this.inFlight.has(url)) return true;
-    this.inFlight.add(url);
     this.failed.delete(url);
-    this.host.cue(img, '升級中…', 'busy');
-    this.host.request(url, 'l1');
+    this.send(img, url, 'l1', '升級中…');
     diag('info', 'image-upgrade', {});
     return true;
   }
@@ -211,6 +316,7 @@ export class ImageAnnotator {
   /** worker 回來了 */
   onResult(url: string, hash: string, lane: 'l0' | 'l1', blocks: ImageBlock[]): void {
     this.inFlight.delete(url);
+    this.clearWatchdog(url);
     this.failed.delete(url);
     const prev = this.byUrl.get(url);
     // L1 蓋掉 L0;L0 不可以蓋掉已經升級過的(晚到的免費結果會倒退品質)
@@ -229,7 +335,11 @@ export class ImageAnnotator {
 
   onError(url: string, reason: string): void {
     this.inFlight.delete(url);
-    const text = FRIENDLY[reason] ?? '辨識失敗 · 再點一次重試';
+    this.clearWatchdog(url);
+    const text =
+      FRIENDLY[reason] ??
+      FRIENDLY_PREFIX.find(([p]) => reason.startsWith(p))?.[1] ??
+      '辨識失敗 · 再點一次重試';
     this.failed.set(url, text);
     if (this.current && this.urlOf(this.current) === url) {
       this.host.cue(this.current, text, 'warn');
@@ -241,16 +351,107 @@ export class ImageAnnotator {
     this.placed = placeBlocks(entry.blocks, drawn, clip);
     this.host.showImage(rect, this.placed);
     const pins = this.placed.filter((p) => p.kind === 'pin').length;
+    /*
+     * **有錨點才給放大檢視的入口。**
+     *
+     * 錨點的存在就是「這張圖上有字小到疊不下」的信號,而放大檢視正是
+     * 為那件事做的。全部都疊得下的圖出這顆按鈕只是多一個沒用的東西。
+     *
+     * 站方自己有 lightbox 就不出(§2.4)—— 跟著站方走,加註靠同 src 認親。
+     */
+    const canZoom = pins > 0 && !hasNativeZoom(img);
+    /*
+     * 文案要說得出**動作**,不是狀態。
+     *
+     * 使用者的原話是「放大檢視要怎麼放大」—— 舊文案「⤢ 放大檢視(15 處小字)」
+     * 看起來像一個標籤,而它其實是一顆按鈕。可按的 cue 全世界只有這一個
+     * (§3.3 的窄例外),所以它必須自己講出來。
+     */
     this.host.cue(
       img,
-      entry.tier === 'l0' ? '↑ Alt+click 升級' : `L1 · ${this.placed.length} 塊`,
+      canZoom
+        ? `⤢ 點這裡放大讀 · ${pins} 條註解`
+        : entry.tier === 'l0'
+          ? '↑ Alt+click 升級'
+          : `L1 · ${this.placed.length} 塊`,
       'idle',
+      canZoom ? 'zoom' : undefined,
     );
     diag('info', 'image-render', {
       tier: entry.tier,
       veil: this.placed.length - pins,
       pin: pins,
     });
+  }
+
+  /**
+   * 放大檢視(§3.3)。
+   *
+   * **不重問模型** —— 同一份區塊,換一個顯示尺寸再算一次
+   * `placeBlocks` 就好。行內過不了字級門檻的塊在這裡自動變成疊字,
+   * 那正是 §2.3 分流規則想要的效果。
+   */
+  private zoomUrl: string | null = null;
+
+  openZoom(): boolean {
+    const img = this.current;
+    if (!img) return false;
+    const url = this.urlOf(img);
+    const entry = this.byUrl.get(url);
+    if (!entry) return false;
+    const natural = { w: img.naturalWidth, h: img.naturalHeight };
+    const size = this.host.openZoom(url, natural);
+    if (!size) return false;
+    this.zoomUrl = url;
+    this.paintZoom(size, entry, natural, url);
+    diag('info', 'image-zoom', { blocks: entry.blocks.length });
+    return true;
+  }
+
+  private place(size: { w: number; h: number }, entry: ImageEntry, natural: { w: number; h: number }) {
+    // 放大檢視一律 contain 置中,所以 drawn 就是整個 size
+    const drawn = drawnRect(natural, size, 'contain', { x: { pct: 0.5 }, y: { pct: 0.5 } });
+    return placeBlocks(entry.blocks, drawn, size);
+  }
+
+  /**
+   * 放大檢視的排版。
+   *
+   * **要排兩次**,而且這不是浪費:「右邊要不要留位置給註解清單」取決於
+   * 排出來是不是錨點模式,而排版又取決於畫布多寬 —— 循環只能靠排兩次
+   * 打開。第一次用整個視窗看模式,是錨點就縮回去再排一次。
+   */
+  private paintZoom(
+    size: { w: number; h: number },
+    entry: ImageEntry,
+    natural: { w: number; h: number },
+    url: string,
+  ): void {
+    const first = this.place(size, entry, natural);
+    const needsList = first.some((p) => p.kind === 'pin');
+    if (!needsList) {
+      this.host.setZoomBlocks(first);
+      return;
+    }
+    const shrunk = this.host.openZoom(url, natural, ZOOM_LIST_W);
+    this.host.setZoomBlocks(this.place(shrunk ?? size, entry, natural));
+  }
+
+  /** 視窗改變大小時重畫(放大檢視是 fit 到視窗的) */
+  relayoutZoom(size: { w: number; h: number }, natural: { w: number; h: number }): void {
+    if (!this.zoomUrl) return;
+    const entry = this.byUrl.get(this.zoomUrl);
+    if (entry) this.paintZoom(size, entry, natural, this.zoomUrl);
+  }
+
+  closeZoom(): void {
+    if (!this.zoomUrl) return;
+    this.zoomUrl = null;
+    this.host.closeZoom();
+  }
+
+  zoomOpen(): boolean {
+    return this.zoomUrl !== null;
   }
 
   /** 已經翻過的圖(給放大檢視與同 src 重錨定用) */
@@ -275,5 +476,19 @@ const FRIENDLY: Record<string, string> = {
   'page-cap': '本頁 token 上限已滿',
   'daily-cap': '今日預算已用完',
   'no-key': '還沒設定 API key',
+  'page-image-cap': '本頁圖片翻譯已達上限',
+  // worker 把排太久的工作丟掉時送的:使用者可能早就捲過去了
+  stale: '等太久已取消 · 滑開再滑回來重試',
   empty: '圖片是空的',
+  'fetch-timeout': '這張圖抓不下來 · 再點一次重試',
+  // 重派過還是沒回來 —— 別再叫使用者「滑開再滑回來」,那條路已經走過了
+  'gave-up': '試過兩次都沒回應 · 點一下再試',
 };
+
+/**
+ * 模型逾時的訊息帶著毫秒數(`timeout 100000ms`),不是固定字串,
+ * 所以查不到表。這種前綴比對放在查表**之後**當退路。
+ */
+const FRIENDLY_PREFIX: [string, string][] = [
+  ['timeout ', '模型沒有在時限內回應 · 再點一次重試'],
+];

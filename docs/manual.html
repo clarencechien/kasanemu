@@ -358,6 +358,7 @@ footer {
       <li><a href="#read">怎麼讀畫面</a></li>
       <li><a href="#chips">滑過與選取</a></li>
       <li><a href="#glossary">詞表</a></li>
+      <li><a href="#images">圖片</a></li>
       <li><a href="#keys">快捷鍵</a></li>
       <li><a href="#tiers">檔位與帳單</a></li>
       <li><a href="#key">API key 與隱私</a></li>
@@ -758,6 +759,116 @@ footer {
       </div>
     </section>
 
+    <section id="images" class="mark-l1">
+      <div class="eyebrow">圖片</div>
+      <h2>圖片上的字</h2>
+      <div class="stack-block">
+        <p>
+          圖表、截圖、海報上的字不是文字節點,是像素 —— 疊層碰不到它們。
+          所以圖片走另一條路:<strong>滑到圖上停 0.5 秒</strong>,譯文就浮在原文上面。
+          移開就收,還你乾淨的原圖。
+        </p>
+
+        <div class="note">
+          <span class="k">和文字剛好相反</span>
+          文字是<strong>譯文常駐、滑上去看原文</strong>;圖片是<strong>原圖常駐、
+          滑上去看譯文</strong>。
+          <br /><br />
+          理由:文字的資訊全在語言裡,不翻就讀不動;圖的資訊主體是圖形與版面,
+          文字是輔助。整頁的圖都掛著標註色是噪音,不是幫助。
+          翻過的圖角上會留一枚小標記,那就是「這張翻過了」的記號 ——
+          再浮現是即時的,不會再花錢。
+        </div>
+
+        <h3 style="margin-top:26px">免費的自動來,好的要你點</h3>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th></th><th>怎麼觸發</th><th>用哪個模型</th><th>花費</th></tr></thead>
+            <tbody>
+              <tr><td class="keycell">先來的</td><td>滑上去停 0.5 秒</td><td>免費檔</td><td><strong>零</strong>(但慢,10–70 秒)</td></tr>
+              <tr><td class="keycell">好的</td><td><kbd>Alt</kbd>+點圖</td><td>你選的檔位</td><td>一張約 NT$0.2</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          「不按就不翻」在文字上是鐵則,在圖片上鬆了一格 ——
+          <strong>自動的只能是免費的</strong>。免費檔零帳單,而滑到圖上停半秒
+          是很明確的「我想看這張」。付費的那一段照樣要你自己按。
+        </p>
+
+        <h3 style="margin-top:26px">字太小的整張變成編號</h3>
+        <p>
+          譯文要塞得進原本那塊字的位置才讀得動。<strong>算出來小於 11px 的</strong>
+          不硬塞,改成一顆編號圓點 —— <strong>滑上去就看得到譯文</strong>。
+        </p>
+        <p>
+          決定用哪一種的是<strong>整張圖</strong>,不是單獨一塊:大部分放得下就整張
+          疊字(少數塞不下的把位置撐開一點),否則整張走編號。
+          同一張圖上混著兩種樣子,看的人得同時記兩套規則。
+        </p>
+        <p>
+          圓點<strong>滑上去就出貼片</strong>,上面是譯文,底下小字是原文。
+        </p>
+        <p>
+          圖角出現<strong>「⤢ 點這裡放大讀」</strong>的時候,代表這張圖上都是小字 ——
+          <strong>那一行字可以按</strong>(整個疊層只有它和貼片吃得到滑鼠)。
+          點開是一個黑底的全螢幕檢視:圖放大之後字夠大的話整張會變回疊字;
+          還是小字的話,<strong>右邊會列出一份註解清單</strong>,編號對著圖上的圓點,
+          滑過清單哪一列,圖上對應的圓點就會亮起來。同一份譯文,不會再花一次錢。
+          <kbd>Esc</kbd> 或點黑處關閉。
+        </p>
+        <div class="note">
+          <span class="k">網站自己有放大功能的話</span>
+          我們就不出這顆按鈕,跟著網站走。你點開它的大圖,
+          <strong>加註會自己跟過去</strong>(認的是同一張圖,不是同一個框)。
+        </div>
+
+        <h3 style="margin-top:26px">框線變色 = 這一塊別盡信</h3>
+        <p>
+          模型對某一塊沒把握的時候,那塊的框線會換成警示色。三種常見情況:
+        </p>
+        <ul class="plain">
+          <li><strong>直排的日文</strong>(招牌、海報、對聯)——
+            目前<strong>讀不對</strong>,模型會把直排當橫排讀、字跨欄串起來。
+            認得出來就標記,不會假裝翻對了。</li>
+          <li><strong>多語並排</strong>的菜單:模型可能把好幾行的譯文串成一塊。</li>
+          <li>字太模糊、光線太差。</li>
+        </ul>
+        <p style="color:var(--muted); font-size:14px">
+          看到警示色就<strong>按住 <kbd>Alt</kbd> 看原圖</strong> ——
+          和文字那邊同一個手勢。
+        </p>
+
+        <div class="note">
+          <span class="k">詞表在圖片上是「請求」,不是保證</span>
+          文字那邊的詞表是硬的:送出前就把那個詞換成特殊字元,模型根本沒看到它。
+          <strong>圖片做不到</strong> —— 模型看到的是像素,我們改寫不了。
+          所以只能寫進指令請它照做。
+          <br /><br />
+          實測(同一張圖跑三輪,結果一致):三條詞,免費檔<strong>三條都照做</strong>,
+          付費檔<strong>照做兩條</strong> —— 產品名那條它堅持不翻。
+          有趣的是<strong>哪個模型比較聽話和價格無關</strong>。
+        </div>
+
+        <h3 style="margin-top:26px">花費的閘門</h3>
+        <ul class="plain">
+          <li><strong>不滑就是零。</strong>「翻譯這一頁」不會碰任何圖片。</li>
+          <li><strong>每頁最多 20 張</strong>(可調)。一篇長文可能有四十張圖,
+            滑過去每張都會觸發免費辨識 —— 不花錢,但會把免費配額吃光,
+            讓你後面真正想翻的那張排不進去。</li>
+          <li>同一張圖翻兩次(免費 → 升級)<strong>只算一張</strong>,認的是圖片內容;
+            換個網址參數的同一張圖也只付一次錢。</li>
+          <li>太大的圖(超過 4MB)不翻,圖角會說原因。</li>
+        </ul>
+
+        <div class="note">
+          <span class="k">不想要的話</span>
+          設定 → 圖片 → 改成「不翻圖片」,整條路就關掉了。
+          也可以把加註改成常駐(不移開就不收),或調疊膜的濃淡。
+        </div>
+      </div>
+    </section>
+
     <section id="keys" class="mark-l1">
       <div class="eyebrow">操作</div>
       <h2>快捷鍵</h2>
@@ -770,7 +881,9 @@ footer {
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>T</kbd></td><td>在這個網域啟用 / 關閉疊層翻譯</td></tr>
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd></td><td>切換「全開」/「點閱」(點閱 = 疊層平常隱藏,滑過才顯示)</td></tr>
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>R</kbd></td><td>翻譯這一頁。<strong>再按一次</strong>會把失敗的重試、還停在 L0 的全部升級(包含收折起來的內容)</td></tr>
-            <tr><td class="keycell">按住 <kbd>Alt</kbd></td><td><strong>暫時收起整層</strong> —— 想瞄一眼原文就按著,放開就回來</td></tr>
+            <tr><td class="keycell">按住 <kbd>Alt</kbd></td><td><strong>暫時收起整層</strong> —— 想瞄一眼原文就按著,放開就回來。圖片的加註也一起收</td></tr>
+            <tr><td class="keycell"><kbd>Alt</kbd>+<strong>點圖</strong></td><td>把那張圖升級到付費檔(見「圖片上的字」)。普通點擊照舊 —— 圖是連結的話會正常前往</td></tr>
+            <tr><td class="keycell"><kbd>Esc</kbd></td><td>關掉圖片的放大檢視</td></tr>
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd></td><td>掃視:疊層切成標註樣式,同時顯示所有 UI 標籤的貼片(除錯用)</td></tr>
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></td><td>抽樣面板:原文 / L0 / L1 三欄並列(需先在設定開 debug mode)</td></tr>
           </tbody>
@@ -947,6 +1060,30 @@ footer {
           </p>
         </div>
 
+        <div class="card">
+          <span class="k">圖片一直停在「辨識中」</span>
+          <p>
+            免費檔實測要 10–70 秒,而且一次只跑一張(它和文字共用免費配額)。
+            滑過一整篇長文的圖之後,後面那幾張會排隊。
+            想馬上看某一張就 <kbd>Alt</kbd>+點它,付費檔那條路是另一條佇列。
+          </p>
+        </div>
+        <div class="card">
+          <span class="k">圖角說「本頁圖片翻譯已達上限」</span>
+          <p>
+            每頁預設 20 張(設定 → 圖片可調)。滑過長文時每張圖都會觸發免費辨識,
+            額度就是這樣用掉的 —— 換頁會重新計算。
+          </p>
+        </div>
+        <div class="card">
+          <span class="k">圖上的譯文位置歪掉 / 蓋錯地方</span>
+          <p>
+            先看框線有沒有變成警示色:有的話是模型自己就沒把握(直排、多語並排、
+            字太模糊)。沒有警示色卻歪掉的,<strong>請截圖 + 匯出 log</strong>,
+            那是我們的座標換算出錯,要修。
+          </p>
+        </div>
+
         <div class="note fail">
           <span class="k">回報的標準流程</span>
           popup → 「匯出診斷 log」→ 內容會複製到剪貼簿,存成 <code>.md</code> 直接貼給我。
@@ -970,6 +1107,13 @@ footer {
           <li>在 <code>&lt;div&gt;</code> 裡面捲的頁面(Gmail、Slack),捲動時疊層會暫時消失,停下來就回來 —— 那是刻意的,總比疊層跟著滑好。<strong>只有那種頁面才這樣</strong>,一般長文捲動時譯文一直都在;真的還是覺得閃,設定裡可以改(見上面「出問題的時候」)。</li>
           <li>free 檔位在長頁面上會明顯排隊,那是免費層的速率限制,不是當掉。</li>
           <li>日文與韓文是「應該會動」而不是「測過了」—— 封測的主力測試對象是英文。</li>
+          <li><strong>圖片上的直排日文讀不對</strong>(招牌、海報、對聯):模型會把直排
+            當橫排讀、字跨欄串起來。認得出來會標警示色,不會假裝翻對了。</li>
+          <li>圖片的免費檔<strong>很慢</strong>(實測 10–70 秒)。它是背景填充,
+            不必等它 —— 想馬上要好的就 <kbd>Alt</kbd>+點圖。</li>
+          <li><code>&lt;canvas&gt;</code> 畫出來的字、CSS 背景圖上的字<strong>不翻</strong>
+            —— 前者沒有來源可取,後者還沒做。</li>
+          <li>圖片的詞表<strong>靠模型遵守</strong>,不像文字那邊有硬保證(見「詞表」那節)。</li>
         </ul>
 
         <h3 style="margin-top:22px">最想收到的回饋</h3>

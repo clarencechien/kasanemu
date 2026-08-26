@@ -37,6 +37,18 @@ export const BOX_SCALE = 1000;
  */
 export const MIN_PATCH_FONT_PX = 11;
 
+/**
+ * 多長的標籤才允許折行。
+ *
+ * 短標籤折行是**最難看的失敗模式**:「不適用」被折成「不適 / 用」,
+ * 三個字兩行,而且斷在詞中間(使用者原話:「如果真的太小 應該加長 label
+ * 不要折字」)。譯文的貼片寬度由字決定,所以短的往橫向長就好 ——
+ * 加註本來就允許超出原框(§3.2)。
+ *
+ * 超過這個長度就是句子而不是標籤了,折行反而正常。
+ */
+export const SINGLE_LINE_CHARS = 10;
+
 /** 加註字級的上限:再大就比原圖的字還醒目,喧賓奪主 */
 export const MAX_PATCH_FONT_PX = 40;
 
@@ -135,6 +147,18 @@ export function normalizeBoxes<T extends { box: [number, number, number, number]
  *
  * 1.35 是中文方塊字加行距的經驗係數,mockup 上調出來的。
  */
+/** 單行字級佔框高(直排佔框寬)的比例 */
+export const LINE_FILL = 0.8;
+
+/**
+ * 面積寬鬆係數:一個中文字實際佔掉 `fs² × 1.35`(行距 + 字距)。
+ *
+ * 這個數字被 `fontSizeFor` 與 `growToFit`(content 端把框撐大到放得下)
+ * **同時**使用 —— 一邊算「這個框能塞多大的字」,另一邊反解「這些字要多大的
+ * 框」。兩邊各寫一份常數就會分岔(`docs/lessons.md` §1),所以只有這一份。
+ */
+export const AREA_PACK = 1.35;
+
 export function fontSizeFor(
   boxW: number,
   boxH: number,
@@ -143,8 +167,8 @@ export function fontSizeFor(
 ): number {
   const n = Math.max(1, chars);
   // 直排:限制字級的是框**寬**,不是框高
-  const lineCap = (vertical ? boxW : boxH) * 0.8;
-  const areaCap = Math.sqrt((boxW * boxH) / (n * 1.35));
+  const lineCap = (vertical ? boxW : boxH) * LINE_FILL;
+  const areaCap = Math.sqrt((boxW * boxH) / (n * AREA_PACK));
   return Math.min(lineCap, areaCap, MAX_PATCH_FONT_PX);
 }
 

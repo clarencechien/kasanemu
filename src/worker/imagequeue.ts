@@ -1,4 +1,7 @@
 import type { Tier } from '../shared/models';
+// 時限彼此有順序,所以住在同一個檔案裡(`shared/imagetiming.ts` 的開頭有那張圖)
+import { ORPHAN_MS, STALE_L0_MS } from '../shared/imagetiming.ts';
+export { ORPHAN_MS, STALE_L0_MS };
 
 /**
  * 圖片請求的排隊 —— 純判斷,不碰 IO。
@@ -25,6 +28,21 @@ export interface ImageJob {
   tier: Tier;
   at: number;
   attempts: number;
+  /**
+   * 這筆工作**已經被派出去跑過**的時間點。
+   *
+   * 有這個欄位才分得出兩種「久」:
+   *
+   * - 沒有 `startedAt` 而且很舊 = **使用者早就捲過去了**,收掉(省配額)。
+   * - 有 `startedAt` 但不在 in-flight 裡 = **worker 在半路被回收了**,
+   *   這是孤兒 —— 使用者還在等,要**重新派工**,不是收掉。
+   *
+   * 使用者回報「滑開再回來重試 都沒有成功過」就是這裡分不出來:
+   * log 上兩次都是 `ageMs: 61000`,那是 alarm(被 Chrome 夾到 60 秒)
+   * 醒來時看到一筆跑了一分鐘的 gemma 工作,套上「掃過就走」那條 10 秒的
+   * 規則把它殺了(`docs/deviations.md` §DJ)。
+   */
+  startedAt?: number;
 }
 
 export const LANE_CONCURRENCY: Record<'l0' | 'l1', number> = { l0: 1, l1: 2 };
@@ -32,13 +50,6 @@ export const LANE_CONCURRENCY: Record<'l0' | 'l1', number> = { l0: 1, l1: 2 };
 /** 每張圖最多重試兩次(`docs/plan-images.md` §3.1) */
 export const IMAGE_MAX_ATTEMPTS = 2;
 
-/**
- * hover 進來但一直沒輪到的,離開視線就取消。
- *
- * 沒有這一條的話,滑鼠掃過長文章的二十張圖會排出一條二十分鐘的隊,
- * 而使用者早就捲過去了 —— 花的是配額,換到的是沒人看的加註。
- */
-export const STALE_L0_MS = 10_000;
 
 export function jobKey(j: Pick<ImageJob, 'url' | 'lane'>): string {
   return `${j.lane}:${j.url}`;
@@ -62,24 +73,54 @@ export function addJob(queue: readonly ImageJob[], job: ImageJob): ImageJob[] {
 /**
  * 下一批要跑的工作。
  *
- * `running` 是**每條道**目前在跑的數量。l1 先看:人親手點的優先。
+ * `inFlight` 是**正在跑的工作的 key**,不是計數。
+ *
+ * 用 key 而不是計數是修出來的:工作只有**完成才會從佇列移除**,所以
+ * 執行中的工作一直在佇列裡。上一版只比對數量,於是
+ * `now - j.at > 10 秒` 這條把**正在跑的工作當成過期丟掉** ——
+ * 而 gemma 實測要 17–70 秒,等於每一張免費檔的圖跑到一半都會被自己殺掉,
+ * 然後 log 上留下一句騙人的 `image-stale`。
+ *
+ * 有了 key 就同時解決兩件事:執行中的不會被重複派工,也不會被判過期。
  */
 export function nextJobs(
   queue: readonly ImageJob[],
-  running: Record<'l0' | 'l1', number>,
+  inFlight: ReadonlySet<string>,
   now: number,
 ): { run: ImageJob[]; drop: ImageJob[] } {
-  const drop = queue.filter(
-    (j) => j.lane === 'l0' && now - j.at > STALE_L0_MS,
+  const idle = queue.filter((j) => !inFlight.has(jobKey(j)));
+  /*
+   * **只有沒在跑的**才可能被收掉,而「沒在跑」有兩種:
+   *
+   * - 從來沒派出去過 → 「掃過就走」那條線(l0 十秒)管它。
+   * - 派出去過但不在 in-flight → worker 被回收留下的**孤兒**。
+   *   使用者還在等,所以**重派**,不收 —— 除非重派太多次或實在太舊。
+   */
+  const orphan = idle.filter(
+    (j) => j.startedAt !== undefined && j.attempts < IMAGE_MAX_ATTEMPTS && now - j.at <= ORPHAN_MS,
+  );
+  const orphanKeys = new Set(orphan.map(jobKey));
+  const drop = idle.filter(
+    (j) =>
+      !orphanKeys.has(jobKey(j)) &&
+      ((j.lane === 'l0' && j.startedAt === undefined && now - j.at > STALE_L0_MS) ||
+        now - j.at > ORPHAN_MS ||
+        (j.startedAt !== undefined && j.attempts >= IMAGE_MAX_ATTEMPTS)),
   );
   const dropped = new Set(drop.map(jobKey));
-  const alive = queue.filter((j) => !dropped.has(jobKey(j)));
+  const alive = idle.filter((j) => !dropped.has(jobKey(j)));
+
+  const running: Record<'l0' | 'l1', number> = { l0: 0, l1: 0 };
+  for (const j of queue) if (inFlight.has(jobKey(j))) running[j.lane]++;
 
   const run: ImageJob[] = [];
   for (const lane of ['l1', 'l0'] as const) {
-    const slots = LANE_CONCURRENCY[lane] - (running[lane] ?? 0);
+    const slots = LANE_CONCURRENCY[lane] - running[lane];
     if (slots <= 0) continue;
-    run.push(...alive.filter((j) => j.lane === lane).slice(0, slots));
+    // 孤兒排在前面:使用者已經等過一輪了,不該再排到新來的後面
+    const mine = alive.filter((j) => j.lane === lane);
+    mine.sort((a, b) => Number(b.startedAt !== undefined) - Number(a.startedAt !== undefined));
+    run.push(...mine.slice(0, slots));
   }
   return { run, drop };
 }

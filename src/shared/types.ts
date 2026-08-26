@@ -181,6 +181,15 @@ export interface Settings {
   persistentCacheMB: number;
   /** §8 保險絲 */
   pageTokenCap: number;
+  /**
+   * 每頁最多翻幾張圖(`docs/plan-images.md` §9)。
+   *
+   * 和 `pageTokenCap` 不同的一道閘門:token 上限擋的是「一頁花多少」,
+   * 這個擋的是「一頁翻幾張」。長文章有四十張圖,而使用者滑過去的時候
+   * **每一張都會觸發免費的 L0** —— 免費檔不花錢,但會把配額吃光,
+   * 讓後面真正想翻的那張排不進去。
+   */
+  imagePageCap: number;
   globalDailyTWD: number;
   usdToTwd: number;
   quota: Partial<Record<Tier, QuotaOverride>>;
@@ -240,6 +249,7 @@ export const DEFAULT_SETTINGS: Settings = {
   cacheMode: 'persistent',
   persistentCacheMB: 50,
   pageTokenCap: 120_000,
+  imagePageCap: 20,
   globalDailyTWD: 60,
   usdToTwd: 32,
   quota: {},

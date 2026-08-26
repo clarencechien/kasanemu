@@ -14,6 +14,7 @@
 import {
   BOX_SCALE,
   LOW_CONFIDENCE,
+  MIN_PATCH_FONT_PX,
   fontSizeFor,
   patchable,
 } from '../shared/imageblocks.ts';
@@ -189,8 +190,15 @@ export function placeBlocks(
   drawn: Rect,
   clip: { w: number; h: number },
 ): PlacedBlock[] {
-  const out: PlacedBlock[] = [];
-  let pin = 0;
+  // 第一輪:只算幾何。**這時候還不決定形式** —— 形式是整張圖的性質。
+  const cand: {
+    b: ImageBlockLike;
+    r: Rect;
+    label: string;
+    chars: number;
+    fontPx: number;
+    fits: boolean;
+  }[] = [];
   for (const b of blocks) {
     // code 樣式的字不加註:程式碼原樣留著才有用(§3.2)
     if (b.kind === 'code') continue;
@@ -198,25 +206,69 @@ export function placeBlocks(
     if (!r) continue;
     const label = b.zh || b.text;
     if (label.length === 0) continue;
-    const fontPx = fontSizeFor(r.w, r.h, [...label].length, b.v === true);
-    const veil = patchable(fontPx);
-    if (!veil) pin++;
+    const chars = [...label].length;
+    const fontPx = fontSizeFor(r.w, r.h, chars, b.v === true);
+    cand.push({ b, r, label, chars, fontPx, fits: patchable(fontPx) });
+  }
+  if (cand.length === 0) return [];
+
+  const mode = imageMode(cand.map((c) => c.fits));
+  const out: PlacedBlock[] = [];
+  let pin = 0;
+  for (const c of cand) {
+    const common = {
+      text: c.b.text,
+      zh: c.label,
+      low: c.b.c < LOW_CONFIDENCE,
+      vertical: c.b.v === true,
+    };
+    if (mode === 'pin') {
+      pin++;
+      out.push({ ...c.r, fontPx: c.fontPx, ...common, kind: 'pin', n: pin });
+      continue;
+    }
+    /*
+     * 疊字模式:少數塞不下的**把字級拉到下限,框不動**。
+     *
+     * 早一版是把框撐大到放得下 —— 那是「譯文站在玻璃上」時的做法。
+     * 現在譯文有自己的貼片(overlay 的 `.itx`),貼片的寬度由字決定、
+     * 而且允許長出框外(§3.2),所以撐大玻璃反而會蓋掉旁邊本來看得到的
+     * 圖 —— 玻璃該蓋的只有原文那一塊。
+     */
     out.push({
-      x: r.x,
-      y: r.y,
-      w: r.w,
-      h: r.h,
-      fontPx,
-      text: b.text,
-      zh: label,
-      low: b.c < LOW_CONFIDENCE,
-      vertical: b.v === true,
-      kind: veil ? 'veil' : 'pin',
-      n: veil ? 0 : pin,
+      ...c.r,
+      fontPx: Math.max(c.fontPx, MIN_PATCH_FONT_PX),
+      ...common,
+      kind: 'veil',
+      n: 0,
     });
   }
   return out;
 }
+
+/**
+ * 疊字要佔多少比例,整張圖才走疊字。
+ *
+ * 不是調出來的數字,是「例外」的定義:七成以上塞得下,剩下的就是例外,
+ * 把它們的框撐大比換一種語彙便宜。低於七成就反過來 —— 那張圖本來就是
+ * 小字為主(截圖、密集表格),硬疊只會糊成一片。
+ */
+export const VEIL_MAJORITY = 0.7;
+
+/**
+ * 一張圖只能有一種加註語彙。
+ *
+ * 使用者回報的原話是「一下有疊字 一下註解 不太統一」。逐塊判斷在單看
+ * 一塊時每次都是對的,合起來看卻是兩套視覺語言插在同一張圖上 ——
+ * 讀圖的人得同時維持兩種閱讀模式。門檻本身沒錯,錯在**它的作用域**:
+ * 量尺是字級(§2.3),但決定要落在整張圖上。
+ */
+export function imageMode(fits: readonly boolean[]): 'veil' | 'pin' {
+  if (fits.length === 0) return 'veil';
+  const ok = fits.filter(Boolean).length;
+  return ok / fits.length >= VEIL_MAJORITY ? 'veil' : 'pin';
+}
+
 
 /** `placeBlocks` 只讀這幾個欄位,不必綁死整個 ImageBlock */
 export interface ImageBlockLike {

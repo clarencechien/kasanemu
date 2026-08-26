@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import {
   BOX_SCALE,
   MIN_PATCH_FONT_PX,
+  SINGLE_LINE_CHARS,
   fontSizeFor,
   looksConcatenated,
   looksVertical,
@@ -13,6 +14,7 @@ import {
 } from '../src/shared/imageblocks.ts';
 import {
   drawnRect,
+  imageMode,
   mapBox,
   parsePosition,
   pinAt,
@@ -293,8 +295,8 @@ test('真實輸出:面積項吸收兩個檔位的框粒度差異', () => {
 
 /* ------------------------------------------------- 區塊 → 畫得出來的東西 */
 
-test('placeBlocks:同一份資料兩個尺寸,錨點與疊字自動分流', () => {
-  const fx = loadVision('lite-shot');
+test('placeBlocks:同一份資料兩個尺寸,整張圖的形式自動翻面', () => {
+  const fx = loadVision('gemma-chart');
   const { blocks } = sanitizeBlocks(fx.blocks, fx.nw, fx.nh);
 
   const at = (W: number): { veil: number; pin: number } => {
@@ -309,14 +311,21 @@ test('placeBlocks:同一份資料兩個尺寸,錨點與疊字自動分流', () =
   const small = at(340);
   const big = at(1200);
   assert.equal(small.veil, 0, '繞圖的縮圖上全是錨點');
-  assert.ok(big.veil > 10, '放大檢視要鋪開成疊字');
+  assert.equal(big.pin, 0, '放大檢視要整張鋪成疊字');
   // 不必重問模型 —— 換個尺寸再算一次就好
   assert.equal(small.veil + small.pin, big.veil + big.pin, '兩邊的總塊數要一樣');
 });
 
-test('placeBlocks:錨點編號連號,疊字不佔號', () => {
+test('placeBlocks:一張圖只有一種語彙 —— 疊字與錨點不會混在同一張圖上', () => {
+  /*
+   * **使用者回報的原話:「一下有疊字 一下註解 不太統一」。**
+   *
+   * 逐塊判斷在單看一塊時每次都是對的,合起來卻是兩套視覺語言插在同一張
+   * 圖上。門檻沒錯,錯的是它的**作用域**。這一條把「作用域是整張圖」
+   * 釘死,免得日後有人為了「這一塊明明放得下」再改回逐塊。
+   */
   const drawn = drawnRect({ w: 1000, h: 1000 }, { w: 400, h: 400 }, 'contain', parsePosition('50% 50%'));
-  const placed = placeBlocks(
+  const mixed = placeBlocks(
     [
       { box: [0, 0, 200, 500], text: 'big', zh: '大字', c: 1 },
       { box: [300, 0, 310, 60], text: 'tiny a', zh: '小甲', c: 1 },
@@ -325,9 +334,49 @@ test('placeBlocks:錨點編號連號,疊字不佔號', () => {
     drawn,
     { w: 400, h: 400 },
   );
-  assert.deepEqual(placed.map((p) => p.kind), ['veil', 'pin', 'pin']);
-  assert.deepEqual(placed.filter((p) => p.kind === 'pin').map((p) => p.n), [1, 2]);
-  assert.equal(placed[0]!.n, 0, '疊字不佔編號');
+  assert.equal(new Set(mixed.map((p) => p.kind)).size, 1, '同一張圖冒出兩種語彙');
+  // 三塊裡只有一塊放得下 → 少數服從多數,整張走錨點
+  assert.deepEqual(mixed.map((p) => p.kind), ['pin', 'pin', 'pin']);
+  assert.deepEqual(mixed.map((p) => p.n), [1, 2, 3], '錨點編號連號');
+});
+
+test('imageMode:多數決,不是「有一塊放不下就全部退回錨點」', () => {
+  assert.equal(imageMode([true, true, true, true, false]), 'veil', '八成放得下 → 疊字,那一塊撐大就好');
+  assert.equal(imageMode([true, false, false]), 'pin', '小字為主的截圖硬疊只會糊成一片');
+  assert.equal(imageMode([]), 'veil');
+});
+
+test('疊字模式下塞不下的那幾塊把字級拉到下限,框不動', () => {
+  /*
+   * 譯文有自己的貼片(overlay 的 `.itx`),寬度由字決定、允許長出框外
+   * (§3.2)。所以玻璃該蓋的只有原文那一塊 —— 撐大玻璃會蓋掉旁邊
+   * 本來看得到的圖。
+   */
+  const drawn = drawnRect({ w: 1000, h: 1000 }, { w: 600, h: 600 }, 'contain', parsePosition('50% 50%'));
+  const blocks = [
+    { box: [0, 0, 120, 600], text: 'a', zh: '標題一', c: 1 },
+    { box: [200, 0, 320, 600], text: 'b', zh: '標題二', c: 1 },
+    { box: [400, 0, 520, 600], text: 'c', zh: '標題三', c: 1 },
+    { box: [600, 0, 720, 600], text: 'd', zh: '標題四', c: 1 },
+    // 這一塊自己算是塞不下的
+    { box: [900, 0, 906, 40], text: 'N/A', zh: '不適用', c: 1 },
+  ];
+  const placed = placeBlocks(blocks, drawn, { w: 600, h: 600 });
+  assert.equal(placed.every((p) => p.kind === 'veil'), true, '多數放得下 → 整張疊字');
+  const small = placed[4]!;
+  assert.equal(small.fontPx, MIN_PATCH_FONT_PX, '字級要拉到下限');
+  assert.ok(small.h < 10, `框被撐大了:${small.h}`);
+  assert.ok(small.w < 30, `框被撐寬了:${small.w}`);
+});
+
+test('短標籤走單行 —— 「不適用」不可以被折成兩行', () => {
+  /*
+   * 使用者回報:「圖中間那個不適用 如果真的太小 應該加長 label 不要折字」。
+   * 折行的判斷在 overlay(貼片才知道自己多寬),這裡釘住那條界線本身:
+   * 標籤長度 ≤ SINGLE_LINE_CHARS 就是「標籤」,不是句子。
+   */
+  assert.ok([...'不適用'].length <= SINGLE_LINE_CHARS);
+  assert.ok([...'Elasticsearch ESQL 查詢'].length > SINGLE_LINE_CHARS, '整句還是該折');
 });
 
 test('code 樣式的字不加註 —— 程式碼原樣留著才有用', () => {

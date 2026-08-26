@@ -131,18 +131,27 @@ export type BodyBuilder = (v: Variant, spec: TierSpec) => unknown;
  * 帶降級階梯的呼叫。`key` 是階梯記憶的鍵 —— 文字與視覺分開記,
  * 因為同一個模型在兩種請求上可能停在不同階。
  */
+/**
+ * 文字批次的上限時間 —— 純粹是保險絲:一批幾秒鐘就該回來。
+ *
+ * 圖片那一路的所有時限在 `shared/imagetiming.ts`,它們**彼此有順序**,
+ * 所以放在同一個檔案裡。
+ */
+export const TEXT_TIMEOUT_MS = 60_000;
+
 export async function callWithLadder(
   apiKey: string,
   spec: TierSpec,
   build: BodyBuilder,
   key = spec.modelId,
+  timeoutMs = TEXT_TIMEOUT_MS,
 ): Promise<ApiOutcome> {
   let idx = variantByModel.get(key) ?? 0;
   let last: ApiErr = { ok: false, status: 0, message: 'no attempt', retriable: false };
 
   while (idx < LADDER.length) {
     const v = LADDER[idx]!;
-    const res = await once(apiKey, spec, v, build);
+    const res = await once(apiKey, spec, v, build, timeoutMs);
     if (res.ok) {
       variantByModel.set(key, idx);
       return res;
@@ -171,6 +180,7 @@ async function once(
   spec: TierSpec,
   v: Variant,
   build: BodyBuilder,
+  timeoutMs: number,
 ): Promise<ApiOutcome> {
   const url = `${BASE}/models/${encodeURIComponent(spec.modelId)}:generateContent`;
   let res: Response;
@@ -179,8 +189,18 @@ async function once(
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
       body: JSON.stringify(build(v, spec)),
+      // 沒有 timeout 的 fetch 是一個**永遠不會 settle 的 promise**(§DI)
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (e) {
+    if (e instanceof DOMException && e.name === 'TimeoutError') {
+      /*
+       * 逾時**不自動重試**:等了這麼久還沒回應,再等一輪同樣長的時間
+       * 只會把使用者推過看門狗那條線。標成可重試是給**使用者**的
+       * (chip 上點一下),不是給排程器的。
+       */
+      return { ok: false, status: 0, message: `timeout ${timeoutMs}ms`, retriable: false };
+    }
     return { ok: false, status: 0, message: String(e), retriable: true };
   }
   if (!res.ok) {

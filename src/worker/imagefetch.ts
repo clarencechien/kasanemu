@@ -40,6 +40,8 @@ import { dbg, warn } from '../shared/log.ts';
 export const MAX_EDGE = 2048;
 
 /** 超過這個大小的圖不抓。4MB 的 PNG 已經是海報級,不會是文章插圖 */
+import { FETCH_TIMEOUT_MS } from '../shared/imagetiming.ts';
+
 export const MAX_BYTES = 4 * 1024 * 1024;
 
 /** 解碼後的上限。16MP ≈ 4000×4000,再大就是掃描檔 */
@@ -162,9 +164,26 @@ export async function fetchImage(url: string): Promise<FetchOutcome> {
 
   let res: Response;
   try {
-    res = await fetch(url, { credentials: 'omit', redirect: 'follow' });
+    /*
+     * **一定要有 timeout。**
+     *
+     * 沒有的話,一個不回應的 CDN 會讓這個 promise 永遠不 settle:
+     * 那筆工作扣著併發格、圖角轉到看門狗超時,而使用者看到的是
+     * 「沒有回應」而不是「這張圖抓不下來」(`docs/deviations.md` §DI)。
+     * `AbortSignal.timeout` 連 body 讀取一起管,不是只管到 header。
+     */
+    res = await fetch(url, {
+      credentials: 'omit',
+      redirect: 'follow',
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
   } catch (e) {
-    return { ok: false, reason: `network:${String(e).slice(0, 80)}`, retriable: true };
+    const timedOut = e instanceof DOMException && e.name === 'TimeoutError';
+    return {
+      ok: false,
+      reason: timedOut ? 'fetch-timeout' : `network:${String(e).slice(0, 80)}`,
+      retriable: !timedOut,
+    };
   }
   if (!res.ok) {
     return { ok: false, reason: `http-${res.status}`, retriable: res.status >= 500 };

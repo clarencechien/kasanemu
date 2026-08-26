@@ -14,6 +14,7 @@ import type { Term } from '../shared/glossary';
 import type { ImageBlock } from '../shared/imageblocks';
 import { fromWire, sanitizeBlocks } from '../shared/imageblocks';
 import { callWithLadder, type ApiOutcome, type Variant } from './gemini';
+import { VISION_TIMEOUT_MS } from '../shared/imagetiming.ts';
 import { repairJsonArray } from './protocol';
 import type { ImageBytes } from './imagefetch';
 import { dbg, warn } from '../shared/log';
@@ -71,7 +72,21 @@ export function visionPrompt(targetLang: string, glossary: readonly Term[] = [])
    * 模型看到的是像素。所以詞表在這裡是請求,不是保證,手冊寫明了這件事。
    */
   const lines = glossary.map((t) => `  ${t.from} → ${t.to ?? t.from}`).join('\n');
-  return `${base}\n詞表(圖上遇到左邊的詞,譯文一律採用右邊的說法):\n${lines}`;
+  /*
+   * **詞表要明講它蓋過規則 2。**
+   *
+   * 量測(§13-5)顯示:加了詞表之後 `Storage size → 儲存容量` 與
+   * `smaller → 更精簡` 兩檔都照做,但 `Elasticsearch → 彈性搜尋`
+   * 兩檔都不照 —— 因為規則 2 寫著「專有名詞保持原樣不翻」,
+   * 而模型認為那條比詞表大。
+   *
+   * 它沒有做錯,是**我們的 prompt 自相矛盾**。使用者把產品名寫進詞表
+   * 並給了譯法,那就是明確的「我要翻它」;規則 2 是預設值,不是禁令。
+   */
+  return (
+    `${base}\n詞表(圖上遇到左邊的詞,譯文一律採用右邊的說法。` +
+    `**這條優先於上面的規則 2** —— 詞表裡的專有名詞要照詞表翻):\n${lines}`
+  );
 }
 
 function buildVisionBody(
@@ -130,6 +145,7 @@ export async function callVision(
     spec,
     (v, s) => buildVisionBody(v, s, image, sys),
     `${spec.modelId}:vision`,
+    VISION_TIMEOUT_MS,
   );
   if (!res.ok) {
     return { ok: false, reason: res.message.slice(0, 200), status: res.status, retriable: res.retriable };

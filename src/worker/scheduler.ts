@@ -26,6 +26,7 @@ import {
   IMAGE_MAX_ATTEMPTS,
   addJob,
   dropPageJobs,
+  jobKey,
   nextJobs,
   removeJobs,
   type ImageJob,
@@ -136,7 +137,7 @@ export async function enqueue(
     ).next,
   );
   diag('info', 'enqueued', { asked: units.length, queue: q.length, tier, pipeline });
-  await ensureAlarm(q.length > 0);
+  await syncAlarm();
   void drain();
 }
 
@@ -224,10 +225,26 @@ export async function dropTab(tabId: number): Promise<void> {
   await mutateQueue((q) => q.filter((i) => i.tabId !== tabId));
 }
 
-async function ensureAlarm(needed: boolean): Promise<void> {
-  // §7.4 service worker 會被回收,用 alarm 把排程叫回來
-  if (needed) await chrome.alarms.create('drain', { delayInMinutes: 0.5 });
-  else await chrome.alarms.clear('drain');
+/**
+ * §7.4 service worker 會被回收,用 alarm 把排程叫回來。
+ *
+ * **文字與圖片共用同一顆 alarm,所以「還需不需要」要兩條佇列一起看。**
+ *
+ * 這是踩過的坑(`docs/deviations.md` §DI):圖片那條路整條沒有掛過
+ * alarm —— worker 在圖片請求途中被回收之後,沒有任何東西會把它叫醒,
+ * 那筆工作就躺在 `storage.session` 裡等下一次使用者剛好做了別的事。
+ * 使用者看到的是圖角轉三分鐘然後「沒有回應」。
+ *
+ * 而且不能各自 `clear`:文字佇列清空時如果直接關掉 alarm,
+ * 圖片那條就跟著失去唯一的喚醒來源。判斷要合起來做。
+ */
+async function syncAlarm(): Promise<void> {
+  const [q, iq] = await Promise.all([loadQueue(), loadImageQueue()]);
+  if (q.length > 0 || iq.length > 0) {
+    await chrome.alarms.create('drain', { delayInMinutes: 0.5 });
+  } else {
+    await chrome.alarms.clear('drain');
+  }
 }
 
 function sleep(ms: number): Promise<void> {
@@ -244,7 +261,7 @@ export async function drain(): Promise<void> {
     for (let guard = 0; guard < 200; guard++) {
       const q = await loadQueue();
       if (q.length === 0) {
-        await ensureAlarm(false);
+        await syncAlarm();
         return;
       }
       const head = q[0]!;
@@ -333,7 +350,7 @@ export async function drain(): Promise<void> {
   } finally {
     draining = false;
     const q = await loadQueue();
-    await ensureAlarm(q.length > 0);
+    await syncAlarm();
     // 佇列還有東西 = 東西還在 worker 這一側。內容腳本那邊看到的「卡住」
     // 到底是誰扣著,只有把兩邊的數字都寫進 log 才分得出來。
     if (q.length > 0) diag('info', 'queue-remains', { n: q.length });
@@ -547,7 +564,11 @@ async function runBatch(
 /* ══════════════════════════════════════════════════ 圖片加註(plan-images §5) */
 
 const IMAGE_QUEUE_KEY = 'imageQueue';
-const running: Record<'l0' | 'l1', number> = { l0: 0, l1: 0 };
+/**
+ * 正在跑的工作的 key。**不是計數** —— 見 `nextJobs` 的註解:
+ * 執行中的工作還留在佇列裡,只比計數會把它當成過期殺掉。
+ */
+const inFlight = new Set<string>();
 let imageDraining = false;
 
 /*
@@ -556,6 +577,12 @@ let imageDraining = false;
  * 做完的工作復活再跑一遍 —— 文字佇列踩過這個坑(§CY)。
  */
 let ichain: Promise<unknown> = Promise.resolve();
+
+/** 只讀,不動佇列 —— `syncAlarm` 要知道圖片那邊還有沒有事情沒做完 */
+async function loadImageQueue(): Promise<ImageJob[]> {
+  const got = await chrome.storage.session.get(IMAGE_QUEUE_KEY);
+  return (got[IMAGE_QUEUE_KEY] as ImageJob[] | undefined) ?? [];
+}
 
 function mutateImageQueue(fn: (q: ImageJob[]) => ImageJob[]): Promise<ImageJob[]> {
   const next = ichain.then(async () => {
@@ -589,25 +616,121 @@ export async function translateImage(
 
 export async function dropPageImages(tabId: number, pageKey: string): Promise<void> {
   await mutateImageQueue((q) => dropPageJobs(q, tabId, pageKey));
+  imagesByPage.delete(pageKey);
 }
 
+/**
+ * 派工一輪。
+ *
+ * **這裡不等工作做完。**
+ *
+ * 上一版是 `for(;;) { ...; await Promise.all(run.map(runImage)) }`,
+ * 而 `imageDraining` 這面旗子在 `finally` 才放下。於是**只要有一個
+ * promise 永遠不 settle,整條圖片管線就永久停擺** —— 旗子放不下來,
+ * 之後每一次 `drainImages()` 都在第一行 `return`。
+ * 一個不回應的請求扣住的不只是那張圖,是所有的圖。
+ *
+ * 現在改成:這一輪只負責**決定要跑哪幾筆**(有界),跑完的工作自己
+ * 回頭再敲一次門。旗子只蓋住派工那一小段,不再和請求的壽命綁在一起。
+ */
 export async function drainImages(): Promise<void> {
   if (imageDraining) return;
   imageDraining = true;
+  let run: ImageJob[] = [];
   try {
-    for (;;) {
-      const q = await mutateImageQueue((cur) => cur);
-      const { run, drop } = nextJobs(q, running, Date.now());
-      if (drop.length > 0) {
-        // 掃過就走的 hover:配額不該花在使用者早就捲過去的圖上
-        diag('info', 'image-stale', { n: drop.length });
-        await mutateImageQueue((cur) => removeJobs(cur, drop));
+    const q = await mutateImageQueue((cur) => cur);
+    const picked = nextJobs(q, inFlight, Date.now());
+    run = picked.run;
+    const { drop } = picked;
+    if (drop.length > 0) {
+      // 掃過就走的 hover、以及 worker 被回收留下的孤兒
+      diag('info', 'image-stale', {
+        n: drop.length,
+        ageMs: Date.now() - drop[0]!.at,
+        // 「使用者捲走了」和「試了兩次都沒回來」是兩件事,chip 上說的話也不同
+        started: drop.filter((j) => j.startedAt !== undefined).length,
+      });
+      await mutateImageQueue((cur) => removeJobs(cur, drop));
+      /*
+       * **丟掉要告訴 content。**
+       *
+       * 少了這一步,content 的 `inFlight` 永遠不會清掉:圖角停在
+       * 「辨識中」,而且因為那個集合擋著,使用者再滑上去也不會重送 ——
+       * 那張圖就永久卡住了。使用者回報的「後面幾張都卡住」就是這個。
+       */
+      for (const j of drop) {
+        post(j.tabId, {
+          type: 'image-error',
+          pageKey: j.pageKey,
+          url: j.url,
+          // 派出去過卻收在這裡 = 重派過還是沒回來,不是「你捲走了」
+          reason: j.startedAt === undefined ? 'stale' : 'gave-up',
+          retriable: true,
+        });
       }
-      if (run.length === 0) return;
-      await Promise.all(run.map((job) => runImage(job)));
     }
+    // worker 被回收時佇列活著、記憶體裡的一切都沒了 —— alarm 是唯一的救生索
+    await syncAlarm();
   } finally {
     imageDraining = false;
+  }
+  if (run.length > 0) {
+    /*
+     * 派出去之前先記一筆 `startedAt`。
+     *
+     * 這是**唯一**能在下一個 worker 生命週期裡分辨兩件事的線索:
+     * 「使用者早就捲過去了」和「worker 在半路被回收了」。記憶體裡的
+     * in-flight 集合隨 worker 一起消失,佇列不會(§DJ)。
+     */
+    const started = Date.now();
+    const marks = new Set(run.map(jobKey));
+    const retries = run.filter((j) => j.startedAt !== undefined).length;
+    if (retries > 0) {
+      // 看得見才修得動:上一版這條路是沉默的,log 上只留下一句騙人的 image-stale
+      diag('info', 'image-reclaim', { n: retries });
+    }
+    await mutateImageQueue((cur) =>
+      cur.map((j) =>
+        marks.has(jobKey(j))
+          ? // 重派的要記次數,否則一筆永遠回不來的工作會被叫醒無限次
+            { ...j, startedAt: started, attempts: j.startedAt === undefined ? j.attempts : j.attempts + 1 }
+          : j,
+      ),
+    );
+  }
+  for (const job of run) {
+    // 不 await:做完的工作自己回頭敲門,派工這一段才不會被請求的壽命綁住
+    void runImage({ ...job, startedAt: Date.now() }).finally(() => {
+      void drainImages();
+    });
+  }
+  keepAlive(run.length > 0 || inFlight.size > 0);
+}
+
+/**
+ * 有工作在跑的時候不讓 service worker 被回收。
+ *
+ * MV3 的 worker 閒置 30 秒就收,而 gemma 實測 9–68 秒 —— 等於**每一張
+ * 免費檔的圖都在賭**。使用者回報的「滑開再回來重試 都沒有成功過」,
+ * log 上兩次都停在 `ageMs: 61000`:worker 死了,alarm(被 Chrome 夾到
+ * 60 秒)醒來收屍。
+ *
+ * alarm 是**事後**的救生索,這個是**事前**的:呼叫任何一個擴充 API 都會
+ * 把那 30 秒的閒置計時歸零,所以 20 秒敲一次就夠。沒工作就停 ——
+ * 讓 worker 該睡的時候睡,是 MV3 的本意,不是要繞過它。
+ */
+let keepTimer: ReturnType<typeof setInterval> | null = null;
+const KEEPALIVE_MS = 20_000;
+
+function keepAlive(on: boolean): void {
+  if (on && keepTimer === null) {
+    keepTimer = setInterval(() => {
+      // 呼叫本身就是目的:把閒置計時歸零。回傳值沒有人要
+      void chrome.runtime.getPlatformInfo().catch(() => undefined);
+    }, KEEPALIVE_MS);
+  } else if (!on && keepTimer !== null) {
+    clearInterval(keepTimer);
+    keepTimer = null;
   }
 }
 
@@ -619,7 +742,9 @@ export async function drainImages(): Promise<void> {
  * 下的第二次命中)。第二次命中省的是模型錢,第一次省的是頻寬與延遲。
  */
 async function runImage(job: ImageJob): Promise<void> {
-  running[job.lane]++;
+  const key = jobKey(job);
+  inFlight.add(key);
+  diag('info', 'image-start', { lane: job.lane, tier: job.tier });
   try {
     const settings = await getSettings();
     const spec = resolveTier(imageTierFor(job.lane, job.tier), settings);
@@ -627,6 +752,13 @@ async function runImage(job: ImageJob): Promise<void> {
       await mutateImageQueue((cur) => removeJobs(cur, [job]));
     };
 
+    /*
+     * 每頁圖片張數的閘門(§9)。
+     *
+     * 放在**快取查詢之前**是刻意的:快取命中不算一張新的圖,
+     * 否則同一頁滑上滑下幾次就會把額度用完,而那幾次一毛錢都沒花。
+     * ——所以這裡只擋「真的要送出去」的,見下面 `countImage()` 的位置。
+     */
     // URL 快取:命中就不用連線(同一頁重複進出、放大檢視再看一次)
     const urlKey = await cache.keyFor(`img:url:${job.url}`, settings.targetLang, spec.modelId, 0);
     const cachedByUrl = await cache.get(settings.cacheMode, urlKey);
@@ -685,9 +817,31 @@ async function runImage(job: ImageJob): Promise<void> {
       await imageFailed(job, verdict.reason ?? 'blocked', false, verdict.text);
       return;
     }
+    // 快取沒中、保險絲放行 → 這才是真的要送一張新的圖出去
+    const nth = await countImage(job.pageKey, image.hash);
+    if (nth > settings.imagePageCap) {
+      await imageFailed(
+        job,
+        'page-image-cap',
+        false,
+        `本頁圖片上限 ${settings.imagePageCap} 張已用滿`,
+      );
+      return;
+    }
     const gate = await reserve(spec, planned);
     if (!gate.ok) {
-      // 節流:放回佇列等下一輪,不算失敗
+      /*
+       * 節流:等下一輪,不算失敗。
+       *
+       * **`at` 要更新**,否則等完就超過 10 秒的過期線,工作會被自己丟掉。
+       * 而且**要記一筆** —— 上一版這裡是沉默的 `sleep` + `return`,
+       * 於是「送出去了但什麼都沒發生」在 log 上完全看不出來。
+       */
+      diag('info', 'image-throttled', { waitMs: gate.waitMs, lane: job.lane });
+      await mutateImageQueue((cur) => [
+        ...removeJobs(cur, [job]),
+        { ...job, at: Date.now() + gate.waitMs },
+      ]);
       await sleep(gate.waitMs);
       return;
     }
@@ -734,8 +888,28 @@ async function runImage(job: ImageJob): Promise<void> {
   } catch (e) {
     await imageFailed(job, `internal:${String(e).slice(0, 80)}`, false);
   } finally {
-    running[job.lane]--;
+    inFlight.delete(key);
+    if (inFlight.size === 0) keepAlive(false);
   }
+}
+
+/**
+ * 這一頁送出過的圖(以 bytes hash 去重)。回傳這是第幾張。
+ *
+ * **用 hash 不用 URL**:同一張圖在不同 CDN 參數下不算兩張,
+ * 而 L0 之後再 L1 的同一張圖也只算一張 —— 額度限的是「幾張圖」,
+ * 不是「幾次請求」。
+ */
+const imagesByPage = new Map<string, Set<string>>();
+
+async function countImage(pageKey: string, hash: string): Promise<number> {
+  let seen = imagesByPage.get(pageKey);
+  if (!seen) {
+    seen = new Set();
+    imagesByPage.set(pageKey, seen);
+  }
+  seen.add(hash);
+  return seen.size;
 }
 
 function readCachedBlocks(raw: string): { hash: string; blocks: ImageBlock[] } | null {
