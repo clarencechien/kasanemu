@@ -240,6 +240,14 @@
         移開滑鼠就還你乾淨的原圖 —— 圖的閱讀主體是圖形本身,加註是加法。
       </p>
       <label class="check"><input type="checkbox" data-k="imageAlwaysOn" /> 加註常駐(不移開就不收)</label>
+      <label>每頁圖片上限
+        <input type="number" data-k="imagePageCap" data-num min="0" max="200" step="1" />
+      </label>
+      <p class="hint">
+        一篇長文可能有四十張圖,而滑過去的時候<b>每一張都會觸發免費辨識</b>。
+        免費不花錢,但會把免費檔的配額吃光,讓你後面真正想翻的那張排不進去。
+        以圖片內容計算,同一張圖翻兩次(免費 → 升級)只算一張。
+      </p>
       <label>疊膜強度
         <input type="number" data-k="imageVeil" data-num min="0" max="0.6" step="0.05" />
       </label>

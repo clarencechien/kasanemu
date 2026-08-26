@@ -589,6 +589,7 @@ export async function translateImage(
 
 export async function dropPageImages(tabId: number, pageKey: string): Promise<void> {
   await mutateImageQueue((q) => dropPageJobs(q, tabId, pageKey));
+  imagesByPage.delete(pageKey);
 }
 
 export async function drainImages(): Promise<void> {
@@ -627,6 +628,13 @@ async function runImage(job: ImageJob): Promise<void> {
       await mutateImageQueue((cur) => removeJobs(cur, [job]));
     };
 
+    /*
+     * 每頁圖片張數的閘門(§9)。
+     *
+     * 放在**快取查詢之前**是刻意的:快取命中不算一張新的圖,
+     * 否則同一頁滑上滑下幾次就會把額度用完,而那幾次一毛錢都沒花。
+     * ——所以這裡只擋「真的要送出去」的,見下面 `countImage()` 的位置。
+     */
     // URL 快取:命中就不用連線(同一頁重複進出、放大檢視再看一次)
     const urlKey = await cache.keyFor(`img:url:${job.url}`, settings.targetLang, spec.modelId, 0);
     const cachedByUrl = await cache.get(settings.cacheMode, urlKey);
@@ -685,6 +693,17 @@ async function runImage(job: ImageJob): Promise<void> {
       await imageFailed(job, verdict.reason ?? 'blocked', false, verdict.text);
       return;
     }
+    // 快取沒中、保險絲放行 → 這才是真的要送一張新的圖出去
+    const nth = await countImage(job.pageKey, image.hash);
+    if (nth > settings.imagePageCap) {
+      await imageFailed(
+        job,
+        'page-image-cap',
+        false,
+        `本頁圖片上限 ${settings.imagePageCap} 張已用滿`,
+      );
+      return;
+    }
     const gate = await reserve(spec, planned);
     if (!gate.ok) {
       // 節流:放回佇列等下一輪,不算失敗
@@ -736,6 +755,25 @@ async function runImage(job: ImageJob): Promise<void> {
   } finally {
     running[job.lane]--;
   }
+}
+
+/**
+ * 這一頁送出過的圖(以 bytes hash 去重)。回傳這是第幾張。
+ *
+ * **用 hash 不用 URL**:同一張圖在不同 CDN 參數下不算兩張,
+ * 而 L0 之後再 L1 的同一張圖也只算一張 —— 額度限的是「幾張圖」,
+ * 不是「幾次請求」。
+ */
+const imagesByPage = new Map<string, Set<string>>();
+
+async function countImage(pageKey: string, hash: string): Promise<number> {
+  let seen = imagesByPage.get(pageKey);
+  if (!seen) {
+    seen = new Set();
+    imagesByPage.set(pageKey, seen);
+  }
+  seen.add(hash);
+  return seen.size;
 }
 
 function readCachedBlocks(raw: string): { hash: string; blocks: ImageBlock[] } | null {

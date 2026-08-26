@@ -163,9 +163,21 @@ const imageAnno = new ImageAnnotator(
     setActivePin(n) {
       layer?.setActivePin(n);
     },
-    cue(el, text, tone) {
-      imageCue = text === null ? null : { el, text, tone };
+    cue(el, text, tone, action) {
+      imageCue = text === null ? null : { el, text, tone, action };
       renderChips();
+    },
+    openZoom(src, natural) {
+      const holder = layer?.showZoom(src, natural);
+      if (!holder) return null;
+      const r = holder.getBoundingClientRect();
+      return { w: r.width, h: r.height };
+    },
+    setZoomBlocks(placed) {
+      layer?.setZoomBlocks(placed);
+    },
+    closeZoom() {
+      layer?.hideZoom();
     },
   },
   () => settings.imageMode !== 'off' && running,
@@ -173,7 +185,12 @@ const imageAnno = new ImageAnnotator(
 );
 
 /** 圖片 chip 的內容。和 UI 標籤貼片共用同一條渲染路 */
-let imageCue: { el: Element; text: string; tone: 'idle' | 'busy' | 'warn' } | null = null;
+let imageCue: {
+  el: Element;
+  text: string;
+  tone: 'idle' | 'busy' | 'warn';
+  action?: string;
+} | null = null;
 
 /**
  * feature.md §6 最後一條:環境不支援 Translator API 時自動退回 single 並明確告知。
@@ -1552,6 +1569,7 @@ function renderChips(): void {
         bar: '#48CBBE',
         fontSizePx: 11,
       },
+      ...(imageCue.action ? { action: imageCue.action } : {}),
     });
   }
   if (settings.annotate) {
@@ -1797,6 +1815,20 @@ function onMouseOver(e: Event): void {
 }
 
 function onKeyDown(e: KeyboardEvent): void {
+  /*
+   * 放大檢視開著時,Esc 只做一件事:關掉它。
+   *
+   * 放在最前面而且吃掉事件 —— 全螢幕的東西開著的時候,使用者按 Esc
+   * 的意圖百分之百是關它,不會是別的快捷鍵。
+   */
+  if (imageAnno.zoomOpen()) {
+    if (e.key === 'Escape') {
+      imageAnno.closeZoom();
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    return;
+  }
   /*
    * **按住 Alt = 暫時收起整層**,放開就回來。
    *
@@ -2191,6 +2223,10 @@ async function start(): Promise<void> {
   layer = new OverlayLayer();
   layer.setMode(state.mode);
   layer.setVeilStrength(settings.imageVeil);
+  layer.onChipAction((action) => {
+    if (action === 'zoom') imageAnno.openZoom();
+  });
+  layer.onZoomDismiss(() => imageAnno.closeZoom());
   await checkModelId();
 
   io = new IntersectionObserver(
@@ -2255,6 +2291,7 @@ async function start(): Promise<void> {
   window.addEventListener('keyup', onKeyUp, true);
   window.addEventListener('blur', onBlur);
   window.addEventListener('resize', relayout);
+  window.addEventListener('resize', onZoomResize);
   // capture:內層容器的捲動(水平卡片輪播、overflow 區塊)不冒泡到 window,
   // 但 capture 階段會經過 document —— 沒有這個,輪播一捲整排疊層就錯位
   document.addEventListener('scroll', onScroll, { passive: true, capture: true });
@@ -2960,6 +2997,15 @@ function stale(kind: string, from: string, n: number): void {
  */
 let imageMoveRaf = 0;
 let lastImageMove: { target: EventTarget | null; x: number; y: number } | null = null;
+
+/** 放大檢視是 fit 到視窗的,視窗變了要重算 */
+function onZoomResize(): void {
+  if (!imageAnno.zoomOpen()) return;
+  const box = layer?.zoomSize();
+  const img = imageAnno.currentImage();
+  if (!box || !img) return;
+  imageAnno.relayoutZoom(box, { w: img.naturalWidth, h: img.naturalHeight });
+}
 
 function onImageMove(e: MouseEvent): void {
   if (settings.imageMode === 'off') return;

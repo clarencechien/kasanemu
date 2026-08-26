@@ -41,8 +41,12 @@ export interface ImageHost {
   ): void;
   hideImage(): void;
   setActivePin(n: number): void;
-  /** chip 文案。null 代表收起來 */
-  cue(el: Element, text: string | null, tone: 'idle' | 'busy' | 'warn'): void;
+  /** chip 文案。null 代表收起來;`action` 有值時貼片可以按 */
+  cue(el: Element, text: string | null, tone: 'idle' | 'busy' | 'warn', action?: string): void;
+  /** 開放大檢視,回傳圖片實際被畫成多大(等 img 載入後量的) */
+  openZoom(src: string, natural: { w: number; h: number }): { w: number; h: number } | null;
+  setZoomBlocks(placed: readonly PlacedBlock[]): void;
+  closeZoom(): void;
 }
 
 /**
@@ -59,6 +63,37 @@ export function imageUnder(target: EventTarget | null): HTMLImageElement | null 
   const r = img.getBoundingClientRect();
   if (!worthTranslating({ w: r.width, h: r.height })) return null;
   return img;
+}
+
+/**
+ * 這個站自己就有放大檢視嗎(`docs/plan-images.md` §2.4)。
+ *
+ * 有的話**不出我們的入口** —— 跟著站方走,加註靠同 src 認親跟過去。
+ * 兩個都出只會讓使用者面對兩顆意思一樣的按鈕,而且站方那顆通常做得更好
+ * (它知道自己的高解析原圖在哪)。
+ *
+ * 訊號:
+ * - `cursor: zoom-in` —— ClickHouse 那篇每張圖上都蓋著一顆
+ *   `button.cursor-zoom-in`,實測就是這個
+ * - 連到圖片檔的 `<a>` —— WordPress 與大多數相簿外掛的寫法
+ * - 常見縮放外掛的類別名(medium-zoom / react-medium-image-zoom / lightbox)
+ */
+export function hasNativeZoom(img: HTMLImageElement): boolean {
+  if (img.closest('[data-rmiz],[class*="lightbox" i],[class*="medium-zoom" i]')) return true;
+  const link = img.closest('a[href]');
+  if (link instanceof HTMLAnchorElement && /\.(png|jpe?g|gif|webp|avif)([?#]|$)/i.test(link.href)) {
+    return true;
+  }
+  // 圖片本身或蓋在它上面的透明按鈕
+  if (getComputedStyle(img).cursor === 'zoom-in') return true;
+  const parent = img.parentElement;
+  if (parent) {
+    if (getComputedStyle(parent).cursor === 'zoom-in') return true;
+    for (const sib of parent.children) {
+      if (sib !== img && getComputedStyle(sib).cursor === 'zoom-in') return true;
+    }
+  }
+  return false;
 }
 
 /** 圖片本地座標系:點陣圖實際畫在 content box 的哪裡 */
@@ -174,6 +209,8 @@ export class ImageAnnotator {
   }
 
   private leave(): void {
+    // 放大檢視開著的時候滑鼠早就離開原圖了,收掉會把它一起關掉
+    if (this.zoomUrl !== null) return;
     if (this.hoverTimer) {
       clearTimeout(this.hoverTimer);
       this.hoverTimer = 0;
@@ -241,16 +278,84 @@ export class ImageAnnotator {
     this.placed = placeBlocks(entry.blocks, drawn, clip);
     this.host.showImage(rect, this.placed);
     const pins = this.placed.filter((p) => p.kind === 'pin').length;
+    /*
+     * **有錨點才給放大檢視的入口。**
+     *
+     * 錨點的存在就是「這張圖上有字小到疊不下」的信號,而放大檢視正是
+     * 為那件事做的。全部都疊得下的圖出這顆按鈕只是多一個沒用的東西。
+     *
+     * 站方自己有 lightbox 就不出(§2.4)—— 跟著站方走,加註靠同 src 認親。
+     */
+    const canZoom = pins > 0 && !hasNativeZoom(img);
     this.host.cue(
       img,
-      entry.tier === 'l0' ? '↑ Alt+click 升級' : `L1 · ${this.placed.length} 塊`,
+      canZoom
+        ? `⤢ 放大檢視(${pins} 處小字)`
+        : entry.tier === 'l0'
+          ? '↑ Alt+click 升級'
+          : `L1 · ${this.placed.length} 塊`,
       'idle',
+      canZoom ? 'zoom' : undefined,
     );
     diag('info', 'image-render', {
       tier: entry.tier,
       veil: this.placed.length - pins,
       pin: pins,
     });
+  }
+
+  /**
+   * 放大檢視(§3.3)。
+   *
+   * **不重問模型** —— 同一份區塊,換一個顯示尺寸再算一次
+   * `placeBlocks` 就好。行內過不了字級門檻的塊在這裡自動變成疊字,
+   * 那正是 §2.3 分流規則想要的效果。
+   */
+  private zoomUrl: string | null = null;
+
+  openZoom(): boolean {
+    const img = this.current;
+    if (!img) return false;
+    const url = this.urlOf(img);
+    const entry = this.byUrl.get(url);
+    if (!entry) return false;
+    const natural = { w: img.naturalWidth, h: img.naturalHeight };
+    const size = this.host.openZoom(url, natural);
+    if (!size) return false;
+    this.zoomUrl = url;
+    this.paintZoom(size, entry, natural);
+    diag('info', 'image-zoom', { blocks: entry.blocks.length });
+    return true;
+  }
+
+  private paintZoom(
+    size: { w: number; h: number },
+    entry: ImageEntry,
+    natural: { w: number; h: number },
+  ): void {
+    // 放大檢視一律 contain 置中,所以 drawn 就是整個 size
+    const drawn = drawnRect(natural, size, 'contain', {
+      x: { pct: 0.5 },
+      y: { pct: 0.5 },
+    });
+    this.host.setZoomBlocks(placeBlocks(entry.blocks, drawn, size));
+  }
+
+  /** 視窗改變大小時重畫(放大檢視是 fit 到視窗的) */
+  relayoutZoom(size: { w: number; h: number }, natural: { w: number; h: number }): void {
+    if (!this.zoomUrl) return;
+    const entry = this.byUrl.get(this.zoomUrl);
+    if (entry) this.paintZoom(size, entry, natural);
+  }
+
+  closeZoom(): void {
+    if (!this.zoomUrl) return;
+    this.zoomUrl = null;
+    this.host.closeZoom();
+  }
+
+  zoomOpen(): boolean {
+    return this.zoomUrl !== null;
   }
 
   /** 已經翻過的圖(給放大檢視與同 src 重錨定用) */
@@ -275,5 +380,6 @@ const FRIENDLY: Record<string, string> = {
   'page-cap': '本頁 token 上限已滿',
   'daily-cap': '今日預算已用完',
   'no-key': '還沒設定 API key',
+  'page-image-cap': '本頁圖片翻譯已達上限',
   empty: '圖片是空的',
 };

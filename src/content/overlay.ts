@@ -229,6 +229,13 @@ const LAYER_CSS = `
   );
 }
 .chip.warn::before { background: #c0392b; }
+/* 可按的貼片(只有圖片 cue) */
+.chip.act {
+  pointer-events: auto;
+  cursor: pointer;
+  user-select: none;
+}
+.chip.act:hover { filter: brightness(1.25); }
 /* 兩層都失敗:顯示原文,但要看得出來這是「翻不出來」而不是譯文 */
 .chip.warn { font-style: italic; }
 @media (prefers-reduced-motion: reduce) {
@@ -421,6 +428,17 @@ export interface ChipItem {
   anchor: ViewRect;
   tone: 'l0' | 'l1' | 'warn';
   style: ChipStyle;
+  /**
+   * 這片貼片可以按。**整層唯一會吃滑鼠事件的東西之一**
+   * (另一個是放大檢視,見 `.zoom`)。
+   *
+   * `docs/plan-annotation.md` §3.4 明訂的例外,而且例外收得很窄:
+   * 只有圖片的 cue 用它。理由是 Alt+click 是鍵盤加滑鼠的複合動作,
+   * 沒有它的話**觸控裝置與單手操作完全沒有入口**。
+   *
+   * UI 標籤的貼片**不設這個** —— 那些要維持「蓋到隔壁按鈕也點得到」。
+   */
+  action?: string;
 }
 
 /** 貼片的視覺:全部取自來源元素,讓它看起來像頁面的一部分而不是外掛 UI */
@@ -704,8 +722,16 @@ export class OverlayLayer {
     const placed: ViewRect[] = [];
     items.forEach((item, i) => {
       const c = this.chipAt(i);
-      c.className = `chip ${item.tone}`;
+      c.className = `chip ${item.tone}${item.action ? ' act' : ''}`;
       c.textContent = item.text;
+      /*
+       * 事件掛在**貼片自己身上**,不靠 document 的監聽。
+       *
+       * 疊層在 closed shadow root 裡,`composedPath()` 不會揭露內部節點,
+       * 所以外面的 listener 認不出「使用者點的是哪一片貼片」。
+       * 節點是這個類別造的,回呼也由它接 —— 邊界剛好落在該落的地方。
+       */
+      c.onclick = item.action ? () => this.chipAction?.(item.action!) : null;
       const st = item.style;
       c.style.setProperty('--ksnm-chip-bg', st.background);
       c.style.setProperty('--ksnm-chip-fg', st.color);
@@ -732,6 +758,12 @@ export class OverlayLayer {
     for (let i = items.length; i < this.chips.length; i++) {
       this.chips[i]!.classList.remove('show');
     }
+  }
+
+  private chipAction: ((action: string) => void) | null = null;
+
+  onChipAction(cb: (action: string) => void): void {
+    this.chipAction = cb;
   }
 
   private chipAt(i: number): HTMLDivElement {
@@ -912,6 +944,21 @@ export class OverlayLayer {
     this.zoomBox?.classList.remove('show');
   }
 
+  /** 放大檢視裡的圖現在畫成多大(視窗變化後重算加註要用) */
+  zoomSize(): { w: number; h: number } | null {
+    const holder = this.zoomBox?.querySelector('.zimg');
+    if (!holder) return null;
+    const r = holder.getBoundingClientRect();
+    return { w: r.width, h: r.height };
+  }
+
+  private zoomDismiss: (() => void) | null = null;
+
+  /** 點黑處關閉。事件掛在層自己身上(shadow root 外面認不出它) */
+  onZoomDismiss(cb: () => void): void {
+    this.zoomDismiss = cb;
+  }
+
   zoomVisible(): boolean {
     return this.zoomBox?.classList.contains('show') === true;
   }
@@ -926,6 +973,10 @@ export class OverlayLayer {
     hint.className = 'zhint';
     hint.textContent = 'Esc 或點黑處關閉 · 按住 Alt 看原圖';
     z.append(holder, hint);
+    z.addEventListener('click', (e) => {
+      // 只有點在圖以外的黑處才關;點到圖上是想看清楚,不是想離開
+      if (e.target === z) this.zoomDismiss?.();
+    });
     // .zoom 是 fixed,和 .chip 同理由:不能待在帶 clip-path 的 .layer 裡
     this.root.appendChild(z);
     this.zoomBox = z;

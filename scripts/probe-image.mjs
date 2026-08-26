@@ -33,7 +33,9 @@ const entry = path.join(out, 'entry.ts');
 writeFileSync(
   entry,
   `export * from '${path.join(root, 'src/content/imagegeo.ts')}';\n` +
-    `export { sanitizeBlocks } from '${path.join(root, 'src/shared/imageblocks.ts')}';\n`,
+    `export { hasNativeZoom, geometryOf } from '${path.join(root, 'src/content/imageanno.ts')}';\n` +
+    `export { sanitizeBlocks } from '${path.join(root, 'src/shared/imageblocks.ts')}';\n` +
+    `export { OverlayLayer } from '${path.join(root, 'src/content/overlay.ts')}';\n`,
 );
 const bundle = path.join(out, 'geo.js');
 execFileSync(
@@ -62,6 +64,21 @@ const page = `<!doctype html><meta charset=utf-8>
 <figure><img id="plain" src="IMG"></figure>
 <figure><img id="cover" src="IMG"></figure>
 <figure><img id="contain" src="IMG"></figure>
+
+<!-- 站方自己的放大檢視:四種寫法,認得出來就不出我們的入口(§2.4) -->
+<!-- ClickHouse 的實際寫法:透明按鈕蓋在圖上 -->
+<figure style="position:relative;width:300px">
+  <img id="zoom-btn" src="IMG" style="width:300px">
+  <button style="position:absolute;inset:0;cursor:zoom-in;opacity:0"></button>
+</figure>
+<!-- WordPress / 相簿外掛:連到圖片檔 -->
+<figure><a href="/photo-large.jpg"><img id="zoom-link" src="IMG" style="width:300px"></a></figure>
+<!-- react-medium-image-zoom -->
+<figure data-rmiz><img id="zoom-rmiz" src="IMG" style="width:300px"></figure>
+<!-- 圖片自己是 zoom-in -->
+<figure><img id="zoom-self" src="IMG" style="width:300px;cursor:zoom-in"></figure>
+<!-- 反例:一般的內文圖,沒有站方入口 → 我們要出 -->
+<figure><a href="/article/next"><img id="zoom-none" src="IMG" style="width:300px"></a></figure>
 `;
 
 const exe = process.env['PLAYWRIGHT_BROWSERS_PATH']
@@ -82,6 +99,14 @@ const png = `data:image/svg+xml;base64,${Buffer.from(
  */
 const html = path.join(out, 'probe.html');
 writeFileSync(html, page.replaceAll('IMG', png));
+/*
+ * overlay.ts 會叫 `chrome.runtime.getURL` 取打包的字型。
+ * 頁面裡沒有擴充 API,補一個最小的殼 —— 字型載不到不影響幾何,
+ * 而幾何正是這支 probe 要驗的東西。
+ */
+await p.addInitScript({
+  content: `globalThis.chrome = { runtime: { getURL: (x) => 'about:blank#' + x } };`,
+});
 await p.goto('file://' + html);
 await p.waitForLoadState('load');
 
@@ -116,11 +141,23 @@ const got = await p.evaluate((fx) => {
       docTop: Math.round(r.top + window.scrollY),
     };
   }
+  report._zoom = {};
+  for (const id of ['zoom-btn', 'zoom-link', 'zoom-rmiz', 'zoom-self', 'zoom-none']) {
+    report._zoom[id] = IG.hasNativeZoom(document.getElementById(id));
+  }
   return report;
 }, fixture);
 
 const problems = [];
 console.log(JSON.stringify(got, null, 1));
+
+const zoom = got._zoom;
+delete got._zoom;
+console.log('站方 lightbox 偵測:', JSON.stringify(zoom));
+for (const id of ['zoom-btn', 'zoom-link', 'zoom-rmiz', 'zoom-self']) {
+  if (!zoom[id]) problems.push(`${id}:沒認出站方的放大檢視 → 會出兩顆意思一樣的按鈕`);
+}
+if (zoom['zoom-none']) problems.push('zoom-none:誤判成站方有 lightbox → 我們的入口不會出現');
 
 for (const [id, r] of Object.entries(got)) {
   if (r.total === 0) problems.push(`${id}:一塊都沒放上去`);
@@ -143,6 +180,67 @@ const after = await p.evaluate(() => {
 });
 if (after !== got.plain.docTop) {
   problems.push(`捲動後文件座標變了:${got.plain.docTop} → ${after}`);
+}
+
+/*
+ * 渲染路徑:單元測試碰不到 OverlayLayer(closed shadow root + 真幾何)。
+ * 這裡把它裝起來,畫一張圖與一次放大檢視,再從外面驗它畫了什麼。
+ */
+const render = await p.evaluate((fx) => {
+  const { blocks } = IG.sanitizeBlocks(fx.blocks, fx.nw, fx.nh);
+  const layer = new IG.OverlayLayer();
+  layer.setVeilStrength(0.3);
+
+  const img = document.getElementById('plain');
+  const g = IG.geometryOf(img);
+  const placed = IG.placeBlocks(blocks, g.drawn, g.clip);
+  layer.showImage(g.rect, placed);
+
+  /*
+   * 滑鼠穿透是硬規則,而它有**兩半**,兩半都要驗:
+   * 加註畫上去之後仍然點得到底下的頁面;放大檢視開著時反而要擋住
+   * (那是整層唯一的例外,理由見 overlay.ts 的 `.zoom`)。
+   */
+  const hitAt = () => {
+    const r = img.getBoundingClientRect();
+    return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === img;
+  };
+  const throughWithAnno = hitAt();
+
+  // 放大檢視:同一份區塊、換個尺寸重算 —— 錨點要變成疊字
+  const holder = layer.showZoom(img.currentSrc, { w: fx.nw, h: fx.nh });
+  const zr = holder.getBoundingClientRect();
+  const zdrawn = IG.drawnRect({ w: fx.nw, h: fx.nh }, { w: zr.width, h: zr.height },
+    'contain', { x: { pct: 0.5 }, y: { pct: 0.5 } });
+  const zplaced = IG.placeBlocks(blocks, zdrawn, { w: zr.width, h: zr.height });
+  layer.setZoomBlocks(zplaced);
+
+  // 從 host 外面能看到的只有它存在;內部要靠 layer 自己回報
+  return {
+    inlineVeil: placed.filter((b) => b.kind === 'veil').length,
+    inlinePin: placed.filter((b) => b.kind === 'pin').length,
+    zoomVeil: zplaced.filter((b) => b.kind === 'veil').length,
+    zoomPin: zplaced.filter((b) => b.kind === 'pin').length,
+    zoomSize: layer.zoomSize(),
+    imageVisible: layer.imageVisible(),
+    zoomVisible: layer.zoomVisible(),
+    throughWithAnno,
+    blockedWhileZoom: !hitAt(),
+    throughAfterClose: (layer.hideZoom(), hitAt()),
+  };
+}, fixture);
+console.log('渲染:', JSON.stringify(render));
+
+if (!render.imageVisible) problems.push('showImage 之後圖層沒顯示');
+if (!render.zoomVisible) problems.push('showZoom 之後放大檢視沒顯示');
+if (!render.throughWithAnno) problems.push('加註擋住了滑鼠 —— 圖上點不到底下的頁面');
+if (!render.blockedWhileZoom) problems.push('放大檢視開著卻沒擋住點擊 —— 會點到底下的頁面');
+if (!render.throughAfterClose) problems.push('關掉放大檢視之後滑鼠還是穿不過去');
+if (render.zoomVeil <= render.inlineVeil) {
+  problems.push(`放大檢視沒有把錨點鋪開成疊字(行內 ${render.inlineVeil} → 放大 ${render.zoomVeil})`);
+}
+if (render.zoomPin >= render.inlinePin) {
+  problems.push(`放大之後錨點沒有變少(${render.inlinePin} → ${render.zoomPin})`);
 }
 
 await browser.close();
