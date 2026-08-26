@@ -139,7 +139,61 @@ function recall(ref, got) {
   return hit / ref.size;
 }
 
+/*
+ * `--glossary` 模式(§13-5):詞表在**視覺請求**上的遵循率。
+ *
+ * 這一項要單獨量,因為圖片上**只有路徑 B**(`plan-images.md` §8)——
+ * 文字管線的佔位符前提是「我們能在送出前改寫來源」,而模型看到的是像素。
+ * 所以詞表在這裡是請求不是保證,而「請求有多少機會被聽進去」是個數字,
+ * 不是一句話。
+ *
+ * 刻意挑**和模型自然譯法不同**的說法:如果詞表寫「儲存空間大小」,
+ * 模型本來就會這樣譯,量到 100% 也證明不了任何事。
+ */
+const GLOSSARY = [
+  { from: 'Storage size', to: '儲存容量' },
+  { from: 'Elasticsearch', to: '彈性搜尋' },
+  { from: 'smaller', to: '更精簡' },
+];
+
+if (process.argv.includes('--glossary')) {
+  const file = files.find((f) => !f.startsWith('--'));
+  const raw = readFileSync(file);
+  const b64 = raw.toString('base64');
+  const mime = file.endsWith('.jpg') ? 'image/jpeg' : 'image/png';
+  const img = await shrink(b64, mime, 99999);
+  console.log(`\n════ 詞表遵循率 ${path.basename(file)}`);
+  console.log(`  詞表:${GLOSSARY.map((t) => `${t.from}→${t.to}`).join('  ')}\n`);
+  for (const tier of ['balanced', 'free']) {
+    for (const withG of [false, true]) {
+      const res = await callVision(
+        KEY, SPECS[tier], { ...img, mime: 'image/png', hash: 'g' }, 'zh-TW',
+        withG ? GLOSSARY : [],
+      );
+      if (!res.ok) { console.log(`  ${tier} ${withG}: ERR ${res.reason.slice(0, 80)}`); continue; }
+      const hits = GLOSSARY.map((t) => {
+        // 找到含這個原文的那一塊,看它的譯文有沒有採用指定說法
+        const blk = res.blocks.find((b) => b.text.toLowerCase().includes(t.from.toLowerCase()));
+        if (!blk) return { term: t.from, found: false, used: false, got: '' };
+        return { term: t.from, found: true, used: blk.zh.includes(t.to), got: blk.zh.slice(0, 20) };
+      });
+      const found = hits.filter((h) => h.found);
+      const used = found.filter((h) => h.used).length;
+      console.log(
+        `  ${SPECS[tier].modelId.padEnd(22)} ${withG ? '有詞表' : '無詞表'}  ` +
+        `${res.blocks.length} 塊  命中 ${used}/${found.length}`,
+      );
+      for (const h of hits) {
+        console.log(`      ${h.term.padEnd(14)} ${h.found ? (h.used ? '✓' : '✗') : '(圖上沒找到)'}  ${JSON.stringify(h.got)}`);
+      }
+    }
+  }
+  await browser.close();
+  process.exit(0);
+}
+
 for (const file of files) {
+  if (file.startsWith('--')) continue;
   const raw = readFileSync(file);
   const b64 = raw.toString('base64');
   const mime = file.endsWith('.jpg') || file.endsWith('.jpeg') ? 'image/jpeg' : 'image/png';

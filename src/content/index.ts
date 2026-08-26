@@ -2258,6 +2258,7 @@ async function start(): Promise<void> {
     for (const r of records) {
       if (r.target instanceof Element && r.target.id === 'kasanemu-root') return;
     }
+    adoptNewImages(records);
     onRouteChange();
     scheduleFlush(true);
   });
@@ -2997,6 +2998,30 @@ function stale(kind: string, from: string, n: number): void {
  */
 let imageMoveRaf = 0;
 let lastImageMove: { target: EventTarget | null; x: number; y: number } | null = null;
+
+/**
+ * 站方的 lightbox 開出來的新 `<img>`:同一個 src 就直接把加註畫過去(§2.4)。
+ *
+ * 圖片是非同步載入的,插進 DOM 的當下 `currentSrc` 常常還是空的 ——
+ * 所以拿不到就掛一次 `load` 再試。
+ */
+function adoptNewImages(records: readonly MutationRecord[]): void {
+  if (settings.imageMode === 'off') return;
+  for (const r of records) {
+    for (const node of r.addedNodes) {
+      if (!(node instanceof Element)) continue;
+      const imgs =
+        node instanceof HTMLImageElement ? [node] : [...node.querySelectorAll('img')];
+      for (const img of imgs) {
+        if (!(img instanceof HTMLImageElement)) continue;
+        if (imageAnno.adopt(img)) continue;
+        if (!img.complete) {
+          img.addEventListener('load', () => imageAnno.adopt(img), { once: true });
+        }
+      }
+    }
+  }
+}
 
 /** 放大檢視是 fit 到視窗的,視窗變了要重算 */
 function onZoomResize(): void {

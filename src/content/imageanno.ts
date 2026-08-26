@@ -224,6 +224,29 @@ export class ImageAnnotator {
   }
 
   /**
+   * 新出現的 `<img>` 如果是**翻過的同一張圖**,直接畫上去(§2.4)。
+   *
+   * 站方的 lightbox 開出來的是**新的元素但同一個 src**(ClickHouse 那篇
+   * 實測就是這樣)。沒有這一條的話,使用者點開黑窗會看到一張沒有加註的圖,
+   * 得再滑上去一次才出現 —— 而他剛剛才在縮圖上看過。
+   *
+   * 只認**已經翻過的**:這條路不觸發任何請求,純粹是把手上的東西畫出來。
+   */
+  adopt(img: HTMLImageElement): boolean {
+    if (!this.enabled()) return false;
+    const r = img.getBoundingClientRect();
+    if (!worthTranslating({ w: r.width, h: r.height })) return false;
+    const entry = this.byUrl.get(this.urlOf(img));
+    if (!entry || entry.blocks.length === 0) return false;
+    // 已經指著同一個元素就不用重畫
+    if (this.current === img) return false;
+    this.current = img;
+    this.render(img, entry);
+    diag('info', 'image-adopt', { tier: entry.tier });
+    return true;
+  }
+
+  /**
    * Alt+click:升級到 L1。
    *
    * 這是**付費動作**,所以一定要明確 —— hover 不會走到這裡。

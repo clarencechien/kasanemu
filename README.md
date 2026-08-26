@@ -96,6 +96,24 @@ worker → 先吃快取 → 過保險絲與 token bucket → 呼叫 Gemini → i
 在就是塞車、繼續等,不在就重排一次,再不行標成失敗(提示線轉紅、hover 可重試)。
 **「卡住」不是一個有效狀態。**
 
+## 圖片上的字
+
+疊層碰不到像素,所以圖片走另一條路,而且**方向和文字相反**:
+文字是譯文常駐、滑上去看原文;圖片是**原圖常駐、滑上去看譯文**。
+圖的資訊主體是圖形,整頁掛著標註色是噪音。
+
+- **滑上去停 0.5 秒** → 免費檔辨識(零帳單,10–70 秒,背景填充)
+- **Alt+點圖** → 升級到你選的檔位(一張約 NT$0.2)
+- 算出來小於 11px 的字不硬塞,改成**編號圓點**,滑上去看譯文;
+  圖角的「⤢ 放大檢視」點開之後那些字夠大了,**編號自動變回疊字**
+  —— 同一份譯文,不會再花一次錢
+- 站方自己有放大功能就不出那顆按鈕,加註會**跟著同一張圖**過去
+- 直排日文目前**讀不對**(模型把直排當橫排讀),但認得出來 → 標警示色
+
+閘門:不滑就是零、每頁最多 20 張、同一張圖翻兩次只算一張(認圖片內容)。
+詞表在圖片上是**請求不是保證**(模型看到的是像素,改寫不了來源)——
+實測 0/3 → 2~3/3,而哪個模型比較聽話和價格無關(`docs/plan-images.md` §13-5)。
+
 ## 三層防守:什麼會被翻、什麼不會
 
 | 層 | 對象 | 畫法 |
@@ -177,7 +195,7 @@ src/
   popup/    啟用、管線、檔位、L0 語言包、本頁階層統計、花費、匯出 log / 頁面 / 快取
 scripts/    audit-sites · audit-coverage · probe-{detect,colors,snapshot,gemma,image,vision}
             fetch-fonts(subset 打包)· zip · sites.txt · fixtures/
-tests/      268 個 node:test;fixtures/vision/ 是真實 API 回應(地面實況)
+tests/      271 個 node:test;fixtures/vision/ 是真實 API 回應(地面實況)
 docs/       lessons(通則)· deviations(逐件記錄)· acceptance(人工驗收)
             fonts(subset 實測)· plan-annotation(加翻層規格)
             plan-glossary(詞表規格 + 模型實測)· plan-images(圖片翻譯規格)

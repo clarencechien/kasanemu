@@ -33,7 +33,7 @@ const entry = path.join(out, 'entry.ts');
 writeFileSync(
   entry,
   `export * from '${path.join(root, 'src/content/imagegeo.ts')}';\n` +
-    `export { hasNativeZoom, geometryOf } from '${path.join(root, 'src/content/imageanno.ts')}';\n` +
+    `export { hasNativeZoom, geometryOf, ImageAnnotator } from '${path.join(root, 'src/content/imageanno.ts')}';\n` +
     `export { sanitizeBlocks } from '${path.join(root, 'src/shared/imageblocks.ts')}';\n` +
     `export { OverlayLayer } from '${path.join(root, 'src/content/overlay.ts')}';\n`,
 );
@@ -242,6 +242,52 @@ if (render.zoomVeil <= render.inlineVeil) {
 if (render.zoomPin >= render.inlinePin) {
   problems.push(`放大之後錨點沒有變少(${render.inlinePin} → ${render.zoomPin})`);
 }
+
+/*
+ * 同 src 認親(§2.4):站方 lightbox 開出來的是**新元素、同一個 src**。
+ * 沒有這一條的話,使用者點開黑窗會看到一張沒有加註的圖。
+ */
+const adopt = await p.evaluate((fx) => {
+  const { blocks } = IG.sanitizeBlocks(fx.blocks, fx.nw, fx.nh);
+  const calls = { show: 0, cue: 0 };
+  const anno = new IG.ImageAnnotator(
+    {
+      request() {},
+      showImage() { calls.show++; },
+      hideImage() {},
+      setActivePin() {},
+      cue() { calls.cue++; },
+      openZoom() { return null; },
+      setZoomBlocks() {},
+      closeZoom() {},
+    },
+    () => true,
+    () => false,
+  );
+  const first = document.getElementById('plain');
+  const url = first.currentSrc || first.src;
+  anno.onResult(url, 'h', 'l0', blocks);
+
+  // 站方 lightbox:插一個新的 <img>,同一個 src
+  const clone = document.createElement('img');
+  clone.src = first.src;
+  clone.style.cssText = 'width:900px;height:681px';
+  document.body.appendChild(clone);
+  const adopted = anno.adopt(clone);
+
+  // 反例:沒翻過的別張圖不該被認親
+  const other = document.createElement('img');
+  other.src = 'data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"/>');
+  other.style.cssText = 'width:800px;height:600px';
+  document.body.appendChild(other);
+  const wrong = anno.adopt(other);
+
+  return { adopted, wrong, show: calls.show };
+}, fixture);
+console.log('同 src 認親:', JSON.stringify(adopt));
+if (!adopt.adopted) problems.push('同 src 的新元素沒有被認親 —— lightbox 開出來會沒有加註');
+if (adopt.wrong) problems.push('沒翻過的圖被誤認了');
+if (adopt.show === 0) problems.push('認親了卻沒有畫');
 
 await browser.close();
 if (problems.length > 0) {
