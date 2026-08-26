@@ -831,6 +831,55 @@ function hasFloatDescendant(el: Element): boolean {
  */
 const TOC_HOSTS = 'nav,aside,[role="navigation"],[role="complementary"]';
 
+const NAV_HOSTS = 'nav,[role="navigation"],[role="menubar"],[role="menu"],[role="tablist"]';
+
+/** 這個節點在 `host` 底下的某個導覽區裡嗎 */
+function insideNavOf(host: Element, n: Element): boolean {
+  const nav = n.closest(NAV_HOSTS);
+  return nav !== null && nav !== host && host.contains(nav);
+}
+
+/**
+ * 一段字要多長才算「散文」而不是標語。
+ *
+ * 站台橫幅裡最長的東西是標語(「The best place to build software」= 32 字),
+ * 而頁面的導言動輒上百字。80 留了一倍以上的餘裕。
+ */
+const PAGE_PROSE_MIN = 80;
+
+/**
+ * 這個 `<header>` 是**這一頁的標題區**,不是站台的橫幅。
+ *
+ * §CH 為 Wired / BBC 開的例外只蓋到 `<article><header>`。但靜態網站
+ * 產生器與大多數部落格的寫法是**頂層的 `<header>`** 直接裝著頁面的
+ * `h1` 與導言,外面沒有 `<article>`:
+ *
+ *   <header class="masthead">
+ *     <h1>Know your unknowns</h1>
+ *     <p class="intro">The map is not the territory — …(354 字)</p>
+ *
+ * 於是整頁最重要的兩行字被當成站台外殼跳過(`docs/deviations.md` §DM)。
+ *
+ * 分辨的訊號是**散文**:橫幅裡是 logo、選單、標語,全都短;
+ * 頁面標題區有一段長到不可能是標語的文字。兩個條件都要,而且
+ * **都不算導覽區裡的東西** —— mega menu 的說明文字也可以很長,
+ * 那仍然是外殼。
+ */
+function isPageTitleBlock(el: Element): boolean {
+  let hasHeading = false;
+  for (const h of el.querySelectorAll('h1,h2')) {
+    if (!insideNavOf(el, h) && visibleTextOf(h).length > 0) {
+      hasHeading = true;
+      break;
+    }
+  }
+  if (!hasHeading) return false;
+  for (const n of el.querySelectorAll('p,blockquote,li,dd')) {
+    if (!insideNavOf(el, n) && visibleTextOf(n).length >= PAGE_PROSE_MIN) return true;
+  }
+  return false;
+}
+
 function isAppChrome(el: Element): boolean {
   if (!CHROME_TAGS.has(el.tagName) && !el.matches(CHROME_SELECTOR)) return false;
   /*
@@ -845,6 +894,8 @@ function isAppChrome(el: Element): boolean {
   if ((el.tagName === 'HEADER' || el.tagName === 'FOOTER') && el.closest('article') !== null) {
     return false;
   }
+  // 沒有 <article> 但自己就是頁面的標題區 —— 同一件事的另一種寫法(§DM)
+  if (el.tagName === 'HEADER' && isPageTitleBlock(el)) return false;
   if (!el.matches(TOC_HOSTS)) return true;
   return !hasContentList(el);
 }

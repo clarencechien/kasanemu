@@ -3831,3 +3831,76 @@ probe 加了「按住 Alt 黑窗裡的加註掀開了嗎」之後,修好還是�
 和 §DK-1 是同一類:那次是斷言太早所以**測不出壞的**,這次是斷言太早
 所以**測不出好的**。兩次的共同點是「動畫/延遲把時間軸拉長了,而斷言
 還停在切換的那一瞬間」。有過場的東西,量之前先讓它跑完。
+
+## DM. 頂層 `<header>` 裡的頁面標題被當成站台外殼
+
+使用者回報 `thariqs.github.io/html-effectiveness/unknowns/` 那組頁面
+「整塊都沒翻到」,而漏掉的正是整頁最重要的東西:
+
+```html
+<header class="masthead">
+  <h1>Know your unknowns</h1>
+  <p class="intro">The map is not the territory — …(354 字)</p>
+```
+
+用 production 的 `detect.ts` 掃真的頁面,一次就重現:
+
+```
+=== unk-index.html ===
+找到單元 42 · 漏掉 2
+漏掉的: [ H1 "Know your unknowns", P.intro "The map is not the territory — …" ]
+```
+
+### DM-1. 病根:例外只開給了 `<article>`
+
+```ts
+function isAppChrome(el) {
+  if (!CHROME_TAGS.has(el.tagName) && !el.matches(CHROME_SELECTOR)) return false;
+  if ((el.tagName === 'HEADER' || el.tagName === 'FOOTER') && el.closest('article') !== null) {
+    return false;   // ← §CH 為 Wired / BBC 開的例外
+  }
+  ...
+  return true;       // ← 其餘一律是外殼
+}
+```
+
+`CHROME_TAGS` 有 `HEADER`,而 §CH 那條例外要求外面包著 `<article>`。
+Wired 和 BBC 剛好都有,所以當時修好了 —— 但**靜態網站產生器與大多數
+部落格的寫法是頂層的 `<header>`,外面沒有 `<article>`**。
+於是 `walk()` 在第三行就 `return false`,整個標題區連同 h1 一起消失。
+
+這是 §20-bis 那條的另一個例子:我當時把「文章的 header」認出來了,
+卻把它的識別條件綁在一個**碰巧同時出現**的東西上(`<article>` 標籤),
+而不是綁在讓它成為文章 header 的**那個性質**(它裝著頁面的標題與導言)。
+
+### DM-2. 分辨的訊號是散文,不是 h1
+
+只看「有沒有 h1」會把「站名包在 h1 裡」的正常橫幅全部誤判成內容 ——
+那是更糟的方向,因為橫幅**每一頁都出現**。
+
+所以要兩個條件:
+
+- 有 `h1` / `h2`,而且
+- 有一段長度 ≥ `PAGE_PROSE_MIN`(80 字)的區塊文字。
+
+橫幅裡最長的東西是標語(「The best place to build software」= 32 字),
+頁面導言動輒上百字,80 留了一倍以上的餘裕。
+
+而且**兩個條件都不算導覽區裡的東西**:mega menu 的說明文字可以很長,
+拿它當證據的話每一個有下拉選單的橫幅都會翻船。
+
+### DM-3. 37 站稽核:沒有一站變差,一站變好
+
+改前改後各跑一次 `scripts/audit-sites.mjs`:
+
+| 站 | 改前 | 改後 |
+|---|---|---|
+| github.blog/engineering/ | 68 單元 · 漏 24(16%) | **71 單元 · 漏 21(14%)** |
+| en.wikipedia.org | 408 貼片 | 409 貼片 |
+| qiita.com | 147 單元 | 148 單元 |
+| news.yahoo.co.jp | 64 貼片 | 59 貼片(5 個從貼片變成單元) |
+
+其餘 33 站逐字相同。「漏 >15%」的名單少了 github.blog,沒有新增。
+
+規則改動這種東西,**沒有前後對照就等於沒有驗**:單看改後的數字,
+「37/37 跑完」和「我把整個網路的頁首都翻掉了」長得一模一樣。

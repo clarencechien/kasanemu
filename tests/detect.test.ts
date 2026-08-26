@@ -828,6 +828,63 @@ test('「裡面是目次就當內容」的例外不給頁首 —— mega menu �
   assert.ok(inAside.includes('Pricing'));
 });
 
+/* ---- 頂層 <header> 裡的頁面標題:外殼還是內容(§DM) ---- */
+
+const PAGE_HEAD = `<header class="masthead">
+  <div class="eyebrow">Companion to the blog post</div>
+  <h1>Know your unknowns</h1>
+  <p class="intro">The map is not the territory — the gap between them is your unknowns.
+    Eleven self-contained artifacts for discovering them before, during, and after
+    implementation.</p>
+  <nav class="toc"><a href="#pre">Pre-implementation</a><a href="#post">Post-implementation</a></nav>
+</header>`;
+
+test('頂層 <header> 裝著頁面的標題與導言 —— 那是內容,不是站台外殼', () => {
+  /*
+   * **使用者回報「整塊都沒翻到」的就是這個。**
+   *
+   * §CH 為 Wired / BBC 開的例外只蓋到 `<article><header>`。而靜態網站
+   * 產生器與大多數部落格的寫法是頂層的 `<header>` 直接裝著 h1 與導言,
+   * 外面沒有 `<article>` —— 於是整頁最重要的兩行字被當成外殼跳過。
+   */
+  const texts = findCandidates(mount(PAGE_HEAD), () => false).map((c) => c.src);
+  assert.ok(texts.includes('Know your unknowns'), `h1 沒撿到:${JSON.stringify(texts)}`);
+  assert.ok(
+    texts.some((t) => t.startsWith('The map is not the territory')),
+    `導言沒撿到:${JSON.stringify(texts)}`,
+  );
+});
+
+test('分辨的訊號是散文,不是「有沒有 h1」—— logo 包在 h1 裡的橫幅照樣是外殼', () => {
+  /*
+   * 只看 h1 會把「站名包在 h1 裡」的正常橫幅全部誤判成內容。
+   * 所以兩個條件都要:有標題,而且有一段長到不可能是標語的字。
+   */
+  const banner = `<header>
+    <h1><a href="/">Acme</a></h1>
+    <p class="tagline">Ship faster</p>
+    <nav><a href="/docs">Docs</a><a href="/pricing">Pricing</a></nav>
+  </header>`;
+  assert.deepEqual(findCandidates(mount(banner), () => false), []);
+});
+
+test('mega menu 的長說明不算散文 —— 導覽區裡的東西不列入判斷', () => {
+  /*
+   * 下拉選單的說明文字動輒上百字。如果拿它當「這是頁面標題區」的證據,
+   * 每一個有 mega menu 的站台橫幅都會被誤判成內容 —— 那是最糟的方向,
+   * 因為橫幅在每一頁都出現。
+   */
+  const megaHead = `<header>
+    <h2>Acme</h2>
+    <nav><ul>
+      <li><a href="#1">Cloud — run everything without operating any of it yourself, with
+        automatic scaling, backups and monitoring included from day one</a></li>
+      <li><a href="#2">Docs</a></li>
+    </ul></nav>
+  </header>`;
+  assert.deepEqual(findCandidates(mount(megaHead), () => false), []);
+});
+
 test('頁首裡的標籤仍然滑得到 —— 不畫疊層不等於整棵消失', () => {
   const root = mount('<header><nav><a href="#1">Products</a><a href="#2">Pricing</a></nav></header>');
   assert.deepEqual(findCandidates(root, () => false), []);

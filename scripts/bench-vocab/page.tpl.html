@@ -1,0 +1,878 @@
+<title>加註語彙比較台</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Noto+Sans+TC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+:root {
+  --ground: #F7F5F2;
+  --panel: #FFFFFF;
+  --stage: #E9E4DE;
+  --ink: #241F1C;
+  --ink-2: #6B615A;
+  --ink-3: #9C9089;
+  --rule: #DFD8D1;
+  --accent: #8E2605;
+  --accent-soft: #F3E5DE;
+  --good: #2F6B4F;
+  --warn: #8A5300;
+  --shadow: 0 1px 2px rgba(36,31,28,.07), 0 10px 28px rgba(36,31,28,.07);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #17161A;
+    --panel: #1F1E23;
+    --stage: #121116;
+    --ink: #EDE7E1;
+    --ink-2: #A79D96;
+    --ink-3: #776E67;
+    --rule: #34313A;
+    --accent: #E8815A;
+    --accent-soft: #34241E;
+    --good: #6FBF95;
+    --warn: #D9A05B;
+    --shadow: 0 1px 2px rgba(0,0,0,.45), 0 10px 28px rgba(0,0,0,.35);
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #17161A;
+  --panel: #1F1E23;
+  --stage: #121116;
+  --ink: #EDE7E1;
+  --ink-2: #A79D96;
+  --ink-3: #776E67;
+  --rule: #34313A;
+  --accent: #E8815A;
+  --accent-soft: #34241E;
+  --good: #6FBF95;
+  --warn: #D9A05B;
+  --shadow: 0 1px 2px rgba(0,0,0,.45), 0 10px 28px rgba(0,0,0,.35);
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font: 400 15px/1.65 "Noto Sans TC", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 1160px; margin: 0 auto; padding: 0 24px 96px; }
+
+/* ---------------------------------------------------------- 版頭 */
+header { padding: 56px 0 28px; }
+.eyebrow {
+  font: 500 11px/1 "JetBrains Mono", ui-monospace, monospace;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+h1 {
+  font: 700 clamp(30px, 4.6vw, 46px)/1.12 Archivo, "Noto Sans TC", sans-serif;
+  letter-spacing: -.02em;
+  text-wrap: balance;
+  margin: 14px 0 0;
+}
+.lede {
+  max-width: 62ch;
+  margin: 16px 0 0;
+  color: var(--ink-2);
+  font-size: 16px;
+}
+.lede b { color: var(--ink); font-weight: 500; }
+
+/* ------------------------------------------------------- 控制列 */
+.control {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  margin: 28px 0 0;
+  padding: 14px 18px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px 22px;
+}
+.control label {
+  font: 500 11px/1 "JetBrains Mono", monospace;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+input[type="range"] { flex: 1 1 220px; min-width: 180px; accent-color: var(--accent); }
+.presets { display: flex; gap: 6px; }
+button {
+  font: 500 13px/1 "Noto Sans TC", sans-serif;
+  padding: 7px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--rule);
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+button:hover { border-color: var(--accent); color: var(--accent); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.readout {
+  font: 500 13px/1.5 "JetBrains Mono", monospace;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+.readout b { color: var(--ink); }
+.readout .pick { color: var(--accent); }
+
+/* --------------------------------------------------------- 標本 */
+h2 {
+  font: 600 13px/1 "JetBrains Mono", monospace;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 56px 0 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--rule);
+}
+.note { max-width: 66ch; color: var(--ink-2); margin: 14px 0 0; font-size: 14px; }
+
+.spec {
+  margin: 24px 0 0;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.spec > hgroup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  padding: 15px 18px 13px;
+  border-bottom: 1px solid var(--rule);
+}
+.spec h3 {
+  margin: 0;
+  font: 600 17px/1.3 Archivo, "Noto Sans TC", sans-serif;
+  letter-spacing: -.01em;
+}
+.spec .fit { font-size: 13px; color: var(--ink-2); }
+.stage {
+  background: var(--stage);
+  padding: 26px;
+  display: flex;
+  justify-content: center;
+  overflow-x: auto;
+}
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  border-top: 1px solid var(--rule);
+}
+.stat {
+  flex: 1 1 150px;
+  padding: 11px 18px;
+  border-right: 1px solid var(--rule);
+}
+.stat:last-child { border-right: 0; }
+.stat dt {
+  font: 500 10px/1 "JetBrains Mono", monospace;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.stat dd {
+  margin: 6px 0 0;
+  font: 500 17px/1.2 "JetBrains Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+.stat dd small { font: 400 12px/1 "Noto Sans TC", sans-serif; color: var(--ink-2); }
+.stat.bad dd { color: var(--warn); }
+.stat.ok dd { color: var(--good); }
+
+/* -------------------------------------------- 加註本身(比照 production) */
+.shot { position: relative; flex: 0 0 auto; }
+/* 排不下的標籤就讓它被裁掉 —— 那正是「掉出畫布」那個數字在說的事 */
+.shot.clip { overflow: hidden; }
+.shot.placeholder {
+  background: repeating-linear-gradient(45deg, #8a8580 0 9px, #837e79 9px 18px);
+  overflow: hidden;
+}
+.phcap {
+  position: absolute;
+  left: 8px; bottom: 6px;
+  font: 500 10px/1 "JetBrains Mono", monospace;
+  letter-spacing: .08em;
+  color: rgba(255,255,255,.62);
+}
+.shot img { display: block; width: 100%; height: 100%; }
+.anno { position: absolute; inset: 0; pointer-events: none; }
+.iblk {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+.veil {
+  position: absolute;
+  inset: -3px;
+  border-radius: 3px;
+  backdrop-filter: blur(9px) saturate(.6);
+  -webkit-backdrop-filter: blur(9px) saturate(.6);
+  background: linear-gradient(160deg, rgba(255,252,247,.261), rgba(240,248,255,.18));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.55), inset 0 0 0 1px rgba(120,170,190,.22), 0 1px 4px rgba(0,0,0,.13);
+}
+.itx {
+  position: relative;
+  line-height: 1.24;
+  font-weight: 700;
+  color: #8E2605;
+  background: rgba(255,252,247,.92);
+  padding: .04em .32em;
+  border-radius: 4px;
+  box-shadow: 0 1px 2px rgba(0,0,0,.18);
+  white-space: nowrap;
+}
+.itx.wrap { white-space: normal; word-break: break-word; }
+.ipin {
+  position: absolute;
+  width: 14px; height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+  background: #FF4A14;
+  box-shadow: 0 0 0 2px rgba(255,255,255,.92), 0 1px 5px rgba(0,0,0,.4);
+  display: flex; align-items: center; justify-content: center;
+  font: 500 8px/1 "JetBrains Mono", monospace;
+  color: #fff;
+}
+.ipin.on { transform: scale(1.35); z-index: 2; }
+.ipop {
+  position: absolute;
+  max-width: 240px;
+  padding: 5px 9px 6px;
+  border-radius: 6px;
+  background: rgba(255,252,247,.97);
+  color: #8E2605;
+  font: 700 13px/1.4 "Noto Sans TC", sans-serif;
+  text-align: left;
+  box-shadow: 0 2px 10px rgba(0,0,0,.3), inset 0 0 0 1px rgba(142,38,5,.18);
+  z-index: 3;
+}
+.ipop .src {
+  display: block; margin-top: 3px;
+  font: 500 11px/1.35 "Noto Sans TC", sans-serif;
+  color: rgba(60,52,48,.72);
+}
+.badge {
+  position: absolute;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #FF4A14;
+  color: #fff;
+  font: 500 11px/1.3 "Noto Sans TC", sans-serif;
+  box-shadow: 0 2px 8px rgba(0,0,0,.4), 0 0 0 2px rgba(255,255,255,.85);
+  white-space: nowrap;
+}
+.lead { position: absolute; overflow: visible; pointer-events: none; }
+.lead line { stroke: #FF4A14; stroke-width: 1.25; opacity: .8; }
+.lead circle { fill: #FF4A14; }
+.ltag {
+  position: absolute;
+  padding: 3px 8px 4px;
+  border-radius: 5px;
+  background: rgba(255,252,247,.95);
+  color: #8E2605;
+  font: 700 12px/1.35 "Noto Sans TC", sans-serif;
+  box-shadow: 0 1px 5px rgba(0,0,0,.3), inset 0 0 0 1px rgba(142,38,5,.16);
+  white-space: nowrap;
+}
+.ltag.out { box-shadow: 0 1px 5px rgba(0,0,0,.16), inset 0 0 0 1px rgba(142,38,5,.3); }
+.pagebg {
+  position: absolute;
+  background: var(--panel);
+  border: 1px dashed var(--rule);
+  border-radius: 4px;
+  display: flex; align-items: center; justify-content: center;
+  font: 400 11px/1.4 "Noto Sans TC", sans-serif;
+  color: var(--ink-3);
+  text-align: center;
+}
+.side {
+  flex: 0 0 260px;
+  align-self: stretch;
+  margin-left: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  overflow-y: auto;
+}
+.srow {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  gap: 8px;
+  padding: 6px 9px;
+  border-radius: 6px;
+  background: rgba(255,252,247,.93);
+  color: #8E2605;
+  font: 700 12.5px/1.45 "Noto Sans TC", sans-serif;
+  text-align: left;
+}
+.srow .no {
+  justify-self: center;
+  width: 17px; height: 17px;
+  border-radius: 50%;
+  background: #FF4A14;
+  color: #fff;
+  font: 500 9px/17px "JetBrains Mono", monospace;
+  text-align: center;
+}
+.srow .src { display: block; font-weight: 500; font-size: 10.5px; color: rgba(60,52,48,.7); }
+.pair { display: flex; align-items: flex-start; }
+
+/* ------------------------------------------------- 提案:可切換的那一版 */
+.demo {
+  margin: 24px 0 0;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.demo .stage { padding: 30px 26px 34px; position: relative; }
+/* chip 的位置比照 production:貼在圖的下緣 */
+.chipbar {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 8px;
+  background: rgba(16,21,27,.92);
+  box-shadow: 0 2px 10px rgba(0,0,0,.3);
+}
+.chipbar .lbl {
+  padding: 0 8px 0 6px;
+  font: 500 11px/1 "Noto Sans TC", sans-serif;
+  color: #8fa0b0;
+}
+.chipbar button {
+  border: 0;
+  background: transparent;
+  color: #cbd5dd;
+  font: 500 12px/1 "Noto Sans TC", sans-serif;
+  padding: 6px 10px;
+  border-radius: 6px;
+}
+.chipbar button:hover { background: rgba(255,255,255,.09); color: #fff; }
+.chipbar button.on { background: #FF4A14; color: #fff; }
+.srcpick { display: flex; gap: 6px; margin-left: auto; }
+
+/* --------------------------------------------------------- 收束 */
+.verdict {
+  margin: 56px 0 0;
+  padding: 26px 28px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--accent);
+  border-radius: 12px;
+}
+.verdict h3 { margin: 0 0 10px; font: 600 19px/1.3 Archivo, "Noto Sans TC", sans-serif; }
+.verdict p { margin: 0 0 12px; color: var(--ink-2); max-width: 66ch; }
+.verdict p:last-child { margin-bottom: 0; }
+.verdict b { color: var(--ink); font-weight: 500; }
+.trade {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 18px 0 0;
+  font-size: 14px;
+}
+.trade th, .trade td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--rule); }
+.trade th {
+  font: 500 10px/1 "JetBrains Mono", monospace;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.trade td:first-child { font-weight: 500; color: var(--ink); }
+.trade td.n { font-family: "JetBrains Mono", monospace; font-variant-numeric: tabular-nums; }
+.scroller { overflow-x: auto; }
+footer {
+  margin: 48px 0 0;
+  padding-top: 18px;
+  border-top: 1px solid var(--rule);
+  color: var(--ink-3);
+  font-size: 13px;
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+<header>
+  <div class="eyebrow">Kasanemu · 圖片加註</div>
+  <h1>六種語彙,同一張圖</h1>
+  <p class="lede">
+    素材是 ClickHouse 那篇的原圖(<b>1580×530</b>,深底)與 gemini 實際回傳的
+    <b>七塊譯文</b>——不是示意圖,座標和字都是真的。加註的 CSS 從 production 抄過來,
+    參數一個沒改。<br>
+    唯一的控制是<b>顯示寬度</b>,因為這個決定本來就是寬度的函數:拖動它,看每種語彙在哪裡塌掉。
+  </p>
+</header>
+
+<div class="control">
+  <label for="w">顯示寬度</label>
+  <input type="range" id="w" min="320" max="1200" step="5" value="565">
+  <div class="presets">
+    <button data-w="565" class="on">行內 565</button>
+    <button data-w="1040">放大 1040</button>
+    <button data-w="340">縮圖 340</button>
+  </div>
+  <div class="readout" id="ro"></div>
+</div>
+
+<h2>提案 · 讓使用者自己翻</h2>
+<p class="note">
+  自動規則挑一個當<b>預設</b>,圖角那片 chip 多一組切換——挑錯了你一鍵換掉,
+  不必等我猜對。下面這張是可以按的:換語彙、換素材,數字跟著動。
+</p>
+<div class="demo" id="demo"></div>
+
+<h2>稀疏素材 · 7 塊</h2>
+<p class="note">
+  這張圖的字不多,但左右各有一大片深色留白——所以它同時是「疊字放得下嗎」和
+  「拉線有沒有地方擺」兩個問題的好標本。
+</p>
+<div id="specs"></div>
+
+<h2>密集素材 · 53 塊</h2>
+<p class="note">
+  claude.com 那張 UI 截圖,原圖 2042×1546、53 塊譯文,全部是真的。
+  稀疏素材上每種語彙都好看,<b>要看的是它們在這裡怎麼塌</b>。
+</p>
+<div id="dense"></div>
+
+<div class="verdict">
+  <h3>三件在做這個比較台時才看出來的事</h3>
+  <p>
+    <b>一、遮蔽面積和互動次數這兩個數字,單獨看都會騙人。</b>
+    在密集素材上手動切成「疊字」,數字是<b>遮蔽 17.2% · 0 次互動</b>——
+    兩欄都漂亮,而畫面完全不能看:長句被塞進窄框,折成一個字一行的直條。
+    真正分得出好壞的是第三個數字(標籤重疊 / 線交叉),那是我補上去的。
+  </p>
+  <p>
+    <b>二、那個直條是 production 現在就會發生的事。</b>
+    疊字模式下塞不下的塊會把字級拉到 11px、框不動,而超過十個字的貼片允許折行——
+    折行點是框寬,所以窄框就折成一個字一行。這是「不適用 → 不適 / 用」的放大版,
+    現在還在 build 90 裡。
+  </p>
+  <p>
+    <b>三、拉線是這裡唯一「稀疏時明顯最好、密集時明顯最爛」的做法。</b>
+    565px 的圖表上它給你七條同時可讀、零互動、線一處不交叉;
+    同一套邏輯放到 53 塊上是 78 處交叉、27 條掉出畫布。
+    它不是備案,是<b>另一個適用帶</b>。
+  </p>
+  <p>
+    所以我不打算再猜哪一種對。自動規則挑預設,<b>切換權交出去</b>——
+    上面那組 chip 就是它的樣子。
+  </p>
+</div>
+
+<footer>
+  加註樣式取自 <code>src/content/overlay.ts</code> 的 <code>LAYER_CSS</code>;
+  區塊資料取自 <code>tests/fixtures/vision/lite-chart.json</code> 與 <code>lite-shot.json</code>。
+  字級公式與門檻同 <code>src/shared/imageblocks.ts</code>。
+</footer>
+</div>
+
+<script>
+const IMG = "data:image/png;base64,__IMG__";
+const SHOT = "data:image/webp;base64,__SHOT__";
+const DATA = __DATA__;
+
+/* production 的公式,一個字不改(src/shared/imageblocks.ts) */
+const MIN_FS = 11, MAX_FS = 40, LINE_FILL = .8, AREA_PACK = 1.35, MAJORITY = .7;
+const fontSizeFor = (w, h, n) => Math.min(h * LINE_FILL, Math.sqrt(w * h / (Math.max(1, n) * AREA_PACK)), MAX_FS);
+
+function layout(set, W) {
+  const H = W * set.nh / set.nw;
+  const items = set.blocks.map((b, i) => {
+    const r = {
+      x: b.box[1] / 1000 * W, y: b.box[0] / 1000 * H,
+      w: (b.box[3] - b.box[1]) / 1000 * W, h: (b.box[2] - b.box[0]) / 1000 * H,
+    };
+    const zh = b.zh || b.text;
+    const fs = fontSizeFor(r.w, r.h, [...zh].length);
+    return { i, r, zh, text: b.text, fs, fits: fs >= MIN_FS };
+  });
+  const ok = items.filter((t) => t.fits).length;
+  return { W, H, items, ok, mode: items.length && ok / items.length >= MAJORITY ? 'veil' : 'pin' };
+}
+
+const el = (tag, cls, css) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (css) Object.assign(n.style, css);
+  return n;
+};
+const pxq = (v) => v + 'px';
+
+/* ---------------------------------------------------- 六種語彙 */
+
+/* 標籤彼此重疊幾對 —— 這是真正分得出「好看」與「糊成一團」的數字 */
+function overlaps(rects) {
+  let n = 0;
+  for (let i = 0; i < rects.length; i++) {
+    for (let j = i + 1; j < rects.length; j++) {
+      const a = rects[i], b = rects[j];
+      if (a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h) n++;
+    }
+  }
+  return n;
+}
+
+function drawVeil(anno, L, only) {
+  const list = only ? L.items.filter(only) : L.items;
+  const rects = [];
+  let covered = 0;
+  for (const t of list) {
+    const box = el('div', 'iblk', {
+      left: pxq(t.r.x), top: pxq(t.r.y), width: pxq(t.r.w), height: pxq(t.r.h),
+      fontSize: pxq(Math.max(t.fs, MIN_FS)),
+    });
+    box.append(el('span', 'veil'));
+    const tx = el('span', 'itx' + ([...t.zh].length > 10 ? ' wrap' : ''));
+    tx.textContent = t.zh;
+    box.append(tx);
+    anno.append(box);
+    covered += (t.r.w + 6) * (t.r.h + 6);
+    // 貼片的實際外框:寬度由字決定,可能長出 box 外
+    const fs = Math.max(t.fs, MIN_FS);
+    const tw = [...t.zh].length * fs * 1.02 + fs * .64;
+    rects.push({ x: t.r.x + t.r.w / 2 - tw / 2, y: t.r.y + t.r.h / 2 - fs * .78, w: tw, h: fs * 1.56 });
+  }
+  return { covered, taps: 0, hits: overlaps(rects) };
+}
+
+function drawPins(anno, L, activeIdx) {
+  const rects = [];
+  let covered = 0;
+  L.items.forEach((t, n) => {
+    const cx = t.r.x + t.r.w / 2, cy = t.r.y + t.r.h / 2;
+    const pin = el('div', 'ipin' + (n === activeIdx ? ' on' : ''), { left: pxq(cx), top: pxq(cy) });
+    pin.textContent = String(n + 1);
+    anno.append(pin);
+    covered += Math.PI * 49;
+    rects.push({ x: cx - 7, y: cy - 7, w: 14, h: 14 });
+    if (n === activeIdx) {
+      const pop = el('div', 'ipop');
+      pop.textContent = t.zh;
+      const s = el('span', 'src');
+      s.textContent = t.text;
+      pop.append(s);
+      const flipX = cx > L.W * .6, flipY = cy > L.H * .6;
+      pop.style.left = pxq(cx + (flipX ? -212 : 12));
+      pop.style.top = pxq(cy + (flipY ? -64 : 12));
+      anno.append(pop);
+      covered += 200 * 52;
+    }
+  });
+  return { covered, taps: L.items.length, hits: overlaps(rects) };
+}
+
+function drawOverflow(anno, L) {
+  const { covered, hits } = drawVeil(anno, L, (t) => t.fits);
+  const rest = L.items.filter((t) => !t.fits).length;
+  if (rest > 0) {
+    const b = el('div', 'badge', { right: pxq(10), bottom: pxq(10) });
+    b.textContent = '＋' + rest + ' 條小字';
+    anno.append(b);
+  }
+  return { covered, taps: rest > 0 ? 1 : 0, hits };
+}
+
+/* 拉線:同一側依 y 疊放,不重疊;線從標籤內緣拉到框的近邊 */
+function drawLeaders(anno, L, outside, lane) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'lead');
+  svg.style.left = pxq(outside ? -lane : 0);
+  svg.style.top = '0';
+  svg.setAttribute('width', String(L.W + (outside ? lane * 2 : 0)));
+  svg.setAttribute('height', String(L.H));
+  const ox = outside ? lane : 0;
+  const segs = [];
+  let unplaced = 0;
+  const sides = { l: [], r: [] };
+  L.items.forEach((t, n) => sides[t.r.x + t.r.w / 2 < L.W / 2 ? 'l' : 'r'].push({ t, n }));
+  let covered = 0;
+  for (const key of ['l', 'r']) {
+    const col = sides[key].sort((a, b) => a.t.r.y - b.t.r.y);
+    let cursor = 0;
+    for (const { t, n } of col) {
+      const th = 24, gap = 6;
+      const want = t.r.y + t.r.h / 2 - th / 2;
+      const y = Math.max(cursor, Math.min(want, L.H - th));
+      cursor = y + th + gap;
+      if (y + th > L.H) unplaced++;
+      const tag = el('div', 'ltag' + (outside ? ' out' : ''), { top: pxq(y) });
+      tag.textContent = t.zh;
+      if (key === 'l') tag.style.left = pxq(outside ? -lane + 6 : 8);
+      else tag.style.right = pxq(outside ? -lane + 6 : 8);
+      anno.append(tag);
+      // 線:標籤內緣 → 框的近邊
+      const tw = Math.min(lane - 14, [...t.zh].length * 13 + 16);
+      const sx = key === 'l' ? (outside ? -lane + 6 + tw : 8 + tw) : (outside ? L.W + lane - 6 - tw : L.W - 8 - tw);
+      const ex = key === 'l' ? t.r.x : t.r.x + t.r.w;
+      const ln = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      ln.setAttribute('x1', String(sx + ox)); ln.setAttribute('y1', String(y + th / 2));
+      ln.setAttribute('x2', String(ex + ox)); ln.setAttribute('y2', String(t.r.y + t.r.h / 2));
+      svg.append(ln);
+      segs.push([sx, y + th / 2, ex, t.r.y + t.r.h / 2]);
+      const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      dot.setAttribute('cx', String(ex + ox)); dot.setAttribute('cy', String(t.r.y + t.r.h / 2));
+      dot.setAttribute('r', '2.5');
+      svg.append(dot);
+      if (!outside) covered += tw * th;
+    }
+  }
+  anno.append(svg);
+  /*
+   * 拉線的標籤是**依序疊放**的,照定義不會互相重疊 —— 拿重疊當指標等於沒量。
+   * 它真正會塌的地方是兩個:線互相交叉(眼睛跟不上),以及排不下(標籤掉出畫布)。
+   */
+  return { covered, taps: 0, cross: crossings(segs), unplaced };
+}
+
+/* 兩條線段有沒有交叉 */
+function crossings(segs) {
+  const side = (ax, ay, bx, by, cx, cy) => Math.sign((bx - ax) * (cy - ay) - (by - ay) * (cx - ax));
+  let n = 0;
+  for (let i = 0; i < segs.length; i++) {
+    for (let j = i + 1; j < segs.length; j++) {
+      const [a, b, c, d] = segs[i], [e, f, g, h] = segs[j];
+      const d1 = side(a, b, c, d, e, f), d2 = side(a, b, c, d, g, h);
+      const d3 = side(e, f, g, h, a, b), d4 = side(e, f, g, h, c, d);
+      if (d1 !== d2 && d3 !== d4) n++;
+    }
+  }
+  return n;
+}
+
+/* ------------------------------------------------------- 標本 */
+
+const VARIANTS = [
+  {
+    id: 'veil', name: '全疊字', when: '字夠大時最直接:不必動滑鼠,一眼讀完',
+    draw: (anno, L) => drawVeil(anno, L),
+  },
+  {
+    id: 'pin', name: '全錨點 + 滑過出貼片', when: '幾乎永遠放得下,代價是一次只讀得到一條',
+    draw: (anno, L) => drawPins(anno, L, 2),
+  },
+  {
+    id: 'mix', name: '疊字為主 + 溢位徽章', when: '一個主語彙 + 一個出口,不是兩套語彙散落',
+    draw: (anno, L) => drawOverflow(anno, L),
+  },
+  {
+    id: 'lead-in', name: '拉線 · 標籤排在圖內留白', when: '需要圖自己有邊界留白;這張剛好左右各一大片',
+    draw: (anno, L) => drawLeaders(anno, L, false, Math.max(96, L.W * .2)),
+  },
+  {
+    id: 'lead-out', name: '拉線 · 標籤排到圖外', when: '完全不遮原圖,但標籤落在頁面上——那是新的侵入',
+    draw: (anno, L) => drawLeaders(anno, L, true, 150),
+    pad: 160,
+  },
+  {
+    id: 'list', name: '錨點 + 側邊清單', when: '全部譯文同時看得到;需要旁邊有位置擺',
+    draw: (anno, L) => drawPins(anno, L, -1),
+    side: true,
+  },
+];
+
+function specNode(v) {
+  const fig = el('figure', 'spec');
+  fig.style.margin = '24px 0 0';
+  const hg = el('hgroup');
+  const h3 = el('h3'); h3.textContent = v.name;
+  const fit = el('div', 'fit'); fit.textContent = v.when;
+  hg.append(h3, fit);
+  const stage = el('div', 'stage');
+  const stats = el('dl', 'stats');
+  fig.append(hg, stage, stats);
+  return { fig, stage, stats };
+}
+
+function stat(dl, label, value, sub, tone) {
+  const d = el('div', 'stat' + (tone ? ' ' + tone : ''));
+  const dt = el('dt'); dt.textContent = label;
+  const dd = el('dd'); dd.textContent = value;
+  if (sub) { const s = el('small'); s.textContent = ' ' + sub; dd.append(s); }
+  d.append(dt, dd);
+  dl.append(d);
+}
+
+function render(host, set, W, variants) {
+  const L = layout(set, W);
+  host.replaceChildren();
+  for (const v of variants) {
+    const { fig, stage, stats } = specNode(v);
+    const pair = el('div', 'pair');
+    const shot = el('div', 'shot' + (v.pad ? '' : ' clip'), {
+      width: pxq(L.W), height: pxq(L.H),
+      margin: v.pad ? '0 ' + pxq(v.pad) : '0',
+    });
+    const anno = el('div', 'anno');
+    const im = el('img');
+    im.src = set.src || IMG;
+    im.alt = '';
+    im.width = L.W;
+    im.height = L.H;
+    shot.append(im, anno);
+    pair.append(shot);
+    const out = v.draw(anno, L);
+    if (v.side) {
+      const side = el('div', 'side');
+      L.items.forEach((t, n) => {
+        const row = el('div', 'srow');
+        const no = el('span', 'no'); no.textContent = String(n + 1);
+        const body = el('span'); body.textContent = t.zh;
+        const s = el('span', 'src'); s.textContent = t.text;
+        body.append(s);
+        row.append(no, body);
+        side.append(row);
+      });
+      pair.append(side);
+      out.taps = 0;
+    }
+    stage.append(pair);
+
+    const pct = (out.covered / (L.W * L.H) * 100);
+    stat(stats, '遮蔽原圖', pct.toFixed(1) + '%', '', pct > 25 ? 'bad' : pct < 8 ? 'ok' : '');
+    stat(stats, '讀完要幾次互動', out.taps === 0 ? '0' : String(out.taps), out.taps === 0 ? '一眼讀完' : '次滑過', out.taps === 0 ? 'ok' : out.taps > 8 ? 'bad' : '');
+    if (out.cross !== undefined) {
+      const bad = out.cross > 6 || out.unplaced > 0;
+      stat(stats, '線交叉 / 排不下',
+        out.cross + ' 處' + (out.unplaced ? ' · ' + out.unplaced + ' 條' : ''),
+        out.unplaced ? '掉出畫布' : out.cross === 0 ? '乾淨' : '',
+        bad ? 'bad' : out.cross === 0 ? 'ok' : '');
+    } else {
+      const hits = out.hits || 0;
+      stat(stats, '標籤互相重疊', hits === 0 ? '沒有' : hits + ' 對', hits === 0 ? '' : '糊成一團', hits === 0 ? 'ok' : hits > 3 ? 'bad' : '');
+    }
+    stat(stats, '自動規則會選', L.mode === 'veil' ? '疊字' : '錨點', L.ok + '/' + L.items.length + ' 放得下');
+    host.append(fig);
+  }
+  return L;
+}
+
+function medianFs(L) {
+  const a = L.items.map((t) => t.fs).sort((x, y) => x - y);
+  return Math.round(a[Math.floor(a.length / 2)] || 0);
+}
+
+/* ------------------------------------------------------- 驅動 */
+
+const specs = document.getElementById('specs');
+const demo = document.getElementById('demo');
+const dense = document.getElementById('dense');
+const ro = document.getElementById('ro');
+const slider = document.getElementById('w');
+
+const DENSE_VARIANTS = [
+  VARIANTS[0], VARIANTS[1], VARIANTS[3], VARIANTS[5],
+];
+
+/* 提案的樣子:一張圖 + 一組切換,自動規則只決定預設值 */
+const PICKABLE = [
+  { id: 'veil', label: '疊字', v: VARIANTS[0] },
+  { id: 'pin', label: '註解', v: VARIANTS[1] },
+  { id: 'lead', label: '拉線', v: VARIANTS[3] },
+];
+let userPick = null;          // null = 跟著自動規則走
+let demoSet = 'chart';
+
+function paintDemo(W) {
+  const set = demoSet === 'chart' ? DATA.chart : { ...DATA.shot, src: SHOT };
+  const w = demoSet === 'chart' ? W : Math.min(W, 900);
+  const L = layout(set, w);
+  const auto = L.mode === 'veil' ? 'veil' : 'pin';
+  const pick = userPick || auto;
+  const chosen = PICKABLE.find((x) => x.id === pick);
+
+  demo.replaceChildren();
+  const stage = el('div', 'stage');
+  const pair = el('div', 'pair');
+  const shot = el('div', 'shot clip', { width: pxq(L.W), height: pxq(L.H) });
+  const im = el('img');
+  im.src = set.src || IMG; im.alt = ''; im.width = L.W; im.height = L.H;
+  const anno = el('div', 'anno');
+  shot.append(im, anno);
+  pair.append(shot);
+  const out = chosen.v.draw(anno, L);
+  stage.append(pair);
+
+  const bar = el('div', 'chipbar');
+  const lbl = el('span', 'lbl');
+  lbl.textContent = userPick ? '你選的' : '自動挑的';
+  bar.append(lbl);
+  for (const o of PICKABLE) {
+    const btn = el('button');
+    btn.textContent = o.label;
+    if (o.id === pick) btn.classList.add('on');
+    btn.addEventListener('click', () => { userPick = o.id === auto && !userPick ? null : o.id; paint(); });
+    bar.append(btn);
+  }
+  const reset = el('button');
+  reset.textContent = '↺ 交還給規則';
+  reset.style.opacity = userPick ? '1' : '.35';
+  reset.addEventListener('click', () => { userPick = null; paint(); });
+  bar.append(reset);
+  stage.append(bar);
+  demo.append(stage);
+
+  const stats = el('dl', 'stats');
+  const pct = out.covered / (L.W * L.H) * 100;
+  stat(stats, '素材', demoSet === 'chart' ? '稀疏 7 塊' : '密集 53 塊', '');
+  stat(stats, '遮蔽原圖', pct.toFixed(1) + '%', '', pct > 25 ? 'bad' : pct < 8 ? 'ok' : '');
+  stat(stats, '讀完要幾次互動', String(out.taps), out.taps === 0 ? '一眼讀完' : '次滑過', out.taps === 0 ? 'ok' : out.taps > 8 ? 'bad' : '');
+  stat(stats, '自動規則的預設', auto === 'veil' ? '疊字' : '註解', L.ok + '/' + L.items.length + ' 放得下');
+  demo.append(stats);
+
+  const sw = el('div', 'stats');
+  const cell = el('div', 'stat');
+  const dt = el('dt'); dt.textContent = '換素材';
+  const row = el('div', 'srcpick');
+  for (const [k, name] of [['chart', 'ClickHouse 圖表'], ['shot', 'claude.com 截圖']]) {
+    const b2 = el('button');
+    b2.textContent = name;
+    if (demoSet === k) b2.classList.add('on');
+    b2.addEventListener('click', () => { demoSet = k; paint(); });
+    row.append(b2);
+  }
+  cell.append(dt, row);
+  cell.style.flex = '1 1 100%';
+  sw.append(cell);
+  demo.append(sw);
+}
+
+function paint() {
+  const W = Number(slider.value);
+  paintDemo(W);
+  const L = render(specs, DATA.chart, W, VARIANTS);
+  render(dense, { ...DATA.shot, src: SHOT }, Math.min(W, 900), DENSE_VARIANTS);
+  ro.innerHTML = '放得下 <b>' + L.ok + '/' + L.items.length + '</b>' +
+    ' · 中位字級 <b>' + medianFs(L) + 'px</b>' +
+    ' · 現行規則挑 <b class="pick">' + (L.mode === 'veil' ? '疊字' : '錨點') + '</b>';
+  for (const b of document.querySelectorAll('.presets button')) {
+    b.classList.toggle('on', Number(b.dataset.w) === W);
+  }
+}
+
+slider.addEventListener('input', paint);
+for (const b of document.querySelectorAll('.presets button')) {
+  b.addEventListener('click', () => { slider.value = b.dataset.w; paint(); });
+}
+paint();
+</script>
