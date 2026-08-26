@@ -871,7 +871,9 @@ footer {
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>T</kbd></td><td>在這個網域啟用 / 關閉疊層翻譯</td></tr>
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd></td><td>切換「全開」/「點閱」(點閱 = 疊層平常隱藏,滑過才顯示)</td></tr>
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>R</kbd></td><td>翻譯這一頁。<strong>再按一次</strong>會把失敗的重試、還停在 L0 的全部升級(包含收折起來的內容)</td></tr>
-            <tr><td class="keycell">按住 <kbd>Alt</kbd></td><td><strong>暫時收起整層</strong> —— 想瞄一眼原文就按著,放開就回來</td></tr>
+            <tr><td class="keycell">按住 <kbd>Alt</kbd></td><td><strong>暫時收起整層</strong> —— 想瞄一眼原文就按著,放開就回來。圖片的加註也一起收</td></tr>
+            <tr><td class="keycell"><kbd>Alt</kbd>+<strong>點圖</strong></td><td>把那張圖升級到付費檔(見「圖片上的字」)。普通點擊照舊 —— 圖是連結的話會正常前往</td></tr>
+            <tr><td class="keycell"><kbd>Esc</kbd></td><td>關掉圖片的放大檢視</td></tr>
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd></td><td>掃視:疊層切成標註樣式,同時顯示所有 UI 標籤的貼片(除錯用)</td></tr>
             <tr><td class="keycell"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></td><td>抽樣面板:原文 / L0 / L1 三欄並列(需先在設定開 debug mode)</td></tr>
           </tbody>
@@ -1048,6 +1050,30 @@ footer {
           </p>
         </div>
 
+        <div class="card">
+          <span class="k">圖片一直停在「辨識中」</span>
+          <p>
+            免費檔實測要 10–70 秒,而且一次只跑一張(它和文字共用免費配額)。
+            滑過一整篇長文的圖之後,後面那幾張會排隊。
+            想馬上看某一張就 <kbd>Alt</kbd>+點它,付費檔那條路是另一條佇列。
+          </p>
+        </div>
+        <div class="card">
+          <span class="k">圖角說「本頁圖片翻譯已達上限」</span>
+          <p>
+            每頁預設 20 張(設定 → 圖片可調)。滑過長文時每張圖都會觸發免費辨識,
+            額度就是這樣用掉的 —— 換頁會重新計算。
+          </p>
+        </div>
+        <div class="card">
+          <span class="k">圖上的譯文位置歪掉 / 蓋錯地方</span>
+          <p>
+            先看框線有沒有變成警示色:有的話是模型自己就沒把握(直排、多語並排、
+            字太模糊)。沒有警示色卻歪掉的,<strong>請截圖 + 匯出 log</strong>,
+            那是我們的座標換算出錯,要修。
+          </p>
+        </div>
+
         <div class="note fail">
           <span class="k">回報的標準流程</span>
           popup → 「匯出診斷 log」→ 內容會複製到剪貼簿,存成 <code>.md</code> 直接貼給我。
@@ -1071,6 +1097,13 @@ footer {
           <li>在 <code>&lt;div&gt;</code> 裡面捲的頁面(Gmail、Slack),捲動時疊層會暫時消失,停下來就回來 —— 那是刻意的,總比疊層跟著滑好。<strong>只有那種頁面才這樣</strong>,一般長文捲動時譯文一直都在;真的還是覺得閃,設定裡可以改(見上面「出問題的時候」)。</li>
           <li>free 檔位在長頁面上會明顯排隊,那是免費層的速率限制,不是當掉。</li>
           <li>日文與韓文是「應該會動」而不是「測過了」—— 封測的主力測試對象是英文。</li>
+          <li><strong>圖片上的直排日文讀不對</strong>(招牌、海報、對聯):模型會把直排
+            當橫排讀、字跨欄串起來。認得出來會標警示色,不會假裝翻對了。</li>
+          <li>圖片的免費檔<strong>很慢</strong>(實測 10–70 秒)。它是背景填充,
+            不必等它 —— 想馬上要好的就 <kbd>Alt</kbd>+點圖。</li>
+          <li><code>&lt;canvas&gt;</code> 畫出來的字、CSS 背景圖上的字<strong>不翻</strong>
+            —— 前者沒有來源可取,後者還沒做。</li>
+          <li>圖片的詞表<strong>靠模型遵守</strong>,不像文字那邊有硬保證(見「詞表」那節)。</li>
         </ul>
 
         <h3 style="margin-top:22px">最想收到的回饋</h3>
