@@ -23,6 +23,23 @@ import {
 /** 滑上圖片停多久才送 L0。和 UI 標籤的 180ms 不同 —— 這個要花配額 */
 export const IMAGE_HOVER_MS = 500;
 
+/**
+ * 送出去多久沒回音就當它死了。
+ *
+ * **這是看門狗,不是逾時**:我們不取消請求(取消不會退錢),只是把
+ * `inFlight` 清掉、讓圖角說得出話。少了它,一次沒回來的請求會讓那張圖
+ * **永久卡在「辨識中」** —— `arm()` 看到 `inFlight` 就直接 return,
+ * 使用者再滑上去一百次都不會重送。
+ *
+ * 實際發生過:MV3 的 service worker 在請求途中被回收,`runImage` 停在
+ * 半路,worker 那邊沒有任何 log,content 這邊永遠在等。文字管線的
+ * L1 看門狗(`upgrade.ts`)解的是同一件事,圖片這條路當初漏了。
+ *
+ * 180 秒:gemma 實測 10–70 秒,留三倍餘裕 —— 寧可等久一點,
+ * 也不要在還會回來的請求上先說失敗。
+ */
+export const IMAGE_WATCHDOG_MS = 180_000;
+
 /** 一張圖現在的狀態 */
 export interface ImageEntry {
   url: string;
@@ -132,6 +149,8 @@ export class ImageAnnotator {
   private failed = new Map<string, string>();
 
   private hoverTimer = 0;
+  /** url → 看門狗的 timer id */
+  private watchdogs = new Map<string, number>();
   private current: HTMLImageElement | null = null;
   private placed: PlacedBlock[] = [];
   private activePin = 0;
@@ -145,8 +164,46 @@ export class ImageAnnotator {
   reset(): void {
     this.byUrl.clear();
     this.inFlight.clear();
+    for (const t of this.watchdogs.values()) clearTimeout(t);
+    this.watchdogs.clear();
     this.failed.clear();
     this.leave();
+  }
+
+  /** 送出一個請求:登記 in-flight 並上看門狗 */
+  private send(img: HTMLImageElement, url: string, lane: 'l0' | 'l1', busy: string): void {
+    this.inFlight.add(url);
+    this.host.cue(img, busy, 'busy');
+    this.host.request(url, lane);
+    const prev = this.watchdogs.get(url);
+    if (prev) clearTimeout(prev);
+    this.watchdogs.set(
+      url,
+      window.setTimeout(() => this.giveUp(url), IMAGE_WATCHDOG_MS),
+    );
+  }
+
+  private clearWatchdog(url: string): void {
+    const t = this.watchdogs.get(url);
+    if (t) clearTimeout(t);
+    this.watchdogs.delete(url);
+  }
+
+  /**
+   * 看門狗響了:沒有人回話。
+   *
+   * **「卡住」不可以是一個能永久停留的狀態**(`docs/lessons.md` §12 那條
+   * 在文字管線學到的)。這裡不假裝知道原因,只把狀態交還給使用者:
+   * 清掉 in-flight,圖角說得出「再試一次」。
+   */
+  private giveUp(url: string): void {
+    this.watchdogs.delete(url);
+    if (!this.inFlight.delete(url)) return;
+    this.failed.set(url, '沒有回應 · 滑開再滑回來重試');
+    diag('warn', 'image-watchdog', { waitedMs: IMAGE_WATCHDOG_MS });
+    if (this.current && this.urlOf(this.current) === url) {
+      this.host.cue(this.current, '沒有回應 · 滑開再滑回來重試', 'warn');
+    }
   }
 
   private urlOf(img: HTMLImageElement): string {
@@ -201,9 +258,7 @@ export class ImageAnnotator {
     this.hoverTimer = window.setTimeout(() => {
       this.hoverTimer = 0;
       if (this.current !== img) return;
-      this.inFlight.add(url);
-      this.host.cue(img, '辨識中 ·(免費 · 較慢)', 'busy');
-      this.host.request(url, 'l0');
+      this.send(img, url, 'l0', '辨識中 ·(免費 · 較慢)');
       diag('info', 'image-hover', { lane: 'l0' });
     }, IMAGE_HOVER_MS);
   }
@@ -260,10 +315,8 @@ export class ImageAnnotator {
     const known = this.byUrl.get(url);
     if (known?.tier === 'l1') return false;
     if (this.inFlight.has(url)) return true;
-    this.inFlight.add(url);
     this.failed.delete(url);
-    this.host.cue(img, '升級中…', 'busy');
-    this.host.request(url, 'l1');
+    this.send(img, url, 'l1', '升級中…');
     diag('info', 'image-upgrade', {});
     return true;
   }
@@ -271,6 +324,7 @@ export class ImageAnnotator {
   /** worker 回來了 */
   onResult(url: string, hash: string, lane: 'l0' | 'l1', blocks: ImageBlock[]): void {
     this.inFlight.delete(url);
+    this.clearWatchdog(url);
     this.failed.delete(url);
     const prev = this.byUrl.get(url);
     // L1 蓋掉 L0;L0 不可以蓋掉已經升級過的(晚到的免費結果會倒退品質)
@@ -289,6 +343,7 @@ export class ImageAnnotator {
 
   onError(url: string, reason: string): void {
     this.inFlight.delete(url);
+    this.clearWatchdog(url);
     const text = FRIENDLY[reason] ?? '辨識失敗 · 再點一次重試';
     this.failed.set(url, text);
     if (this.current && this.urlOf(this.current) === url) {
@@ -404,5 +459,7 @@ const FRIENDLY: Record<string, string> = {
   'daily-cap': '今日預算已用完',
   'no-key': '還沒設定 API key',
   'page-image-cap': '本頁圖片翻譯已達上限',
+  // worker 把排太久的工作丟掉時送的:使用者可能早就捲過去了
+  stale: '等太久已取消 · 滑開再滑回來重試',
   empty: '圖片是空的',
 };

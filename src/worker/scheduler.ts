@@ -26,6 +26,7 @@ import {
   IMAGE_MAX_ATTEMPTS,
   addJob,
   dropPageJobs,
+  jobKey,
   nextJobs,
   removeJobs,
   type ImageJob,
@@ -547,7 +548,11 @@ async function runBatch(
 /* ══════════════════════════════════════════════════ 圖片加註(plan-images §5) */
 
 const IMAGE_QUEUE_KEY = 'imageQueue';
-const running: Record<'l0' | 'l1', number> = { l0: 0, l1: 0 };
+/**
+ * 正在跑的工作的 key。**不是計數** —— 見 `nextJobs` 的註解:
+ * 執行中的工作還留在佇列裡,只比計數會把它當成過期殺掉。
+ */
+const inFlight = new Set<string>();
 let imageDraining = false;
 
 /*
@@ -598,11 +603,27 @@ export async function drainImages(): Promise<void> {
   try {
     for (;;) {
       const q = await mutateImageQueue((cur) => cur);
-      const { run, drop } = nextJobs(q, running, Date.now());
+      const { run, drop } = nextJobs(q, inFlight, Date.now());
       if (drop.length > 0) {
         // 掃過就走的 hover:配額不該花在使用者早就捲過去的圖上
-        diag('info', 'image-stale', { n: drop.length });
+        diag('info', 'image-stale', { n: drop.length, ageMs: Date.now() - drop[0]!.at });
         await mutateImageQueue((cur) => removeJobs(cur, drop));
+        /*
+         * **丟掉要告訴 content。**
+         *
+         * 少了這一步,content 的 `inFlight` 永遠不會清掉:圖角停在
+         * 「辨識中」,而且因為那個集合擋著,使用者再滑上去也不會重送 ——
+         * 那張圖就永久卡住了。使用者回報的「後面幾張都卡住」就是這個。
+         */
+        for (const j of drop) {
+          post(j.tabId, {
+            type: 'image-error',
+            pageKey: j.pageKey,
+            url: j.url,
+            reason: 'stale',
+            retriable: true,
+          });
+        }
       }
       if (run.length === 0) return;
       await Promise.all(run.map((job) => runImage(job)));
@@ -620,7 +641,9 @@ export async function drainImages(): Promise<void> {
  * 下的第二次命中)。第二次命中省的是模型錢,第一次省的是頻寬與延遲。
  */
 async function runImage(job: ImageJob): Promise<void> {
-  running[job.lane]++;
+  const key = jobKey(job);
+  inFlight.add(key);
+  diag('info', 'image-start', { lane: job.lane, tier: job.tier });
   try {
     const settings = await getSettings();
     const spec = resolveTier(imageTierFor(job.lane, job.tier), settings);
@@ -706,7 +729,18 @@ async function runImage(job: ImageJob): Promise<void> {
     }
     const gate = await reserve(spec, planned);
     if (!gate.ok) {
-      // 節流:放回佇列等下一輪,不算失敗
+      /*
+       * 節流:等下一輪,不算失敗。
+       *
+       * **`at` 要更新**,否則等完就超過 10 秒的過期線,工作會被自己丟掉。
+       * 而且**要記一筆** —— 上一版這裡是沉默的 `sleep` + `return`,
+       * 於是「送出去了但什麼都沒發生」在 log 上完全看不出來。
+       */
+      diag('info', 'image-throttled', { waitMs: gate.waitMs, lane: job.lane });
+      await mutateImageQueue((cur) => [
+        ...removeJobs(cur, [job]),
+        { ...job, at: Date.now() + gate.waitMs },
+      ]);
       await sleep(gate.waitMs);
       return;
     }
@@ -753,7 +787,7 @@ async function runImage(job: ImageJob): Promise<void> {
   } catch (e) {
     await imageFailed(job, `internal:${String(e).slice(0, 80)}`, false);
   } finally {
-    running[job.lane]--;
+    inFlight.delete(key);
   }
 }
 

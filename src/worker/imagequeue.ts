@@ -62,22 +62,33 @@ export function addJob(queue: readonly ImageJob[], job: ImageJob): ImageJob[] {
 /**
  * 下一批要跑的工作。
  *
- * `running` 是**每條道**目前在跑的數量。l1 先看:人親手點的優先。
+ * `inFlight` 是**正在跑的工作的 key**,不是計數。
+ *
+ * 用 key 而不是計數是修出來的:工作只有**完成才會從佇列移除**,所以
+ * 執行中的工作一直在佇列裡。上一版只比對數量,於是
+ * `now - j.at > 10 秒` 這條把**正在跑的工作當成過期丟掉** ——
+ * 而 gemma 實測要 17–70 秒,等於每一張免費檔的圖跑到一半都會被自己殺掉,
+ * 然後 log 上留下一句騙人的 `image-stale`。
+ *
+ * 有了 key 就同時解決兩件事:執行中的不會被重複派工,也不會被判過期。
  */
 export function nextJobs(
   queue: readonly ImageJob[],
-  running: Record<'l0' | 'l1', number>,
+  inFlight: ReadonlySet<string>,
   now: number,
 ): { run: ImageJob[]; drop: ImageJob[] } {
-  const drop = queue.filter(
-    (j) => j.lane === 'l0' && now - j.at > STALE_L0_MS,
-  );
+  const idle = queue.filter((j) => !inFlight.has(jobKey(j)));
+  // **只有沒在跑的**才可能過期
+  const drop = idle.filter((j) => j.lane === 'l0' && now - j.at > STALE_L0_MS);
   const dropped = new Set(drop.map(jobKey));
-  const alive = queue.filter((j) => !dropped.has(jobKey(j)));
+  const alive = idle.filter((j) => !dropped.has(jobKey(j)));
+
+  const running: Record<'l0' | 'l1', number> = { l0: 0, l1: 0 };
+  for (const j of queue) if (inFlight.has(jobKey(j))) running[j.lane]++;
 
   const run: ImageJob[] = [];
   for (const lane of ['l1', 'l0'] as const) {
-    const slots = LANE_CONCURRENCY[lane] - (running[lane] ?? 0);
+    const slots = LANE_CONCURRENCY[lane] - running[lane];
     if (slots <= 0) continue;
     run.push(...alive.filter((j) => j.lane === lane).slice(0, slots));
   }
