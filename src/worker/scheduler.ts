@@ -22,6 +22,17 @@ import {
   takeBatch,
   type QueueItem,
 } from './queuelogic';
+import {
+  IMAGE_MAX_ATTEMPTS,
+  addJob,
+  dropPageJobs,
+  nextJobs,
+  removeJobs,
+  type ImageJob,
+} from './imagequeue';
+import { fetchImage } from './imagefetch';
+import { callVision } from './vision';
+import { estimateImageTokens, type ImageBlock } from '../shared/imageblocks';
 import * as cache from './cache';
 import { addPageTokens, checkAllowed, recordSpend } from './budget';
 import { reserve, throttleDown, throttleOverride } from './tokenBucket';
@@ -530,5 +541,235 @@ async function runBatch(
     return retryItems.length > 0
       ? [...retryItems.map((b) => ({ ...b, attempts: 1 })), ...left]
       : left;
+  });
+}
+
+/* ══════════════════════════════════════════════════ 圖片加註(plan-images §5) */
+
+const IMAGE_QUEUE_KEY = 'imageQueue';
+const running: Record<'l0' | 'l1', number> = { l0: 0, l1: 0 };
+let imageDraining = false;
+
+/*
+ * 和文字佇列同一套寫入紀律(`docs/lessons.md` §5):所有「讀 → 改 → 寫」
+ * 走單一 promise chain。少了它,hover 連續觸發與 drain 完成兩條路會交錯,
+ * 做完的工作復活再跑一遍 —— 文字佇列踩過這個坑(§CY)。
+ */
+let ichain: Promise<unknown> = Promise.resolve();
+
+function mutateImageQueue(fn: (q: ImageJob[]) => ImageJob[]): Promise<ImageJob[]> {
+  const next = ichain.then(async () => {
+    const got = await chrome.storage.session.get(IMAGE_QUEUE_KEY);
+    const cur = (got[IMAGE_QUEUE_KEY] as ImageJob[] | undefined) ?? [];
+    const out = fn(cur);
+    await chrome.storage.session.set({ [IMAGE_QUEUE_KEY]: out });
+    return out;
+  });
+  ichain = next.catch(() => undefined);
+  return next;
+}
+
+/** 圖片用哪個模型:l0 一律 free 檔(零成本),l1 走使用者選的檔位 */
+function imageTierFor(lane: 'l0' | 'l1', tier: Tier): Tier {
+  return lane === 'l0' ? 'free' : tier;
+}
+
+export async function translateImage(
+  tabId: number,
+  pageKey: string,
+  url: string,
+  lane: 'l0' | 'l1',
+  tier: Tier,
+): Promise<void> {
+  await mutateImageQueue((q) =>
+    addJob(q, { url, pageKey, tabId, lane, tier, at: Date.now(), attempts: 0 }),
+  );
+  void drainImages();
+}
+
+export async function dropPageImages(tabId: number, pageKey: string): Promise<void> {
+  await mutateImageQueue((q) => dropPageJobs(q, tabId, pageKey));
+}
+
+export async function drainImages(): Promise<void> {
+  if (imageDraining) return;
+  imageDraining = true;
+  try {
+    for (;;) {
+      const q = await mutateImageQueue((cur) => cur);
+      const { run, drop } = nextJobs(q, running, Date.now());
+      if (drop.length > 0) {
+        // 掃過就走的 hover:配額不該花在使用者早就捲過去的圖上
+        diag('info', 'image-stale', { n: drop.length });
+        await mutateImageQueue((cur) => removeJobs(cur, drop));
+      }
+      if (run.length === 0) return;
+      await Promise.all(run.map((job) => runImage(job)));
+    }
+  } finally {
+    imageDraining = false;
+  }
+}
+
+/**
+ * 一張圖跑完整條路:配額 → 快取 → 抓 bytes → 模型 → 回傳。
+ *
+ * 快取查兩次是刻意的:**抓 bytes 之前先用 URL 查一次**(命中就完全
+ * 不用連線),抓完之後再用 bytes hash 查一次(同一張圖在不同 CDN 參數
+ * 下的第二次命中)。第二次命中省的是模型錢,第一次省的是頻寬與延遲。
+ */
+async function runImage(job: ImageJob): Promise<void> {
+  running[job.lane]++;
+  try {
+    const settings = await getSettings();
+    const spec = resolveTier(imageTierFor(job.lane, job.tier), settings);
+    const done = async (): Promise<void> => {
+      await mutateImageQueue((cur) => removeJobs(cur, [job]));
+    };
+
+    // URL 快取:命中就不用連線(同一頁重複進出、放大檢視再看一次)
+    const urlKey = await cache.keyFor(`img:url:${job.url}`, settings.targetLang, spec.modelId, 0);
+    const cachedByUrl = await cache.get(settings.cacheMode, urlKey);
+    if (cachedByUrl !== null) {
+      const parsed = readCachedBlocks(cachedByUrl);
+      if (parsed) {
+        post(job.tabId, {
+          type: 'image-result',
+          pageKey: job.pageKey,
+          url: job.url,
+          hash: parsed.hash,
+          lane: job.lane,
+          blocks: parsed.blocks,
+        });
+        await done();
+        return;
+      }
+    }
+
+    const fetched = await fetchImage(job.url);
+    if (!fetched.ok) {
+      await imageFailed(job, fetched.reason, fetched.retriable);
+      return;
+    }
+    const image = fetched.image;
+
+    // bytes 快取:同一張圖不同 URL 參數只付一次錢
+    const hashKey = await cache.keyFor(`img:${image.hash}`, settings.targetLang, spec.modelId, 0);
+    const cachedByHash = await cache.get(settings.cacheMode, hashKey);
+    if (cachedByHash !== null) {
+      const parsed = readCachedBlocks(cachedByHash);
+      if (parsed) {
+        await cache.put(settings.cacheMode, urlKey, cachedByHash);
+        post(job.tabId, {
+          type: 'image-result',
+          pageKey: job.pageKey,
+          url: job.url,
+          hash: image.hash,
+          lane: job.lane,
+          blocks: parsed.blocks,
+        });
+        await done();
+        return;
+      }
+    }
+
+    /*
+     * 保險絲在**抓完 bytes 之後、送出之前**。
+     *
+     * 順序是有意義的:估算輸入 token 要知道圖片實際多大,而抓 bytes
+     * 不花模型的錢。反過來先擋的話,估值只能用猜的。
+     */
+    const planned = estimateImageTokens(image.w, image.h);
+    const verdict = await checkAllowed(settings, spec, job.pageKey, planned);
+    if (!verdict.allow) {
+      await imageFailed(job, verdict.reason ?? 'blocked', false, verdict.text);
+      return;
+    }
+    const gate = await reserve(spec, planned);
+    if (!gate.ok) {
+      // 節流:放回佇列等下一輪,不算失敗
+      await sleep(gate.waitMs);
+      return;
+    }
+
+    const gloss = glossaryFor(job.pageKey, settings);
+    const usePrompt =
+      settings.glossaryPrompt === 'on' ||
+      (settings.glossaryPrompt !== 'off' && spec.glossaryPrompt);
+    const res = await callVision(
+      settings.apiKey,
+      spec,
+      image,
+      settings.targetLang,
+      usePrompt ? gloss.filter((t) => t.to !== undefined).slice(0, 30) : [],
+    );
+
+    if (!res.ok) {
+      await imageFailed(job, res.reason, res.retriable);
+      return;
+    }
+    await recordSpend(spec, res.usage, 'progressive');
+    await addPageTokens(job.pageKey, res.usage.prompt + res.usage.output + res.usage.thoughts);
+    if (res.spec) {
+      diag('warn', 'image-coord-spec', { spec: res.spec, model: spec.modelId });
+    }
+
+    const payload = JSON.stringify({ hash: image.hash, blocks: res.blocks });
+    await cache.put(settings.cacheMode, hashKey, payload);
+    await cache.put(settings.cacheMode, urlKey, payload);
+    diag('info', 'image-done', {
+      lane: job.lane,
+      blocks: res.blocks.length,
+      model: spec.modelId,
+    });
+    post(job.tabId, {
+      type: 'image-result',
+      pageKey: job.pageKey,
+      url: job.url,
+      hash: image.hash,
+      lane: job.lane,
+      blocks: res.blocks,
+    });
+    await done();
+  } catch (e) {
+    await imageFailed(job, `internal:${String(e).slice(0, 80)}`, false);
+  } finally {
+    running[job.lane]--;
+  }
+}
+
+function readCachedBlocks(raw: string): { hash: string; blocks: ImageBlock[] } | null {
+  try {
+    const v = JSON.parse(raw) as { hash?: string; blocks?: ImageBlock[] };
+    if (!Array.isArray(v.blocks)) return null;
+    return { hash: String(v.hash ?? ''), blocks: v.blocks };
+  } catch {
+    return null;
+  }
+}
+
+async function imageFailed(
+  job: ImageJob,
+  reason: string,
+  retriable: boolean,
+  text?: string,
+): Promise<void> {
+  const attempts = job.attempts + 1;
+  if (retriable && attempts <= IMAGE_MAX_ATTEMPTS) {
+    await mutateImageQueue((cur) => [
+      ...removeJobs(cur, [job]),
+      { ...job, attempts, at: Date.now() },
+    ]);
+    await sleep(backoffMs(attempts));
+    return;
+  }
+  diag('warn', 'image-failed', { reason, lane: job.lane, attempts });
+  await mutateImageQueue((cur) => removeJobs(cur, [job]));
+  post(job.tabId, {
+    type: 'image-error',
+    pageKey: job.pageKey,
+    url: job.url,
+    reason: text ?? reason,
+    retriable,
   });
 }

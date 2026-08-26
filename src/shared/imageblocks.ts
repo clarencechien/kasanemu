@@ -212,3 +212,48 @@ export function sanitizeBlocks(
     spec,
   };
 }
+
+/**
+ * 線上的形狀 → 內部的形狀。**欄位名不一樣,而且是刻意的。**
+ *
+ * 線上叫 `box_2d`:那是 Gemini 空間標註的慣用名,`docs/plan-images.md` §7
+ * 的可行性實測整組都是用這個名字量的 —— 改名等於把驗過的東西換掉再賭一次。
+ * 內部叫 `box`,因為 `_2d` 對我們沒有意義。
+ *
+ * 這個轉換一開始漏了,而失敗的樣子是**完全無聲的**:三個模型都乖乖回了
+ * 框、usage 有 515 個 output token、`sanitizeBlocks` 一塊都收不到、
+ * 沒有任何一層報錯。單元測試抓不到 —— 它餵的就是內部形狀 `box`。
+ * 是拿 production 模組打真的 API 才掉出來的。
+ *
+ * §DB-2 學到的是「量測要走 production 的路」;這次學到的是它的反面 ——
+ * **production 的路也要真的走一次**。所以這支函式收的是**線上的形狀**,
+ * 測試才驗得到這個接縫。
+ */
+export function fromWire(raw: readonly unknown[]): Partial<ImageBlock>[] {
+  return raw
+    .filter((b): b is Record<string, unknown> => b !== null && typeof b === 'object')
+    .map((b) => ({
+      ...b,
+      box: (b['box_2d'] ?? b['box']) as ImageBlock['box'],
+    })) as Partial<ImageBlock>[];
+}
+
+/**
+ * 輸入 token 的估算。**這是保險絲的輸入,所以只能高估,不能低估。**
+ *
+ * Gemini 的圖片計價是貼磚的:每 768×768 一塊、每塊 258 token。
+ * 但磚數不是單純的 `ceil(w/768) × ceil(h/768)` —— 實測 1580×530 的圖
+ * 收 1192 個 prompt token,而那個公式只給 3 塊(1174,**比實測還低**)。
+ * 模型端還會先縮放與補邊,細節沒有公開。
+ *
+ * 與其猜對,不如猜高:`IMAGE_BASE_TOKENS` 是刻意灌水的常數,讓兩張實測圖
+ * 都落在估值之下(1580×530 → 1474 ≥ 1192;1536×1163 → 1732 ≥ 1211)。
+ * 高估的代價是保險絲早一點喊停,低估的代價是它根本沒喊 —— 不對稱。
+ */
+const TILE_TOKENS = 258;
+const IMAGE_BASE_TOKENS = 700;
+
+export function estimateImageTokens(w: number, h: number): number {
+  const tiles = Math.max(1, Math.ceil(w / 768) * Math.ceil(h / 768));
+  return tiles * TILE_TOKENS + IMAGE_BASE_TOKENS;
+}

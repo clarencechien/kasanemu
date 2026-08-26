@@ -40,7 +40,7 @@ export type ApiOutcome = ApiOk | ApiErr;
  */
 const THINKING = { thinkingLevel: 'minimal' } as const;
 
-interface Variant {
+export interface Variant {
   name: string;
   thinking: boolean;
   schema: boolean;
@@ -117,6 +117,45 @@ function readText(json: Record<string, unknown>): { text: string; truncated: boo
 /** 記住每個模型走到哪一階,下次直接從那階開始,不要每個 batch 都重踩 400 */
 const variantByModel = new Map<string, number>();
 
+/**
+ * 一個請求的 body 怎麼組。文字批次與視覺請求的 body 形狀不同,
+ * 但**降級階梯是同一套** —— gemma 走 Gemini API 時哪些欄位收不了,
+ * 和送的是文字還是圖片無關。
+ *
+ * 抽出來是為了不要有第二份階梯:兩份就會分岔,而分岔的那天
+ * 會是「圖片翻譯在 free 檔一直 400 而文字沒事」這種很難查的樣子。
+ */
+export type BodyBuilder = (v: Variant, spec: TierSpec) => unknown;
+
+/**
+ * 帶降級階梯的呼叫。`key` 是階梯記憶的鍵 —— 文字與視覺分開記,
+ * 因為同一個模型在兩種請求上可能停在不同階。
+ */
+export async function callWithLadder(
+  apiKey: string,
+  spec: TierSpec,
+  build: BodyBuilder,
+  key = spec.modelId,
+): Promise<ApiOutcome> {
+  let idx = variantByModel.get(key) ?? 0;
+  let last: ApiErr = { ok: false, status: 0, message: 'no attempt', retriable: false };
+
+  while (idx < LADDER.length) {
+    const v = LADDER[idx]!;
+    const res = await once(apiKey, spec, v, build);
+    if (res.ok) {
+      variantByModel.set(key, idx);
+      return res;
+    }
+    last = res;
+    // 只有 400 才往下降級;429 / 5xx 交給上層退避
+    if (res.status !== 400) return res;
+    warn(`400 on variant ${v.name} (${key}): ${res.message} → 降級重試`);
+    idx++;
+  }
+  return last;
+}
+
 export async function callBatch(
   apiKey: string,
   spec: TierSpec,
@@ -124,32 +163,14 @@ export async function callBatch(
   targetLang: string,
   glossary: readonly Term[] = [],
 ): Promise<ApiOutcome> {
-  let idx = variantByModel.get(spec.modelId) ?? 0;
-  let last: ApiErr = { ok: false, status: 0, message: 'no attempt', retriable: false };
-
-  while (idx < LADDER.length) {
-    const v = LADDER[idx]!;
-    const res = await once(apiKey, spec, units, targetLang, v, glossary);
-    if (res.ok) {
-      variantByModel.set(spec.modelId, idx);
-      return res;
-    }
-    last = res;
-    // 只有 400 才往下降級;429 / 5xx 交給上層退避
-    if (res.status !== 400) return res;
-    warn(`400 on variant ${v.name} (${spec.modelId}): ${res.message} → 降級重試`);
-    idx++;
-  }
-  return last;
+  return callWithLadder(apiKey, spec, (v) => buildBody(v, spec, units, targetLang, glossary));
 }
 
 async function once(
   apiKey: string,
   spec: TierSpec,
-  units: UnitRequest[],
-  targetLang: string,
   v: Variant,
-  glossary: readonly Term[],
+  build: BodyBuilder,
 ): Promise<ApiOutcome> {
   const url = `${BASE}/models/${encodeURIComponent(spec.modelId)}:generateContent`;
   let res: Response;
@@ -157,7 +178,7 @@ async function once(
     res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-      body: JSON.stringify(buildBody(v, spec, units, targetLang, glossary)),
+      body: JSON.stringify(build(v, spec)),
     });
   } catch (e) {
     return { ok: false, status: 0, message: String(e), retriable: true };
