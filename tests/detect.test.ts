@@ -868,6 +868,74 @@ test('分辨的訊號是散文,不是「有沒有 h1」—— logo 包在 h1 裡
   assert.deepEqual(findCandidates(mount(banner), () => false), []);
 });
 
+test('<footer> 裡是一句完整的話 —— 那也是內容', () => {
+  /*
+   * **使用者回報的第二個形狀。** §DM 只補了 <header>,而同一件事在
+   * <footer> 與 <aside> 上各發生一次(§DN)。
+   *
+   * 版權行、連結欄都短;一句完整的話就是內容。
+   */
+  const foot = `<footer>
+    <span class="k">Everything on this page is itself a single .html file. See also
+      the companion index for more examples.</span>
+    <span><a href="/repo">View the repo</a></span>
+  </footer>`;
+  const texts = findCandidates(mount(foot), () => false).map((c) => c.src);
+  assert.ok(
+    texts.some((t) => t.startsWith('Everything on this page')),
+    `footer 的那句話沒撿到:${JSON.stringify(texts)}`,
+  );
+});
+
+test('一般的版權頁尾照舊是外殼 —— 短的就是短的', () => {
+  const foot = `<footer>
+    <p>© 2026 Acme Inc. All rights reserved.</p>
+    <nav><a href="/tos">Terms</a><a href="/privacy">Privacy</a></nav>
+  </footer>`;
+  assert.deepEqual(findCandidates(mount(foot), () => false), []);
+});
+
+test('<aside> 裡是結論段落 —— 那也是內容', () => {
+  const aside = `<aside>
+    <h2>Recommendation</h2>
+    <p>Go with approach 02, the custom hook. The codebase already has three places
+      that hand-roll the same debounce inline, so this consolidates them.</p>
+  </aside>`;
+  const texts = findCandidates(mount(aside), () => false).map((c) => c.src);
+  assert.ok(texts.includes('Recommendation'), `實得 ${JSON.stringify(texts)}`);
+  assert.ok(texts.some((t) => t.startsWith('Go with approach 02')));
+});
+
+test('散文不限於 <p> —— 提示詞裝在 <div> 裡也算', () => {
+  /*
+   * §DM 第一版的散文選擇器是 `p,blockquote,li,dd`,而爬完整個站發現
+   * 提示詞裝在 `<div class="prompt-box">` 裡,選擇器沒收到 ——
+   * 8 頁的標題區照樣被跳過。範圍限制要跟著證據走,不是跟著直覺。
+   */
+  const head = `<header>
+    <h1>Three ways to implement debounced search</h1>
+    <div class="prompt-box">Show me three different ways to implement debounced search
+      in this codebase, with the trade-offs of each spelled out.</div>
+  </header>`;
+  const texts = findCandidates(mount(head), () => false).map((c) => c.src);
+  assert.ok(
+    texts.includes('Three ways to implement debounced search'),
+    `實得 ${JSON.stringify(texts)}`,
+  );
+});
+
+test('散文只看葉子 —— 外層容器把子孫加起來不算', () => {
+  /*
+   * 拿容器的 textContent 去比,任何裝了三個選單項目的 <div> 都會過關,
+   * 於是每一個站台頁尾都變成內容。
+   */
+  const foot = `<footer><div>
+    <a href="/a">Products</a><a href="/b">Pricing</a><a href="/c">Docs</a>
+    <a href="/d">Careers</a><a href="/e">Blog</a><a href="/f">Support</a>
+  </div></footer>`;
+  assert.deepEqual(findCandidates(mount(foot), () => false), []);
+});
+
 test('mega menu 的長說明不算散文 —— 導覽區裡的東西不列入判斷', () => {
   /*
    * 下拉選單的說明文字動輒上百字。如果拿它當「這是頁面標題區」的證據,
