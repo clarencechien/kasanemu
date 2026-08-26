@@ -11,7 +11,7 @@
     "fonts": "node scripts/fetch-fonts.mjs",
     "probe:gemma": "node scripts/probe-gemma.mjs",
     "test": "node --experimental-strip-types --test 'tests/*.test.ts'",
-    "check": "npm run typecheck && npm test && npm run build && npm run probe:detect && npm run probe:colors && npm run probe:snapshot && npm run probe:image",
+    "check": "npm run typecheck && npm test && npm run build && npm run probe:detect && npm run probe:colors && npm run probe:snapshot && npm run probe:image && npm run probe:veil",
     "zip": "node scripts/zip.mjs",
     "package": "npm run build && npm run zip",
     "probe:colors": "node scripts/probe-colors.mjs",
@@ -19,6 +19,7 @@
     "audit:coverage": "node scripts/audit-coverage.mjs",
     "probe:snapshot": "node scripts/probe-snapshot.mjs",
     "probe:image": "node scripts/probe-image.mjs",
+    "probe:veil": "node scripts/probe-veil.mjs",
     "audit:sites": "node scripts/audit-sites.mjs"
   },
   "devDependencies": {

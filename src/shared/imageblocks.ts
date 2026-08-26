@@ -135,6 +135,18 @@ export function normalizeBoxes<T extends { box: [number, number, number, number]
  *
  * 1.35 是中文方塊字加行距的經驗係數,mockup 上調出來的。
  */
+/** 單行字級佔框高(直排佔框寬)的比例 */
+export const LINE_FILL = 0.8;
+
+/**
+ * 面積寬鬆係數:一個中文字實際佔掉 `fs² × 1.35`(行距 + 字距)。
+ *
+ * 這個數字被 `fontSizeFor` 與 `growToFit`(content 端把框撐大到放得下)
+ * **同時**使用 —— 一邊算「這個框能塞多大的字」,另一邊反解「這些字要多大的
+ * 框」。兩邊各寫一份常數就會分岔(`docs/lessons.md` §1),所以只有這一份。
+ */
+export const AREA_PACK = 1.35;
+
 export function fontSizeFor(
   boxW: number,
   boxH: number,
@@ -143,8 +155,8 @@ export function fontSizeFor(
 ): number {
   const n = Math.max(1, chars);
   // 直排:限制字級的是框**寬**,不是框高
-  const lineCap = (vertical ? boxW : boxH) * 0.8;
-  const areaCap = Math.sqrt((boxW * boxH) / (n * 1.35));
+  const lineCap = (vertical ? boxW : boxH) * LINE_FILL;
+  const areaCap = Math.sqrt((boxW * boxH) / (n * AREA_PACK));
   return Math.min(lineCap, areaCap, MAX_PATCH_FONT_PX);
 }
 

@@ -17,7 +17,7 @@ export const HOST_ID = 'kasanemu-root';
 /** feature.md §4.5 過場刻意短。越明顯的動畫越吸引注意,替換應該低調。 */
 const SWAP_MS = 80;
 
-const LAYER_CSS = `
+export const LAYER_CSS = `
 :host { all: initial; }
 .layer {
   position: absolute;
@@ -340,18 +340,34 @@ const LAYER_CSS = `
   text-align: center;
   overflow: hidden;
 }
+/*
+ * veil 的濾鏡:**用 contrast 收斂,不是用 brightness 壓暗**。
+ *
+ * 抄過來的原始配方是 brightness(1.16),在淺底黑字上有效 —— 底色被推向
+ * 白、黑字相對退後。但 brightness 是**乘法**,深底白字上白的還是白、
+ * 黑的乘完還是黑,對比一點都沒掉:使用者在 ClickHouse 的深色 bar chart 上
+ * 看到的就是這個,原文和譯文兩層字互相打架(「EESQL」「6791 ms」疊字)。
+ *
+ * contrast() 是**方向無關**的:它把所有像素往中灰收,深底淺底收完落在
+ * 同一條亮帶上。0 → .41×1.72 ≈ .70,1 → .59×1.72 ≈ 1.0 —— 原文在帶內只剩
+ * 約 3:1 的對比、再加 2px 模糊,退到背景;而**加註永遠站在一片可預期的
+ * 亮底上**,所以譯文的顏色可以定死,不必知道底下是什麼。
+ *
+ * 這也是 PRD §2.2「疊層背景永遠不透明」那條規則的精神在圖片上的版本:
+ * 兩層字互相干擾是視覺問題,和底下是活的文字還是點陣圖無關。
+ */
 .iblk .veil {
   position: absolute;
-  inset: -2px;
+  inset: -3px;
   border-radius: 2px;
-  backdrop-filter: blur(1.4px) saturate(.55) brightness(1.16);
-  -webkit-backdrop-filter: blur(1.4px) saturate(.55) brightness(1.16);
+  backdrop-filter: blur(2px) saturate(.35) contrast(.2) brightness(1.72);
+  -webkit-backdrop-filter: blur(2px) saturate(.35) contrast(.2) brightness(1.72);
   background: linear-gradient(
     160deg,
-    rgba(206, 238, 255, calc(var(--ksnm-veil, .30) * .9)),
-    rgba(228, 244, 255, calc(var(--ksnm-veil, .30) * .55))
+    rgba(255, 251, 244, calc(var(--ksnm-veil, .30) * 1.15)),
+    rgba(244, 250, 255, calc(var(--ksnm-veil, .30) * .85))
   );
-  box-shadow: inset 0 0 0 1px rgba(72, 203, 190, .30);
+  box-shadow: inset 0 0 0 1px rgba(38, 150, 140, .30);
 }
 .iblk .itx {
   position: relative;
@@ -359,12 +375,17 @@ const LAYER_CSS = `
   line-height: 1.22;
   font-weight: 700;
   word-break: break-word;
-  color: #FF4A14;
-  /* 白色光暈:讓譯文在深底與淺底上都浮得起來,而且一眼看得出是加上去的 */
-  text-shadow: 0 0 2px #fff, 0 0 6px rgba(255, 255, 255, .9), 0 1px 0 rgba(255, 255, 255, .8);
+  /*
+   * 深墨橘,不是 chip 用的 #FF4A14。veil 收出來的是**亮帶**,而 #FF4A14 的
+   * 相對亮度(.24)和亮帶下緣幾乎一樣 —— 同色不同明度,等於沒有對比。
+   * 同一個色系往下拉到 .08,在亮帶兩端都有 4:1 以上;白光暈負責和原圖的
+   * 淺色細節分家,也維持「標註色只給譯文」那條紀律(§2.1)。
+   */
+  color: #9A2A06;
+  text-shadow: 0 0 2px #fff, 0 0 6px rgba(255, 255, 255, .95), 0 1px 0 rgba(255, 255, 255, .9);
 }
 /* 版面信心低:框線換警示色,提醒這一塊要自己看原圖 */
-.iblk.low .veil { box-shadow: inset 0 0 0 1px rgba(255, 74, 20, .45); }
+.iblk.low .veil { box-shadow: inset 0 0 0 1px rgba(196, 58, 12, .55); }
 .iblk.vert .itx { writing-mode: vertical-rl; }
 
 /* 字太小疊不下的改走編號錨點(§2.3) */

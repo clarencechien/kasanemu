@@ -49,6 +49,15 @@ execFileSync(
 const fixture = JSON.parse(
   readFileSync(path.join(root, 'tests/fixtures/vision/lite-shot.json'), 'utf8'),
 );
+/*
+ * 第二份素材是**圖表**,因為兩種素材驗的是不同的事:
+ * 密集截圖(lite-shot,53 塊小字)驗「整張走錨點」,
+ * 圖表(gemma-chart,7 塊大字)驗「放大之後整張翻成疊字」。
+ * 只用截圖驗不到翻面 —— 它在任何尺寸下都該是錨點。
+ */
+const chart = JSON.parse(
+  readFileSync(path.join(root, 'tests/fixtures/vision/gemma-chart.json'), 'utf8'),
+);
 
 const page = `<!doctype html><meta charset=utf-8>
 <style>
@@ -164,9 +173,17 @@ for (const [id, r] of Object.entries(got)) {
   if (r.outside > 0) problems.push(`${id}:${r.outside} 塊畫到圖外面`);
   if (r.maxFont > 40) problems.push(`${id}:字級 ${r.maxFont} 超過上限`);
 }
-// plain 是 700px 寬:大字疊得起來,小字要落錨點
-if (got.plain.veil === 0) problems.push('plain:700px 寬還全是錨點,分流失效');
-if (got.plain.pin === 0) problems.push('plain:一個錨點都沒有,小字被硬塞成疊字了');
+/*
+ * **一張圖只能有一種語彙**(使用者原話:「一下有疊字 一下註解 不太統一」)。
+ * 逐塊判斷每一塊單看都對,合起來卻是兩套視覺語言插在同一張圖上。
+ */
+for (const [id, r] of Object.entries(got)) {
+  if (r.veil > 0 && r.pin > 0) {
+    problems.push(`${id}:同一張圖上疊字 ${r.veil} 塊、錨點 ${r.pin} 塊 —— 兩種語彙混用`);
+  }
+}
+// lite-shot 是密集截圖:53 塊小字,任何行內尺寸都該整張走錨點
+if (got.plain.veil > 0) problems.push('plain:密集截圖被硬塞成疊字了');
 // cover 會裁掉兩側,所以放上去的塊**必然比 contain 少**
 if (got.cover.total >= got.contain.total) {
   problems.push(`cover 沒有裁掉任何東西(${got.cover.total} vs contain ${got.contain.total})`);
@@ -186,8 +203,9 @@ if (after !== got.plain.docTop) {
  * 渲染路徑:單元測試碰不到 OverlayLayer(closed shadow root + 真幾何)。
  * 這裡把它裝起來,畫一張圖與一次放大檢視,再從外面驗它畫了什麼。
  */
-const render = await p.evaluate((fx) => {
+const render = await p.evaluate(([fx, cx]) => {
   const { blocks } = IG.sanitizeBlocks(fx.blocks, fx.nw, fx.nh);
+  const chartBlocks = IG.sanitizeBlocks(cx.blocks, cx.nw, cx.nh).blocks;
   const layer = new IG.OverlayLayer();
   layer.setVeilStrength(0.3);
 
@@ -207,7 +225,7 @@ const render = await p.evaluate((fx) => {
   };
   const throughWithAnno = hitAt();
 
-  // 放大檢視:同一份區塊、換個尺寸重算 —— 錨點要變成疊字
+  // 放大檢視:同一份區塊、換個尺寸重算 —— 整張要從錨點翻成疊字
   const holder = layer.showZoom(img.currentSrc, { w: fx.nw, h: fx.nh });
   const zr = holder.getBoundingClientRect();
   const zdrawn = IG.drawnRect({ w: fx.nw, h: fx.nh }, { w: zr.width, h: zr.height },
@@ -215,12 +233,33 @@ const render = await p.evaluate((fx) => {
   const zplaced = IG.placeBlocks(blocks, zdrawn, { w: zr.width, h: zr.height });
   layer.setZoomBlocks(zplaced);
 
+  /*
+   * 翻面用圖表那份量:密集截圖在放大檢視裡**仍然**該是錨點
+   * (1040px 上 53 塊小字硬疊只會糊成一片,那正是 mockup 階段否決的樣子)。
+   */
+  const cSmall = IG.placeBlocks(
+    chartBlocks,
+    IG.drawnRect({ w: cx.nw, h: cx.nh }, { w: 340, h: (340 * cx.nh) / cx.nw },
+      'contain', { x: { pct: 0.5 }, y: { pct: 0.5 } }),
+    { w: 340, h: (340 * cx.nh) / cx.nw },
+  );
+  const cBig = IG.placeBlocks(
+    chartBlocks,
+    IG.drawnRect({ w: cx.nw, h: cx.nh }, { w: zr.width, h: (zr.width * cx.nh) / cx.nw },
+      'contain', { x: { pct: 0.5 }, y: { pct: 0.5 } }),
+    { w: zr.width, h: (zr.width * cx.nh) / cx.nw },
+  );
+
   // 從 host 外面能看到的只有它存在;內部要靠 layer 自己回報
   return {
     inlineVeil: placed.filter((b) => b.kind === 'veil').length,
     inlinePin: placed.filter((b) => b.kind === 'pin').length,
     zoomVeil: zplaced.filter((b) => b.kind === 'veil').length,
     zoomPin: zplaced.filter((b) => b.kind === 'pin').length,
+    chartSmallVeil: cSmall.filter((b) => b.kind === 'veil').length,
+    chartSmallPin: cSmall.filter((b) => b.kind === 'pin').length,
+    chartBigVeil: cBig.filter((b) => b.kind === 'veil').length,
+    chartBigPin: cBig.filter((b) => b.kind === 'pin').length,
     zoomSize: layer.zoomSize(),
     imageVisible: layer.imageVisible(),
     zoomVisible: layer.zoomVisible(),
@@ -228,7 +267,7 @@ const render = await p.evaluate((fx) => {
     blockedWhileZoom: !hitAt(),
     throughAfterClose: (layer.hideZoom(), hitAt()),
   };
-}, fixture);
+}, [fixture, chart]);
 console.log('渲染:', JSON.stringify(render));
 
 if (!render.imageVisible) problems.push('showImage 之後圖層沒顯示');
@@ -236,11 +275,13 @@ if (!render.zoomVisible) problems.push('showZoom 之後放大檢視沒顯示');
 if (!render.throughWithAnno) problems.push('加註擋住了滑鼠 —— 圖上點不到底下的頁面');
 if (!render.blockedWhileZoom) problems.push('放大檢視開著卻沒擋住點擊 —— 會點到底下的頁面');
 if (!render.throughAfterClose) problems.push('關掉放大檢視之後滑鼠還是穿不過去');
-if (render.zoomVeil <= render.inlineVeil) {
-  problems.push(`放大檢視沒有把錨點鋪開成疊字(行內 ${render.inlineVeil} → 放大 ${render.zoomVeil})`);
+if (render.zoomVeil > 0 && render.zoomPin > 0) {
+  problems.push('放大檢視裡混用了兩種語彙');
 }
-if (render.zoomPin >= render.inlinePin) {
-  problems.push(`放大之後錨點沒有變少(${render.inlinePin} → ${render.zoomPin})`);
+// 圖表:縮圖上整張錨點,放大之後整張翻成疊字(§2.3 的分流,作用域是整張圖)
+if (render.chartSmallVeil > 0) problems.push('圖表縮圖上就疊字了 —— 340px 上放不下');
+if (render.chartBigPin > 0) {
+  problems.push(`放大之後圖表沒有整張翻成疊字(還剩 ${render.chartBigPin} 個錨點)`);
 }
 
 /*

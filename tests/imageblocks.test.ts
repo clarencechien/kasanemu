@@ -13,6 +13,8 @@ import {
 } from '../src/shared/imageblocks.ts';
 import {
   drawnRect,
+  growToFit,
+  imageMode,
   mapBox,
   parsePosition,
   pinAt,
@@ -293,8 +295,8 @@ test('真實輸出:面積項吸收兩個檔位的框粒度差異', () => {
 
 /* ------------------------------------------------- 區塊 → 畫得出來的東西 */
 
-test('placeBlocks:同一份資料兩個尺寸,錨點與疊字自動分流', () => {
-  const fx = loadVision('lite-shot');
+test('placeBlocks:同一份資料兩個尺寸,整張圖的形式自動翻面', () => {
+  const fx = loadVision('gemma-chart');
   const { blocks } = sanitizeBlocks(fx.blocks, fx.nw, fx.nh);
 
   const at = (W: number): { veil: number; pin: number } => {
@@ -309,14 +311,21 @@ test('placeBlocks:同一份資料兩個尺寸,錨點與疊字自動分流', () =
   const small = at(340);
   const big = at(1200);
   assert.equal(small.veil, 0, '繞圖的縮圖上全是錨點');
-  assert.ok(big.veil > 10, '放大檢視要鋪開成疊字');
+  assert.equal(big.pin, 0, '放大檢視要整張鋪成疊字');
   // 不必重問模型 —— 換個尺寸再算一次就好
   assert.equal(small.veil + small.pin, big.veil + big.pin, '兩邊的總塊數要一樣');
 });
 
-test('placeBlocks:錨點編號連號,疊字不佔號', () => {
+test('placeBlocks:一張圖只有一種語彙 —— 疊字與錨點不會混在同一張圖上', () => {
+  /*
+   * **使用者回報的原話:「一下有疊字 一下註解 不太統一」。**
+   *
+   * 逐塊判斷在單看一塊時每次都是對的,合起來卻是兩套視覺語言插在同一張
+   * 圖上。門檻沒錯,錯的是它的**作用域**。這一條把「作用域是整張圖」
+   * 釘死,免得日後有人為了「這一塊明明放得下」再改回逐塊。
+   */
   const drawn = drawnRect({ w: 1000, h: 1000 }, { w: 400, h: 400 }, 'contain', parsePosition('50% 50%'));
-  const placed = placeBlocks(
+  const mixed = placeBlocks(
     [
       { box: [0, 0, 200, 500], text: 'big', zh: '大字', c: 1 },
       { box: [300, 0, 310, 60], text: 'tiny a', zh: '小甲', c: 1 },
@@ -325,9 +334,45 @@ test('placeBlocks:錨點編號連號,疊字不佔號', () => {
     drawn,
     { w: 400, h: 400 },
   );
-  assert.deepEqual(placed.map((p) => p.kind), ['veil', 'pin', 'pin']);
-  assert.deepEqual(placed.filter((p) => p.kind === 'pin').map((p) => p.n), [1, 2]);
-  assert.equal(placed[0]!.n, 0, '疊字不佔編號');
+  assert.equal(new Set(mixed.map((p) => p.kind)).size, 1, '同一張圖冒出兩種語彙');
+  // 三塊裡只有一塊放得下 → 少數服從多數,整張走錨點
+  assert.deepEqual(mixed.map((p) => p.kind), ['pin', 'pin', 'pin']);
+  assert.deepEqual(mixed.map((p) => p.n), [1, 2, 3], '錨點編號連號');
+});
+
+test('imageMode:多數決,不是「有一塊放不下就全部退回錨點」', () => {
+  assert.equal(imageMode([true, true, true, true, false]), 'veil', '八成放得下 → 疊字,那一塊撐大就好');
+  assert.equal(imageMode([true, false, false]), 'pin', '小字為主的截圖硬疊只會糊成一片');
+  assert.equal(imageMode([]), 'veil');
+});
+
+test('疊字模式下塞不下的那幾塊把框撐大,而不是換一種語彙', () => {
+  const drawn = drawnRect({ w: 1000, h: 1000 }, { w: 600, h: 600 }, 'contain', parsePosition('50% 50%'));
+  const blocks = [
+    { box: [0, 0, 120, 600], text: 'a', zh: '標題一', c: 1 },
+    { box: [200, 0, 320, 600], text: 'b', zh: '標題二', c: 1 },
+    { box: [400, 0, 520, 600], text: 'c', zh: '標題三', c: 1 },
+    { box: [600, 0, 720, 600], text: 'd', zh: '標題四', c: 1 },
+    // 這一塊自己算是塞不下的
+    { box: [900, 0, 906, 40], text: 'note', zh: '附註文字', c: 1 },
+  ];
+  const placed = placeBlocks(blocks, drawn, { w: 600, h: 600 });
+  assert.equal(placed.every((p) => p.kind === 'veil'), true);
+  const grown = placed[4]!;
+  assert.ok(grown.fontPx >= MIN_PATCH_FONT_PX, `撐大之後字級還是太小:${grown.fontPx}`);
+  assert.ok(grown.h > (6 / 1000) * 600, '框沒被撐大');
+  // 撐大以框心為錨,而且夾在圖內
+  assert.ok(grown.x >= 0 && grown.y >= 0, '撐出圖片左上角外面了');
+  assert.ok(grown.x + grown.w <= 600 + 0.001 && grown.y + grown.h <= 600 + 0.001, '撐出圖片右下角外面了');
+});
+
+test('撐大不會把框撐出圖外 —— 貼著邊的塊往內縮', () => {
+  const drawn = drawnRect({ w: 1000, h: 1000 }, { w: 200, h: 200 }, 'contain', parsePosition('50% 50%'));
+  const r = growToFit({ x: 0, y: 0, w: 4, h: 3 }, 20, false, { w: 200, h: 200 });
+  assert.ok(r.x >= 0 && r.y >= 0);
+  assert.ok(r.x + r.w <= 200.001 && r.y + r.h <= 200.001);
+  assert.ok(r.w <= 200 && r.h <= 200);
+  void drawn;
 });
 
 test('code 樣式的字不加註 —— 程式碼原樣留著才有用', () => {

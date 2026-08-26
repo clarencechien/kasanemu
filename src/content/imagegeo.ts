@@ -12,8 +12,11 @@
 // 副檔名是刻意的:node --experimental-strip-types 解不了無副檔名的**值**匯入,
 // 而這個檔要被 node:test 直接載入(queuelogic.ts 因為同一個理由這樣寫)
 import {
+  AREA_PACK,
   BOX_SCALE,
+  LINE_FILL,
   LOW_CONFIDENCE,
+  MIN_PATCH_FONT_PX,
   fontSizeFor,
   patchable,
 } from '../shared/imageblocks.ts';
@@ -189,8 +192,15 @@ export function placeBlocks(
   drawn: Rect,
   clip: { w: number; h: number },
 ): PlacedBlock[] {
-  const out: PlacedBlock[] = [];
-  let pin = 0;
+  // 第一輪:只算幾何。**這時候還不決定形式** —— 形式是整張圖的性質。
+  const cand: {
+    b: ImageBlockLike;
+    r: Rect;
+    label: string;
+    chars: number;
+    fontPx: number;
+    fits: boolean;
+  }[] = [];
   for (const b of blocks) {
     // code 樣式的字不加註:程式碼原樣留著才有用(§3.2)
     if (b.kind === 'code') continue;
@@ -198,25 +208,98 @@ export function placeBlocks(
     if (!r) continue;
     const label = b.zh || b.text;
     if (label.length === 0) continue;
-    const fontPx = fontSizeFor(r.w, r.h, [...label].length, b.v === true);
-    const veil = patchable(fontPx);
-    if (!veil) pin++;
+    const chars = [...label].length;
+    const fontPx = fontSizeFor(r.w, r.h, chars, b.v === true);
+    cand.push({ b, r, label, chars, fontPx, fits: patchable(fontPx) });
+  }
+  if (cand.length === 0) return [];
+
+  const mode = imageMode(cand.map((c) => c.fits));
+  const out: PlacedBlock[] = [];
+  let pin = 0;
+  for (const c of cand) {
+    const common = {
+      text: c.b.text,
+      zh: c.label,
+      low: c.b.c < LOW_CONFIDENCE,
+      vertical: c.b.v === true,
+    };
+    if (mode === 'pin') {
+      pin++;
+      out.push({ ...c.r, fontPx: c.fontPx, ...common, kind: 'pin', n: pin });
+      continue;
+    }
+    // 疊字模式:少數塞不下的把框撐大到放得下,而不是退回另一種語彙
+    const r = c.fits ? c.r : growToFit(c.r, c.chars, common.vertical, clip);
     out.push({
-      x: r.x,
-      y: r.y,
-      w: r.w,
-      h: r.h,
-      fontPx,
-      text: b.text,
-      zh: label,
-      low: b.c < LOW_CONFIDENCE,
-      vertical: b.v === true,
-      kind: veil ? 'veil' : 'pin',
-      n: veil ? 0 : pin,
+      ...r,
+      fontPx: c.fits ? c.fontPx : MIN_PATCH_FONT_PX,
+      ...common,
+      kind: 'veil',
+      n: 0,
     });
   }
   return out;
 }
+
+/**
+ * 疊字要佔多少比例,整張圖才走疊字。
+ *
+ * 不是調出來的數字,是「例外」的定義:七成以上塞得下,剩下的就是例外,
+ * 把它們的框撐大比換一種語彙便宜。低於七成就反過來 —— 那張圖本來就是
+ * 小字為主(截圖、密集表格),硬疊只會糊成一片。
+ */
+export const VEIL_MAJORITY = 0.7;
+
+/**
+ * 一張圖只能有一種加註語彙。
+ *
+ * 使用者回報的原話是「一下有疊字 一下註解 不太統一」。逐塊判斷在單看
+ * 一塊時每次都是對的,合起來看卻是兩套視覺語言插在同一張圖上 ——
+ * 讀圖的人得同時維持兩種閱讀模式。門檻本身沒錯,錯在**它的作用域**:
+ * 量尺是字級(§2.3),但決定要落在整張圖上。
+ */
+export function imageMode(fits: readonly boolean[]): 'veil' | 'pin' {
+  if (fits.length === 0) return 'veil';
+  const ok = fits.filter(Boolean).length;
+  return ok / fits.length >= VEIL_MAJORITY ? 'veil' : 'pin';
+}
+
+/**
+ * 把框撐大到 11px 的字放得下,以框心為錨。
+ *
+ * 這是 `fontSizeFor` 的反解,所以兩邊**共用 `LINE_FILL` / `AREA_PACK`**;
+ * 常數各寫一份就會分岔,而分岔的症狀是「撐大了還是判定塞不下」。
+ * 允許超出原框是規格給的(§3.2「譯文超框:允許超出 box」),但仍夾在
+ * 圖片 rect 內 —— 加註跑到圖外面就變成頁面上的垃圾。
+ */
+export function growToFit(
+  r: Rect,
+  chars: number,
+  vertical: boolean,
+  clip: { w: number; h: number },
+): Rect {
+  const min = MIN_PATCH_FONT_PX;
+  let w = r.w;
+  let h = r.h;
+  // 單行方向:字級 = 該邊 × LINE_FILL
+  if (vertical) w = Math.max(w, min / LINE_FILL);
+  else h = Math.max(h, min / LINE_FILL);
+  // 面積:chars 個字要 min² × AREA_PACK 的空間
+  const need = min * min * Math.max(1, chars) * AREA_PACK;
+  const grow = Math.sqrt(need / Math.max(1, w * h));
+  if (grow > 1) {
+    w *= grow;
+    h *= grow;
+  }
+  w = Math.min(w, clip.w);
+  h = Math.min(h, clip.h);
+  const x = clamp(r.x + r.w / 2 - w / 2, 0, Math.max(0, clip.w - w));
+  const y = clamp(r.y + r.h / 2 - h / 2, 0, Math.max(0, clip.h - h));
+  return { x, y, w, h };
+}
+
+const clamp = (n: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, n));
 
 /** `placeBlocks` 只讀這幾個欄位,不必綁死整個 ImageBlock */
 export interface ImageBlockLike {
