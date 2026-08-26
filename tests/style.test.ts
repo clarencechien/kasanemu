@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { JSDOM } from 'jsdom';
 import { bleedFor, inkOverflow } from '../src/content/bleed.ts';
 import {
@@ -182,4 +183,31 @@ test('文字整段裝在單一子元素裡時,顏色取那一層', () => {
   assert.equal(at('wrapped'), 'rgb(250, 255, 105)', '整段裝在 <a> 裡 → 取 <a> 的黃');
   assert.equal(at('mixed'), 'rgb(223, 223, 223)', '段落自己有文字 → 主色仍然是段落的');
   assert.equal(at('two'), 'rgb(0, 0, 0)', '兩個子元素 → 不猜,用自己的');
+});
+
+test('LAYER_CSS 的註解裡不可以有反引號', () => {
+  /*
+   * 這條看起來很蠢,而我在同一個地方踩了三次。
+   *
+   * LAYER_CSS 是一個 template literal,而我習慣在註解裡用反引號標記
+   * 程式碼(`.imgwrap`、`brightness(1.16)`)—— 那會**把字串提前關掉**,
+   * 後面幾百行 CSS 就被當成 JS 解析。錯誤訊息出現在幾百行之外
+   * (「An identifier or keyword cannot immediately follow a numeric literal」),
+   * 完全指不到病根。
+   *
+   * typecheck 抓得到,但它說的話沒有人看得懂。這條測試說得懂。
+   */
+  const src = readFileSync(new URL('../src/content/overlay.ts', import.meta.url), 'utf8');
+  const open = src.indexOf('export const LAYER_CSS = `');
+  assert.ok(open >= 0, '找不到 LAYER_CSS');
+  const body = src.slice(open + 'export const LAYER_CSS = `'.length);
+  const end = body.indexOf('\n`;');
+  assert.ok(end > 0, '找不到 LAYER_CSS 的結尾');
+  const css = body.slice(0, end);
+  const bad = css.split('\n').filter((l) => l.includes('`'));
+  assert.deepEqual(
+    bad,
+    [],
+    `CSS 裡有反引號會把 template literal 提前關掉,改用「」或直接寫:\n  ${bad.join('\n  ')}`,
+  );
 });

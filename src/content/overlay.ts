@@ -579,6 +579,35 @@ export const LAYER_CSS = `
   top: 0;
   box-shadow: 0 0 0 2px #FF4A14, 0 4px 12px rgba(0, 0, 0, .45);
 }
+/*
+ * 按住 Alt 看原圖 —— **掀起來,不是關掉**。
+ *
+ * 位移 + 縮放 + 模糊的「掀」是 sukemu handoff §7 的照抄項
+ * (translateY(-1.6%) scale(1.03) blur(4px)),而它一直沒做。
+ * 瞬間消失讀起來像「壞了」,掀起來讀起來像「我把它拿開了一下」——
+ * 差別在於使用者知不知道它還在。
+ */
+.zoom .zimg .iblk,
+.zoom .zimg .ipin,
+.zoom .zlist {
+  transition: opacity .16s ease, transform .16s ease, filter .16s ease;
+}
+.zoom.lift .zimg .iblk,
+.zoom.lift .zimg .ipin,
+.zoom.lift .zlist {
+  opacity: 0;
+  transform: translateY(-1.6%) scale(1.03);
+  filter: blur(4px);
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .zoom .zimg .iblk,
+  .zoom .zimg .ipin,
+  .zoom .zlist { transition: none; }
+  .zoom.lift .zimg .iblk,
+  .zoom.lift .zimg .ipin,
+  .zoom.lift .zlist { transform: none; filter: none; }
+}
 .zoom .zhint {
   position: fixed;
   left: 0;
@@ -725,6 +754,17 @@ export class OverlayLayer {
 
   setHiddenAll(on: boolean): void {
     this.layer.classList.toggle('hidden-all', on);
+    /*
+     * **放大檢視是 `.layer` 的兄弟節點,不是它的小孩。**
+     *
+     * `.zoom` 和 `.chip` 都直接掛在 shadow root 下(理由見 `.zoom` 的註解:
+     * 它們是 `position: fixed`,待在帶 clip-path 的 `.layer` 裡會壞掉)。
+     * 所以掛在 `.layer` 上的 `hidden-all` 對黑窗裡的加註完全沒有作用 ——
+     * 而黑窗自己印著「按住 Alt 看原圖」,那是 UI 給的承諾(§DL)。
+     *
+     * 這裡不關黑窗,只把加註掀起來:使用者要的是「看原圖」不是「離開」。
+     */
+    this.zoomBox?.classList.toggle('lift', on);
   }
 
   setAltScan(on: boolean): void {
@@ -1203,7 +1243,7 @@ export class OverlayLayer {
   }
 
   hideZoom(): void {
-    this.zoomBox?.classList.remove('show', 'haslist');
+    this.zoomBox?.classList.remove('show', 'haslist', 'lift');
   }
 
   /** 放大檢視裡的圖現在畫成多大(視窗變化後重算加註要用) */

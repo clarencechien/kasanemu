@@ -3748,3 +3748,86 @@ chip 上」從外面看起來就是「滑鼠不在任何圖片上」——和「
 
 通則:**新寫的測試要先確認它抓得到那個 bug**,方法是把修正拿掉重跑一次。
 一條從來沒紅過的測試,和沒有測試的差別只是它會消耗 CI 時間。
+
+## DL. 收起來的動作有三個,放回來的只有一個 —— 而且放不完整
+
+使用者兩則回報,其實是同一個病根的三個出口。
+
+> 放大後 layer 一直在上面了 按 alt 或 mouse over 也不會消失 是這設計嗎 還是 bug?
+>
+> 另一種像 clickhouse 的點圖 他有自動的放大 沒點之前 mouse over 不會翻
+> 要點起來再 mouse over 有翻了 但 **alt 按下後 layer 不見就再也不會回來了**
+
+`mouse over` 那半是**設計**(§2.5:進黑窗本身就是「我要讀字」,所以加註
+在放大檢視裡常駐)。其他三件都是 bug。
+
+### DL-1. `hidden-all` 掛在 `.layer` 上,而黑窗是它的兄弟
+
+```ts
+setHiddenAll(on) { this.layer.classList.toggle('hidden-all', on); }
+```
+
+`.zoom` 和 `.chip` 都**直接掛在 shadow root 下**,不在 `.layer` 裡面
+(理由是它們 `position: fixed`,待在帶 clip-path 的 `.layer` 裡會壞掉 ——
+build 14 付過那筆學費)。所以 Alt 對黑窗裡的加註完全沒有作用。
+
+而黑窗自己印著「**按住 Alt 看原圖**」。UI 印出來的字是一個承諾,
+兌現不了就是 bug,不必再討論是不是設計。
+
+順手把 sukemu handoff §7 那條照抄項也補上:掀起來是
+`translateY(-1.6%) scale(1.03) blur(4px)`,不是瞬間消失。
+瞬間消失讀起來像「壞了」,掀起來讀起來像「我把它拿開了一下」——
+差別在使用者知不知道它還在。
+
+### DL-2. Alt 收了兩樣東西,只放回來一樣
+
+```ts
+// keydown
+hiddenAll = true;
+layer.setHiddenAll(true);   // 文字疊層
+layer.hideImage();          // 圖片加註  ← 這一半
+
+// keyup
+hiddenAll = false;
+layer.setHiddenAll(false);  // 文字疊層回來了
+                            // ← 圖片加註沒有
+```
+
+而且**回不來**:`move()` 看到滑鼠還在同一張圖上(`img === this.current`)
+就不會再 `arm()` 一次,所以那張圖的加註要等你滑走再滑回來才出現。
+使用者的原話是「再也不會回來了」。
+
+三個地方各自寫了一份「放回來」(keyup、`onBlur`、按下別的鍵),
+三份都只做了一半。所以修法不是補那一行,是**只留一個出口**:
+`restoreLayer()`。收起來的動作可以有幾個,放回來的只能有一個 ——
+否則下次加第四個收起來的動作時,又會漏掉一半。
+
+再加一道保險:`mousemove` 每一顆事件都帶著 `altKey`,所以
+「`hiddenAll` 但 `!e.altKey`」就是「keyup 掉了」。滑鼠一動就復原 ——
+而使用者想看回譯文時本來就會動滑鼠。
+
+### DL-3. 站方壓在圖上的透明按鈕吃掉了 hover
+
+ClickHouse 那篇每張圖上都壓著一顆
+`<button style="position:absolute;inset:0;cursor:zoom-in;opacity:0">`,
+所以 `target.closest('img')` 永遠是 null —— 滑上去什麼都不會發生。
+點開站方的 lightbox 之後 `<img>` 才直接吃得到滑鼠,那時才會翻。
+
+**諷刺的是我們早就認得那顆按鈕**:`hasNativeZoom()` 就是靠
+`cursor: zoom-in` 判斷「站方有自己的放大檢視,我們不出入口」。
+認得出它會遮住視線,卻沒想到它會擋住滑鼠。
+
+退路:`target.closest('img')` 落空時改問
+`document.elementsFromPoint(x, y)`,只掃最上面四層 —— 透明覆蓋層通常
+就一兩片,掃太深會把「被不透明東西蓋住的圖」也算進來。
+
+### DL-4. 量法錯了,修好的東西照樣顯示壞的
+
+probe 加了「按住 Alt 黑窗裡的加註掀開了嗎」之後,修好還是紅。
+
+因為掀起是 160ms 的 transition,而 `getComputedStyle` 在切 class 的
+**下一行**讀到的還是起點的值(opacity 仍然接近 1)。
+
+和 §DK-1 是同一類:那次是斷言太早所以**測不出壞的**,這次是斷言太早
+所以**測不出好的**。兩次的共同點是「動畫/延遲把時間軸拉長了,而斷言
+還停在切換的那一瞬間」。有過場的東西,量之前先讓它跑完。

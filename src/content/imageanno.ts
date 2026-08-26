@@ -80,7 +80,40 @@ export interface ImageHost {
  * 顯示尺寸是門檻,不是原始尺寸:2042px 的圖縮在 120px 的縮圖格裡,
  * 上面的字使用者一個都讀不到,翻了也是白花錢(`imagegeo.worthTranslating`)。
  */
-export function imageUnder(target: EventTarget | null): HTMLImageElement | null {
+export function imageUnder(
+  target: EventTarget | null,
+  clientX?: number,
+  clientY?: number,
+): HTMLImageElement | null {
+  const direct = imageOf(target);
+  if (direct) return direct;
+  if (clientX === undefined || clientY === undefined) return null;
+  /*
+   * **站方蓋在圖上的透明按鈕會吃掉事件目標。**
+   *
+   * ClickHouse 那篇每張圖上都壓著一顆
+   * `<button style="position:absolute;inset:0;cursor:zoom-in;opacity:0">`,
+   * 所以 `target.closest('img')` 永遠是 null —— 滑上去什麼都不會發生。
+   * 使用者回報的「沒點之前 mouse over 不會翻,要點起來再 mouse over 才有」
+   * 就是這個:站方的 lightbox 打開之後 `<img>` 才直接吃得到滑鼠。
+   *
+   * 諷刺的是我們**早就認得**那顆按鈕 —— `hasNativeZoom()` 就是靠它判斷
+   * 站方有自己的放大檢視。認得出來卻沒想到它會擋住 hover。
+   *
+   * 只掃最上面幾層:透明覆蓋層通常就一兩片,掃太深會把「被不透明的東西
+   * 蓋住的圖」也算進來。
+   */
+  for (const el of document.elementsFromPoint(clientX, clientY).slice(0, OVERLAY_SCAN_DEPTH)) {
+    const img = imageOf(el);
+    if (img) return img;
+  }
+  return null;
+}
+
+/** 站方壓在圖上的透明層最多掃幾層 */
+export const OVERLAY_SCAN_DEPTH = 4;
+
+function imageOf(target: EventTarget | null): HTMLImageElement | null {
   if (!(target instanceof Element)) return null;
   const img = target.closest('img');
   if (!(img instanceof HTMLImageElement)) return null;
@@ -252,7 +285,7 @@ export class ImageAnnotator {
       this.cancelLeave();
       return;
     }
-    const img = imageUnder(target);
+    const img = imageUnder(target, clientX, clientY);
     if (!img) {
       // 立刻收會殺掉正要去按的那片 chip —— 圖與 chip 之間有一段路要走
       this.scheduleLeave();
@@ -522,6 +555,21 @@ export class ImageAnnotator {
 
   zoomOpen(): boolean {
     return this.zoomUrl !== null;
+  }
+
+  /**
+   * 把加註畫回來(按住 Alt 看原圖之後放開)。
+   *
+   * **這半邊以前不存在。** Alt 按下去時 index.ts 呼叫 `hideImage()` 把圖片
+   * 加註收掉,放開時只把 `.layer` 的 `hidden-all` class 拿掉 ——
+   * 文字疊層回來了,圖片加註沒有。而且回不來:`move()` 看到
+   * `img === this.current` 就不會再 `arm()` 一次,所以那張圖的加註
+   * 要等你滑走再滑回來才出現(§DL)。
+   */
+  repaint(): void {
+    if (!this.enabled() || !this.current) return;
+    const entry = this.byUrl.get(this.urlOf(this.current));
+    if (entry) this.render(this.current, entry);
   }
 
   /** 已經翻過的圖(給放大檢視與同 src 重錨定用) */

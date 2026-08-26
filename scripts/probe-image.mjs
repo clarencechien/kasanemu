@@ -203,7 +203,7 @@ if (after !== got.plain.docTop) {
  * 渲染路徑:單元測試碰不到 OverlayLayer(closed shadow root + 真幾何)。
  * 這裡把它裝起來,畫一張圖與一次放大檢視,再從外面驗它畫了什麼。
  */
-const render = await p.evaluate(([fx, cx]) => {
+const render = await p.evaluate(async ([fx, cx]) => {
   /*
    * shadow root 是 closed 的,所以從外面看不進去 —— 但這裡要驗的正是
    * **裡面畫了什麼**(貼片有沒有字、清單有沒有列)。攔 attachShadow 拿到
@@ -278,9 +278,42 @@ const render = await p.evaluate(([fx, cx]) => {
   const rows = shadow?.querySelectorAll('.zrow').length ?? 0;
   const hasList = shadow?.querySelector('.zoom')?.classList.contains('haslist') ?? false;
 
+  /*
+   * **按住 Alt 在放大檢視裡有用嗎。**
+   *
+   * 黑窗自己印著「按住 Alt 看原圖」,所以這是 UI 自己給的承諾。
+   * `setHiddenAll` 把 class 掛在 `.layer` 上,而 `.zoom` 是 `.layer` 的
+   * **兄弟節點**(兩個都直接掛在 shadow root 下)—— 於是 Alt 對黑窗裡的
+   * 加註完全沒有作用(§DL)。
+   */
+  /*
+   * **要等過場跑完再量。**
+   *
+   * 掀起是 160ms 的 transition,而 `getComputedStyle` 在切 class 的下一行
+   * 讀到的還是起點的值(opacity 仍然接近 1)。第一版就是這樣寫的,
+   * 於是修好之後 probe 照樣說「沒有掀開」—— 量錯的是量法,不是東西。
+   */
+  const settle = () => new Promise((r) => setTimeout(r, 320));
+  const annoIn = () => {
+    const el = shadow?.querySelector('.zoom .iblk, .zoom .ipin');
+    if (!el) return false;
+    const cs = getComputedStyle(el);
+    return cs.display !== 'none' && cs.visibility !== 'hidden' && Number(cs.opacity) > 0.05;
+  };
+  const zoomAnnoBefore = annoIn();
+  layer.setHiddenAll(true);
+  await settle();
+  const zoomAnnoWhileAlt = annoIn();
+  layer.setHiddenAll(false);
+  await settle();
+  const zoomAnnoAfterAlt = annoIn();
+
   Element.prototype.attachShadow = real;
   // 從 host 外面能看到的只有它存在;內部要靠 layer 自己回報
   return {
+    zoomAnnoBefore,
+    zoomAnnoWhileAlt,
+    zoomAnnoAfterAlt,
     popText,
     popHasZh: firstPin ? popText.includes(firstPin.zh) : false,
     popGone,
@@ -320,6 +353,13 @@ if (!render.hasList) problems.push('錨點模式的放大檢視沒有掛註解�
 if (render.rows !== render.pinCount) {
   problems.push(`清單列數對不上錨點數:${render.rows} vs ${render.pinCount}`);
 }
+/*
+ * 黑窗自己印著「按住 Alt 看原圖」—— UI 印出來的承諾要兌現。
+ * `.zoom` 是 `.layer` 的兄弟節點,所以掛在 `.layer` 上的 hidden-all 管不到它。
+ */
+if (!render.zoomAnnoBefore) problems.push('放大檢視裡本來就沒畫加註,這條驗不到東西');
+if (render.zoomAnnoWhileAlt) problems.push('按住 Alt 在放大檢視裡看不到原圖 —— 加註沒有掀開');
+if (!render.zoomAnnoAfterAlt) problems.push('放開 Alt 之後加註沒有回來');
 if (render.zoomVeil > 0 && render.zoomPin > 0) {
   problems.push('放大檢視裡混用了兩種語彙');
 }
