@@ -14,6 +14,7 @@ import type { Term } from '../shared/glossary';
 import type { ImageBlock } from '../shared/imageblocks';
 import { fromWire, sanitizeBlocks } from '../shared/imageblocks';
 import { callWithLadder, type ApiOutcome, type Variant } from './gemini';
+import { VISION_TIMEOUT_MS } from '../shared/imagetiming.ts';
 import { repairJsonArray } from './protocol';
 import type { ImageBytes } from './imagefetch';
 import { dbg, warn } from '../shared/log';
@@ -144,6 +145,7 @@ export async function callVision(
     spec,
     (v, s) => buildVisionBody(v, s, image, sys),
     `${spec.modelId}:vision`,
+    VISION_TIMEOUT_MS,
   );
   if (!res.ok) {
     return { ok: false, reason: res.message.slice(0, 200), status: res.status, retriable: res.retriable };

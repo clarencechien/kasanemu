@@ -137,7 +137,7 @@ export async function enqueue(
     ).next,
   );
   diag('info', 'enqueued', { asked: units.length, queue: q.length, tier, pipeline });
-  await ensureAlarm(q.length > 0);
+  await syncAlarm();
   void drain();
 }
 
@@ -225,10 +225,26 @@ export async function dropTab(tabId: number): Promise<void> {
   await mutateQueue((q) => q.filter((i) => i.tabId !== tabId));
 }
 
-async function ensureAlarm(needed: boolean): Promise<void> {
-  // §7.4 service worker 會被回收,用 alarm 把排程叫回來
-  if (needed) await chrome.alarms.create('drain', { delayInMinutes: 0.5 });
-  else await chrome.alarms.clear('drain');
+/**
+ * §7.4 service worker 會被回收,用 alarm 把排程叫回來。
+ *
+ * **文字與圖片共用同一顆 alarm,所以「還需不需要」要兩條佇列一起看。**
+ *
+ * 這是踩過的坑(`docs/deviations.md` §DI):圖片那條路整條沒有掛過
+ * alarm —— worker 在圖片請求途中被回收之後,沒有任何東西會把它叫醒,
+ * 那筆工作就躺在 `storage.session` 裡等下一次使用者剛好做了別的事。
+ * 使用者看到的是圖角轉三分鐘然後「沒有回應」。
+ *
+ * 而且不能各自 `clear`:文字佇列清空時如果直接關掉 alarm,
+ * 圖片那條就跟著失去唯一的喚醒來源。判斷要合起來做。
+ */
+async function syncAlarm(): Promise<void> {
+  const [q, iq] = await Promise.all([loadQueue(), loadImageQueue()]);
+  if (q.length > 0 || iq.length > 0) {
+    await chrome.alarms.create('drain', { delayInMinutes: 0.5 });
+  } else {
+    await chrome.alarms.clear('drain');
+  }
 }
 
 function sleep(ms: number): Promise<void> {
@@ -245,7 +261,7 @@ export async function drain(): Promise<void> {
     for (let guard = 0; guard < 200; guard++) {
       const q = await loadQueue();
       if (q.length === 0) {
-        await ensureAlarm(false);
+        await syncAlarm();
         return;
       }
       const head = q[0]!;
@@ -334,7 +350,7 @@ export async function drain(): Promise<void> {
   } finally {
     draining = false;
     const q = await loadQueue();
-    await ensureAlarm(q.length > 0);
+    await syncAlarm();
     // 佇列還有東西 = 東西還在 worker 這一側。內容腳本那邊看到的「卡住」
     // 到底是誰扣著,只有把兩邊的數字都寫進 log 才分得出來。
     if (q.length > 0) diag('info', 'queue-remains', { n: q.length });
@@ -562,6 +578,12 @@ let imageDraining = false;
  */
 let ichain: Promise<unknown> = Promise.resolve();
 
+/** 只讀,不動佇列 —— `syncAlarm` 要知道圖片那邊還有沒有事情沒做完 */
+async function loadImageQueue(): Promise<ImageJob[]> {
+  const got = await chrome.storage.session.get(IMAGE_QUEUE_KEY);
+  return (got[IMAGE_QUEUE_KEY] as ImageJob[] | undefined) ?? [];
+}
+
 function mutateImageQueue(fn: (q: ImageJob[]) => ImageJob[]): Promise<ImageJob[]> {
   const next = ichain.then(async () => {
     const got = await chrome.storage.session.get(IMAGE_QUEUE_KEY);
@@ -597,39 +619,60 @@ export async function dropPageImages(tabId: number, pageKey: string): Promise<vo
   imagesByPage.delete(pageKey);
 }
 
+/**
+ * 派工一輪。
+ *
+ * **這裡不等工作做完。**
+ *
+ * 上一版是 `for(;;) { ...; await Promise.all(run.map(runImage)) }`,
+ * 而 `imageDraining` 這面旗子在 `finally` 才放下。於是**只要有一個
+ * promise 永遠不 settle,整條圖片管線就永久停擺** —— 旗子放不下來,
+ * 之後每一次 `drainImages()` 都在第一行 `return`。
+ * 一個不回應的請求扣住的不只是那張圖,是所有的圖。
+ *
+ * 現在改成:這一輪只負責**決定要跑哪幾筆**(有界),跑完的工作自己
+ * 回頭再敲一次門。旗子只蓋住派工那一小段,不再和請求的壽命綁在一起。
+ */
 export async function drainImages(): Promise<void> {
   if (imageDraining) return;
   imageDraining = true;
+  let run: ImageJob[] = [];
   try {
-    for (;;) {
-      const q = await mutateImageQueue((cur) => cur);
-      const { run, drop } = nextJobs(q, inFlight, Date.now());
-      if (drop.length > 0) {
-        // 掃過就走的 hover:配額不該花在使用者早就捲過去的圖上
-        diag('info', 'image-stale', { n: drop.length, ageMs: Date.now() - drop[0]!.at });
-        await mutateImageQueue((cur) => removeJobs(cur, drop));
-        /*
-         * **丟掉要告訴 content。**
-         *
-         * 少了這一步,content 的 `inFlight` 永遠不會清掉:圖角停在
-         * 「辨識中」,而且因為那個集合擋著,使用者再滑上去也不會重送 ——
-         * 那張圖就永久卡住了。使用者回報的「後面幾張都卡住」就是這個。
-         */
-        for (const j of drop) {
-          post(j.tabId, {
-            type: 'image-error',
-            pageKey: j.pageKey,
-            url: j.url,
-            reason: 'stale',
-            retriable: true,
-          });
-        }
+    const q = await mutateImageQueue((cur) => cur);
+    const picked = nextJobs(q, inFlight, Date.now());
+    run = picked.run;
+    const { drop } = picked;
+    if (drop.length > 0) {
+      // 掃過就走的 hover、以及 worker 被回收留下的孤兒
+      diag('info', 'image-stale', { n: drop.length, ageMs: Date.now() - drop[0]!.at });
+      await mutateImageQueue((cur) => removeJobs(cur, drop));
+      /*
+       * **丟掉要告訴 content。**
+       *
+       * 少了這一步,content 的 `inFlight` 永遠不會清掉:圖角停在
+       * 「辨識中」,而且因為那個集合擋著,使用者再滑上去也不會重送 ——
+       * 那張圖就永久卡住了。使用者回報的「後面幾張都卡住」就是這個。
+       */
+      for (const j of drop) {
+        post(j.tabId, {
+          type: 'image-error',
+          pageKey: j.pageKey,
+          url: j.url,
+          reason: 'stale',
+          retriable: true,
+        });
       }
-      if (run.length === 0) return;
-      await Promise.all(run.map((job) => runImage(job)));
     }
+    // worker 被回收時佇列活著、記憶體裡的一切都沒了 —— alarm 是唯一的救生索
+    await syncAlarm();
   } finally {
     imageDraining = false;
+  }
+  for (const job of run) {
+    // 不 await:做完的工作自己回頭敲門,派工這一段才不會被請求的壽命綁住
+    void runImage(job).finally(() => {
+      void drainImages();
+    });
   }
 }
 

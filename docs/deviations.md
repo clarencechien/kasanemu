@@ -3487,3 +3487,108 @@ PRD §2.2:「疊層背景永遠不透明:半透明會讓兩層字互相干擾」
 代價是誠實的:密集截圖(53 塊小字)以前在放大檢視裡會有 16 塊疊字,
 現在整張都是錨點。那 16 塊是使用者抱怨的「不統一」的來源,拿掉是對的,
 但也讓「錨點很多的圖」更需要 sukemu 那份**註解清單**(§3.0 提過、還沒做)。
+
+## DI. 圖片那條路整條沒有掛過 alarm,也沒有任何 timeout
+
+使用者回報:build 86「還是卡沒有回應」。診斷 log 裡的形狀很乾淨:
+
+```
+03:17:59.918   [worker] image-start {"lane":"l0","tier":"free"}
+03:21:00.590 ! [content] image-watchdog {"waitedMs":180000}
+```
+
+`image-start` 之後 worker **一句話都沒有** —— 沒有 `image-done`、
+沒有 `image-error`、沒有 `image-throttled`。而 §DG 已經把「丟掉工作要
+告訴 content」補上了,所以這次不是漏掉通知,是**根本沒有人在跑那筆工作**。
+
+四個病根,都在同一個方向上:我把成功路徑抄得很完整,復原的鷹架一個都沒抄。
+§10-quater 那條教訓這是第三次咬人。
+
+### DI-1. 圖片佇列沒有 alarm(主因)
+
+文字佇列在 §7.4 就掛了 alarm:
+
+```ts
+async function ensureAlarm(needed: boolean) {
+  if (needed) await chrome.alarms.create('drain', { delayInMinutes: 0.5 });
+  else await chrome.alarms.clear('drain');
+}
+```
+
+`chrome.alarms.onAlarm` 的處理器裡也的確寫了 `void drainImages()` ——
+**但沒有任何一行程式碼會因為圖片佇列而去建立那顆 alarm。**
+圖片這條路只在 `translateImage`(使用者 hover)時才會醒。
+
+於是 service worker 在請求途中被回收之後:記憶體裡的 `inFlight` 沒了、
+`runImage` 停在半路、佇列在 `storage.session` 裡活著 —— 而**沒有任何東西
+會把 worker 叫回來看那條佇列**。log 上那 9 分鐘的空白就是這個:
+03:18 到 03:26 之間什麼都沒發生,直到使用者剛好又滑到一張圖上。
+
+修法不能是各自建各自的 alarm,因為**兩條佇列共用同一顆**:文字佇列清空時
+`ensureAlarm(false)` 會直接關掉它,圖片那條就跟著失去唯一的喚醒來源。
+所以改成 `syncAlarm()`,兩條佇列一起看。
+
+### DI-2. worker 裡三個 `fetch` 一個 timeout 都沒有
+
+抓圖、文字批次、視覺呼叫 —— 全部是裸的 `fetch()`。
+
+沒有 timeout 的 `fetch` 是一個**永遠不會 settle 的 promise**。
+不回應的 CDN、卡住的 API 連線,都會讓那筆工作永遠停在半路,
+而使用者看到的是「沒有回應」——不是「這張圖抓不下來」或
+「模型沒有在時限內回應」。原因說不出口,就等於沒有原因。
+
+`AbortSignal.timeout()` 連 body 讀取一起管,不是只管到 header。
+
+逾時**不自動重試**:等了 100 秒還沒回應,再等一輪同樣長的時間只會把
+使用者推過看門狗那條線。標成可重試是給**使用者**的(chip 上點一下),
+不是給排程器的。
+
+### DI-3. 一個不回應的請求會扣住**所有**的圖
+
+```ts
+export async function drainImages() {
+  if (imageDraining) return;      // ← 旗子
+  imageDraining = true;
+  try {
+    for (;;) {
+      ...
+      await Promise.all(run.map(runImage));   // ← 永遠不 settle
+    }
+  } finally {
+    imageDraining = false;        // ← 到不了
+  }
+}
+```
+
+旗子在 `finally` 才放下,而 `finally` 在一個永遠不 settle 的 promise 後面。
+於是**之後每一次 `drainImages()` 都在第一行 `return`** —— 一個不回應的
+請求扣住的不只是那張圖,是整條管線。
+
+修法不是加旗子的逾時,是拆掉那個相依:派工這一輪只負責**決定要跑哪幾筆**
+(有界),跑完的工作自己 `.finally(() => drainImages())` 回頭敲門。
+旗子只蓋住派工那一小段,不再和請求的壽命綁在一起。
+
+### DI-4. l1 的孤兒永遠不過期
+
+`nextJobs` 只對 l0 有過期線(`STALE_L0_MS`,治的是「使用者早就捲過去了」)。
+l1 是使用者明確點的,慢也要做完 —— 所以沒有過期線。
+
+但這兩件事被混為一談了:「慢也要做完」的前提是**還有人在跑它**。
+worker 被回收之後那筆 l1 是孤兒,而它每次 worker 醒來都會被重新派工一次,
+花掉配額,而 content 早在 180 秒的看門狗那裡放棄了。
+
+所以加第二條線 `ORPHAN_MS`,不分 lane。它治的是「沒有人在跑它」,
+和 `STALE_L0_MS` 治的「沒有人要看它」是兩件事。
+
+### DI-5. 時限彼此有順序,所以它們搬到同一個檔案
+
+```
+抓圖 20s  <  模型 100s  <  (孤兒 120s + alarm 30s = 150s)  <  看門狗 180s
+```
+
+由內而外遞增,每一層都要留給下一層說話的機會。順序錯了**不會有任何症狀**
+—— 直到使用者先看到「沒有回應」,worker 的真正原因才姍姍來遲,兩邊各說一套。
+
+分散在三個檔案裡時,這個順序沒有任何地方寫得出來,也沒有任何測試抓得到。
+搬進 `src/shared/imagetiming.ts` 之後,常數的**位置**本身就是那條不變量的
+宣告,而 `tests/imagequeue.test.ts` 直接把順序釘住。

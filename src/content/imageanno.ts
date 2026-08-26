@@ -10,6 +10,8 @@
 
 import { diag } from '../shared/diag';
 import type { ImageBlock } from '../shared/imageblocks';
+// 時限彼此有順序,所以住在同一個檔案裡(`shared/imagetiming.ts` 的開頭有那張圖)
+import { IMAGE_WATCHDOG_MS } from '../shared/imagetiming.ts';
 import {
   drawnRect,
   parsePosition,
@@ -23,22 +25,8 @@ import {
 /** 滑上圖片停多久才送 L0。和 UI 標籤的 180ms 不同 —— 這個要花配額 */
 export const IMAGE_HOVER_MS = 500;
 
-/**
- * 送出去多久沒回音就當它死了。
- *
- * **這是看門狗,不是逾時**:我們不取消請求(取消不會退錢),只是把
- * `inFlight` 清掉、讓圖角說得出話。少了它,一次沒回來的請求會讓那張圖
- * **永久卡在「辨識中」** —— `arm()` 看到 `inFlight` 就直接 return,
- * 使用者再滑上去一百次都不會重送。
- *
- * 實際發生過:MV3 的 service worker 在請求途中被回收,`runImage` 停在
- * 半路,worker 那邊沒有任何 log,content 這邊永遠在等。文字管線的
- * L1 看門狗(`upgrade.ts`)解的是同一件事,圖片這條路當初漏了。
- *
- * 180 秒:gemma 實測 10–70 秒,留三倍餘裕 —— 寧可等久一點,
- * 也不要在還會回來的請求上先說失敗。
- */
-export const IMAGE_WATCHDOG_MS = 180_000;
+export { IMAGE_WATCHDOG_MS };
+
 
 /** 一張圖現在的狀態 */
 export interface ImageEntry {
@@ -344,7 +332,10 @@ export class ImageAnnotator {
   onError(url: string, reason: string): void {
     this.inFlight.delete(url);
     this.clearWatchdog(url);
-    const text = FRIENDLY[reason] ?? '辨識失敗 · 再點一次重試';
+    const text =
+      FRIENDLY[reason] ??
+      FRIENDLY_PREFIX.find(([p]) => reason.startsWith(p))?.[1] ??
+      '辨識失敗 · 再點一次重試';
     this.failed.set(url, text);
     if (this.current && this.urlOf(this.current) === url) {
       this.host.cue(this.current, text, 'warn');
@@ -462,4 +453,13 @@ const FRIENDLY: Record<string, string> = {
   // worker 把排太久的工作丟掉時送的:使用者可能早就捲過去了
   stale: '等太久已取消 · 滑開再滑回來重試',
   empty: '圖片是空的',
+  'fetch-timeout': '這張圖抓不下來 · 再點一次重試',
 };
+
+/**
+ * 模型逾時的訊息帶著毫秒數(`timeout 100000ms`),不是固定字串,
+ * 所以查不到表。這種前綴比對放在查表**之後**當退路。
+ */
+const FRIENDLY_PREFIX: [string, string][] = [
+  ['timeout ', '模型沒有在時限內回應 · 再點一次重試'],
+];

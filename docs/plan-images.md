@@ -222,6 +222,30 @@ veil/pin 渲染 + 同 src 重錨定
   kasanemu 的圖片加註不產譯註;單趟就地翻。若日後品質不夠再開 P2,
   介面留在 vision.ts 的回應後處理。
 
+### 5.1 沒有回音的時候(補,§DI)
+
+管線圖上畫的是成功路徑。每一個箭頭都可能不回來,而**「卡住」不可以是
+一個能永久停留的狀態**。四道防線,由內而外:
+
+| 層 | 常數 | 治的是 |
+|---|---|---|
+| 抓圖 | `FETCH_TIMEOUT_MS` 20s | CDN 不回應 |
+| 模型 | `VISION_TIMEOUT_MS` 100s | API 連線卡住 |
+| 佇列 | `ORPHAN_MS` 120s | worker 被回收留下的孤兒 |
+| content | `IMAGE_WATCHDOG_MS` 180s | 訊息掉了、以上全部失效 |
+
+四個數字**有順序**,所以住在 `src/shared/imagetiming.ts` 同一個檔案裡,
+順序由 `tests/imagequeue.test.ts` 釘住(§17-bis)。
+
+另外兩件不在管線圖上、但沒有就會整條停擺的事:
+
+- **喚醒**:service worker 隨時被回收,佇列在 `storage.session` 裡活著不等於
+  有人會去看它。圖片佇列非空時要和文字佇列**共用同一顆 `drain` alarm**
+  (`syncAlarm`)—— 各自建各自的會互相 clear 掉。
+- **派工不等工作**:`drainImages` 只決定要跑哪幾筆(有界),跑完的工作
+  自己回頭敲門。把「還在派工嗎」這面旗子綁在請求的壽命上,
+  等於一次故障換永久停擺。
+
 ## 6. 快取
 
 鍵 = `img:{bytesHash}:{targetLang}:{modelId}`。L0/L1 各自條目(modelId

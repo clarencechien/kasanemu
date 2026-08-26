@@ -1,4 +1,7 @@
 import type { Tier } from '../shared/models';
+// 時限彼此有順序,所以住在同一個檔案裡(`shared/imagetiming.ts` 的開頭有那張圖)
+import { ORPHAN_MS, STALE_L0_MS } from '../shared/imagetiming.ts';
+export { ORPHAN_MS, STALE_L0_MS };
 
 /**
  * 圖片請求的排隊 —— 純判斷,不碰 IO。
@@ -32,13 +35,6 @@ export const LANE_CONCURRENCY: Record<'l0' | 'l1', number> = { l0: 1, l1: 2 };
 /** 每張圖最多重試兩次(`docs/plan-images.md` §3.1) */
 export const IMAGE_MAX_ATTEMPTS = 2;
 
-/**
- * hover 進來但一直沒輪到的,離開視線就取消。
- *
- * 沒有這一條的話,滑鼠掃過長文章的二十張圖會排出一條二十分鐘的隊,
- * 而使用者早就捲過去了 —— 花的是配額,換到的是沒人看的加註。
- */
-export const STALE_L0_MS = 10_000;
 
 export function jobKey(j: Pick<ImageJob, 'url' | 'lane'>): string {
   return `${j.lane}:${j.url}`;
@@ -79,7 +75,9 @@ export function nextJobs(
 ): { run: ImageJob[]; drop: ImageJob[] } {
   const idle = queue.filter((j) => !inFlight.has(jobKey(j)));
   // **只有沒在跑的**才可能過期
-  const drop = idle.filter((j) => j.lane === 'l0' && now - j.at > STALE_L0_MS);
+  const drop = idle.filter(
+    (j) => (j.lane === 'l0' && now - j.at > STALE_L0_MS) || now - j.at > ORPHAN_MS,
+  );
   const dropped = new Set(drop.map(jobKey));
   const alive = idle.filter((j) => !dropped.has(jobKey(j)));
 

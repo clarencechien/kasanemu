@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   LANE_CONCURRENCY,
+  ORPHAN_MS,
   STALE_L0_MS,
   addJob,
   dropPageJobs,
@@ -10,6 +11,12 @@ import {
   type ImageJob,
 } from '../src/worker/imagequeue.ts';
 import { allowedUrl } from '../src/worker/imagefetch.ts';
+import {
+  FETCH_TIMEOUT_MS,
+  IMAGE_WATCHDOG_MS,
+  ORPHAN_MS as TIMING_ORPHAN_MS,
+  VISION_TIMEOUT_MS,
+} from '../src/shared/imagetiming.ts';
 import {
   estimateImageTokens,
   fromWire,
@@ -78,11 +85,28 @@ test('掃過就走的 hover 會過期 —— 配額不花在使用者早就捲�
   assert.equal(run.length, 0, '過期的不該還被送出去');
 });
 
-test('l1 不會過期 —— 那是使用者明確點的,慢也要做完', () => {
+test('l1 不會因為「掃過就走」過期 —— 那是使用者明確點的,慢也要做完', () => {
   const q = [job({ url: 'a', lane: 'l1', at: 0 })];
   const { run, drop } = nextJobs(q, new Set(), STALE_L0_MS * 10);
   assert.equal(drop.length, 0);
   assert.equal(run.length, 1);
+});
+
+test('l1 的孤兒仍然要收 —— 不然 worker 每次醒來都重跑一次,花的是配額', () => {
+  /*
+   * worker 被回收:runImage 停在半路,in-flight 集合跟著消失,佇列還活著。
+   * l1 以前沒有任何過期線,那筆孤兒於是每次醒來都被重新派工 ——
+   * 而 content 早在 180 秒的看門狗那裡放棄了。
+   */
+  const q = [job({ url: 'a', lane: 'l1', at: 0 })];
+  const { drop } = nextJobs(q, new Set(), ORPHAN_MS + 1);
+  assert.equal(drop.length, 1, 'l1 孤兒沒被收掉');
+});
+
+test('還在跑的工作不會被孤兒那條線誤殺,不分 lane', () => {
+  const q = [job({ url: 'a', lane: 'l1', at: 0 }), job({ url: 'b', lane: 'l0', at: 0 })];
+  const { drop } = nextJobs(q, new Set(['l1:a', 'l0:b']), ORPHAN_MS * 5);
+  assert.equal(drop.length, 0, '執行中的工作被當成孤兒了');
 });
 
 test('移除只拿掉指定的那幾筆', () => {
@@ -203,4 +227,39 @@ test('service worker 被回收後留下的孤兒,下次醒來要當成過期收�
   const { drop } = nextJobs([orphan], new Set(), 7 * 60_000);
   assert.equal(drop.length, 1);
   assert.equal(drop[0]!.url, 'orphan');
+});
+
+
+/* ------------------------------------------- 逾時的層級關係(§DI) */
+
+test('每一層都有上限時間 —— 沒有 timeout 的 fetch 是永遠不 settle 的 promise', () => {
+  /*
+   * 使用者回報「還是卡沒有回應」時,worker 的三個 fetch 一個 timeout 都沒有:
+   * 抓圖、文字批次、視覺呼叫。一個不回應的請求扣住的不只是那張圖 ——
+   * 派工那一輪 await 在它上面,整條圖片管線跟著停擺。
+   */
+  for (const [name, ms] of [
+    ['抓圖', FETCH_TIMEOUT_MS],
+    ['視覺', VISION_TIMEOUT_MS],
+  ] as const) {
+    assert.ok(ms > 0 && Number.isFinite(ms), `${name}沒有上限時間`);
+  }
+});
+
+test('逾時的層級要由內而外遞增,最外層是 content 的看門狗', () => {
+  /*
+   * 這個順序**跨三個檔案**,而且錯了不會有任何症狀 —— 直到使用者先看到
+   * 「沒有回應」、worker 的錯誤訊息才姍姍來遲,然後兩邊各說一套。
+   *
+   * 抓圖 < 視覺:抓 bytes 是本地頻寬的事,而且後面還排著模型那一段。
+   * 視覺 < 看門狗:worker 一定要有機會先把真正的原因說出口。
+   */
+  assert.ok(FETCH_TIMEOUT_MS < VISION_TIMEOUT_MS, '抓圖的上限不該比模型還久');
+  assert.ok(
+    VISION_TIMEOUT_MS < IMAGE_WATCHDOG_MS,
+    `模型逾時(${VISION_TIMEOUT_MS})要早於看門狗(${IMAGE_WATCHDOG_MS})`,
+  );
+  // 孤兒清掃 + alarm 最多 30 秒的延遲,也要趕在看門狗之前
+  assert.ok(ORPHAN_MS + 30_000 < IMAGE_WATCHDOG_MS, '孤兒清掃趕不上看門狗');
+  assert.equal(ORPHAN_MS, TIMING_ORPHAN_MS, '佇列用的和時限表上的不是同一個數字');
 });
