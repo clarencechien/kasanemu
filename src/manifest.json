@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Kasanemu",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "以不透明疊層覆蓋原文的網頁翻譯,不改動頁面 DOM 與 CSS。",
   "minimum_chrome_version": "120",
   "permissions": [
