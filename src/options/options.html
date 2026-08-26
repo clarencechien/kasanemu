@@ -222,6 +222,35 @@
     </section>
 
     <section>
+      <h2>圖片</h2>
+      <label>圖片加註
+        <select data-k="imageMode">
+          <option value="hover">滑上去自動翻(免費檔)</option>
+          <option value="off">不翻圖片</option>
+        </select>
+      </label>
+      <p class="hint">
+        <b>自動的只能是免費的。</b>滑到圖上停 0.5 秒會自動用免費檔辨識圖上的字
+        —— 零帳單,但比較慢(實測 9–70 秒),所以它是背景填充,不必等它。
+        要好的譯文就 <b>Alt+點圖</b> 升級到付費檔,那一步一定要你自己按。
+      </p>
+      <p class="hint">
+        譯文用毛玻璃疊膜浮在原文上,<b>不重繪、不裁切原圖</b>;字小到疊不下的
+        改成編號錨點,滑上去看譯文。點圖角的「放大檢視」可以把小字也鋪開成疊字。
+        移開滑鼠就還你乾淨的原圖 —— 圖的閱讀主體是圖形本身,加註是加法。
+      </p>
+      <label class="check"><input type="checkbox" data-k="imageAlwaysOn" /> 加註常駐(不移開就不收)</label>
+      <label>疊膜強度
+        <input type="number" data-k="imageVeil" data-num min="0" max="0.6" step="0.05" />
+      </label>
+      <p class="hint">
+        0 = 完全不壓暗原文(只放譯文),0.6 = 壓得很重。預設 0.3。
+        詞表在圖片上<b>靠模型遵守</b>,沒有文字那邊佔位符的硬保證 ——
+        模型看到的是像素,我們改寫不了來源。
+      </p>
+    </section>
+
+    <section>
       <h2>快取</h2>
       <label>模式
         <select data-k="cacheMode">

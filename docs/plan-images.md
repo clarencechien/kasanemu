@@ -294,13 +294,27 @@ kasanemu 選 lite 是基於自己域的實測,防呆(§4)全部照裝,
 
 ## 14. 實作順序
 
-1. SVG `<text>` + alt/figcaption(§10)
-2. imagedetect + mapBox + normalizeBlocks + 測試
-3. worker:imagefetch + vision + imageQueue(L0 lane)
-4. content:hover-L0 → veil/pin 渲染 → 同 src 重錨定
-5. L1 升級(Alt+click、估價、cross-fade 對位)
-6. 放大檢視 + 成本閘門 + 狀態列
-7. §13 量測 → 調參 → 手冊 README 收尾
+1. ~~SVG `<text>` + alt/figcaption(§10)~~ **做完**(`deviations.md` §DE)
+2. ~~imagedetect + mapBox + normalizeBlocks + 測試~~ **做完**
+   (`shared/imageblocks.ts` + `content/imagegeo.ts`)
+3. ~~worker:imagefetch + vision + imageQueue~~ **做完**(§DF)
+4. ~~content:hover-L0 → veil/pin 渲染 → 同 src 重錨定~~ **做完**
+   (`content/imageanno.ts` + `overlay.ts` 的 `showImage`)
+5. ~~L1 升級(Alt+click)~~ **做完**
+6. 放大檢視:層與 CSS 已經在 `overlay.ts`(`showZoom` / `setZoomBlocks`),
+   **入口還沒接** —— 需要偵測站方 lightbox(§2.4)才決定要不要出這顆按鈕
+7. §13 量測 → 調參 → 手冊收尾
+
+### 14-bis. 目前還沒做的
+
+- **放大檢視的入口**(上面第 6 點)。渲染路徑與 CSS 都在,缺的是
+  「站方有沒有自己的 lightbox」那個判斷。
+- **同 src 重錨定**:`byUrl` 以 `currentSrc` 為鍵,所以站方 lightbox 開出來的
+  新 `<img>` 一 hover 就會命中快取 —— 但**沒有主動偵測**新元素,
+  要滑上去才會畫。夠用,但不是 §2.4 寫的那樣。
+- **每頁圖片預算**(§9 的 20 張/頁)沒接;目前只有既有的每頁 token 上限
+  與每日預算在擋。
+- **手冊**沒有圖片那一節(等 §13 量測定案再寫,免得寫完就改)。
 
 ## 15. 驗收
 

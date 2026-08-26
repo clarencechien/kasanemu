@@ -156,6 +156,25 @@ export interface Settings {
   annotate: boolean;
   /** 加翻層只在按住 Alt 時出現(不想被 hover 打擾的人) */
   annotateAltOnly: boolean;
+  /**
+   * 圖片加註(`docs/plan-images.md`)。
+   *
+   * - `off` —— 完全不碰圖
+   * - `hover` —— 滑上圖片停 500ms 自動送**免費**檔(預設)。
+   *   「絕不自動」在文字階段是對的,但在這裡修訂成
+   *   **「自動的只能是免費的」** —— gemma 零成本,而 hover 是明確的
+   *   注意力訊號,和文字 L0 同一個哲學。付費的 L1 一律要 Alt+click。
+   */
+  imageMode: 'off' | 'hover';
+  /**
+   * 加註常駐(對稱律的例外開關,§2.5)。
+   *
+   * 預設 false:圖的閱讀主體是圖形本身,整頁的圖都掛著標註色是噪音,
+   * 所以譯文只在 hover 時浮現。偏好相反的人可以打開。
+   */
+  imageAlwaysOn: boolean;
+  /** 疊膜強度 0–0.6。0 = 不壓暗原文,只放譯文 */
+  imageVeil: number;
   /** 強制全站使用標註樣式 (§4.6) */
   forceAnnotation: boolean;
   cacheMode: CacheMode;
@@ -204,6 +223,9 @@ export const DEFAULT_SETTINGS: Settings = {
   stability: 'auto',
   annotate: true,
   annotateAltOnly: false,
+  imageMode: 'hover',
+  imageAlwaysOn: false,
+  imageVeil: 0.3,
   forceAnnotation: false,
   /*
    * **預設 persistent。**
