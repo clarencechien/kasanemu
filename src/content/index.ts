@@ -163,6 +163,14 @@ const imageAnno = new ImageAnnotator(
     setActivePin(n, block) {
       layer?.setActivePin(n, block);
     },
+    /*
+     * closed shadow root 把事件目標重定向成 host,所以「滑鼠在我們的 chip 上」
+     * 從外面看就是「目標 === 那個 host」。整層只有 chip 與放大檢視吃滑鼠事件,
+     * 所以這個判斷不會誤收別的東西(§DK)。
+     */
+    ownsTarget(t) {
+      return t instanceof Element && t.id === HOST_ID;
+    },
     cue(el, text, tone, action) {
       imageCue = text === null ? null : { el, text, tone, action };
       renderChips();

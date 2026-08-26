@@ -8,7 +8,7 @@
  * 再往裡面塞一套狀態機只會讓兩件事互相絆住。
  */
 
-import { diag } from '../shared/diag';
+import { diag } from '../shared/diag.ts';
 import type { ImageBlock } from '../shared/imageblocks';
 // 時限彼此有順序,所以住在同一個檔案裡(`shared/imagetiming.ts` 的開頭有那張圖)
 import { IMAGE_WATCHDOG_MS } from '../shared/imagetiming.ts';
@@ -20,13 +20,21 @@ import {
   worthTranslating,
   type ObjectFit,
   type PlacedBlock,
-} from './imagegeo';
+} from './imagegeo.ts';
 
 /** 滑上圖片停多久才送 L0。和 UI 標籤的 180ms 不同 —— 這個要花配額 */
 export const IMAGE_HOVER_MS = 500;
 
 /** 放大檢視右邊留給註解清單的寬度(和 overlay 的 `.zlist` 對齊) */
 export const ZOOM_LIST_W = 356;
+
+/**
+ * 滑鼠離開圖片之後多久才真的收起來。
+ *
+ * 不是動畫,是**可達性**:chip 貼在圖的外緣,滑鼠要從圖走到 chip 上,
+ * 中間那一兩個像素兩邊都不屬於。立刻收的話那片 chip 永遠按不到。
+ */
+export const LEAVE_GRACE_MS = 220;
 
 export { IMAGE_WATCHDOG_MS };
 
@@ -50,6 +58,14 @@ export interface ImageHost {
   hideImage(): void;
   /** 錨點的 hover 態。帶著那一塊的位置與文字 —— 貼片要畫得出東西來 */
   setActivePin(n: number, block?: PlacedBlock): void;
+  /**
+   * 這個事件目標是**我們自己的疊層**嗎(chip、放大檢視)。
+   *
+   * closed shadow root 會把事件目標重定向成 host,所以從外面看,
+   * 「滑鼠在 chip 上」和「滑鼠在頁面某個角落」長得一模一樣 ——
+   * 只有 host 那一層分得出來。
+   */
+  ownsTarget(t: EventTarget | null): boolean;
   /** chip 文案。null 代表收起來;`action` 有值時貼片可以按 */
   cue(el: Element, text: string | null, tone: 'idle' | 'busy' | 'warn', action?: string): void;
   /** 開放大檢視,回傳圖片實際被畫成多大(等 img 載入後量的) */
@@ -141,23 +157,38 @@ export class ImageAnnotator {
   private failed = new Map<string, string>();
 
   private hoverTimer = 0;
+  /** 延後收起來的計時器 —— 讓滑鼠有時間走到 chip 上 */
+  private leaveTimer = 0;
   /** url → 看門狗的 timer id */
   private watchdogs = new Map<string, number>();
   private current: HTMLImageElement | null = null;
   private placed: PlacedBlock[] = [];
   private activePin = 0;
 
-  constructor(
-    private host: ImageHost,
-    private enabled: () => boolean,
-    private alwaysOn: () => boolean,
-  ) {}
+  private host: ImageHost;
+  private enabled: () => boolean;
+  private alwaysOn: () => boolean;
+
+  /*
+   * 刻意不用建構子參數屬性(`private host: ImageHost`)。
+   *
+   * `node --experimental-strip-types` 解不了那個語法,於是整個檔案
+   * **在單元測試裡載不進來** —— 而這裡放的正是 hover/leave 的生命週期,
+   * 也就是「chip 還沒被碰到就被自己刪掉」那一類 bug 的家(§DK)。
+   * 少寫三行換到整條路可測,划算。
+   */
+  constructor(host: ImageHost, enabled: () => boolean, alwaysOn: () => boolean) {
+    this.host = host;
+    this.enabled = enabled;
+    this.alwaysOn = alwaysOn;
+  }
 
   reset(): void {
     this.byUrl.clear();
     this.inFlight.clear();
     for (const t of this.watchdogs.values()) clearTimeout(t);
     this.watchdogs.clear();
+    this.cancelLeave();
     this.failed.clear();
     this.leave();
   }
@@ -208,12 +239,28 @@ export class ImageAnnotator {
    */
   move(target: EventTarget | null, clientX: number, clientY: number): void {
     if (!this.enabled()) return;
-    const img = imageUnder(target);
-    if (!img) {
-      this.leave();
+    /*
+     * **滑到我們自己的 chip 上不算離開。**
+     *
+     * 使用者回報「那個 tip 不能點」——實測(scripts/probe-image.mjs)那片
+     * chip 其實**點得下去**,而且 action 會觸發。問題是它在滑鼠碰到之前
+     * 就被自己刪掉了:closed shadow root 會把事件目標重定向成 host,
+     * 所以 `imageUnder()` 找不到 `<img>` → `leave()` → cue 收掉。
+     * 那片「點這裡放大讀」於是永遠只存在於滑鼠碰不到的地方(§DK)。
+     */
+    if (this.host.ownsTarget(target)) {
+      this.cancelLeave();
       return;
     }
+    const img = imageUnder(target);
+    if (!img) {
+      // 立刻收會殺掉正要去按的那片 chip —— 圖與 chip 之間有一段路要走
+      this.scheduleLeave();
+      return;
+    }
+    this.cancelLeave();
     if (img !== this.current) {
+      // 換到另一張圖是明確的意圖,不必寬限
       this.leave();
       this.current = img;
       this.arm(img);
@@ -255,7 +302,30 @@ export class ImageAnnotator {
     }, IMAGE_HOVER_MS);
   }
 
+  /**
+   * 延後收起來。
+   *
+   * 寬限期存在的唯一理由是**滑鼠要走一段路**:chip 貼在圖的外緣,
+   * 中間那一兩個像素不屬於圖也不屬於 chip,而 mousemove 節流到每幀一次,
+   * 快速移動時剛好會取樣在那裡。沒有寬限的話,使用者永遠碰不到 chip。
+   */
+  private scheduleLeave(): void {
+    if (this.leaveTimer) return;
+    this.leaveTimer = window.setTimeout(() => {
+      this.leaveTimer = 0;
+      this.leave();
+    }, LEAVE_GRACE_MS);
+  }
+
+  private cancelLeave(): void {
+    if (this.leaveTimer) {
+      clearTimeout(this.leaveTimer);
+      this.leaveTimer = 0;
+    }
+  }
+
   private leave(): void {
+    this.cancelLeave();
     // 放大檢視開著的時候滑鼠早就離開原圖了,收掉會把它一起關掉
     if (this.zoomUrl !== null) return;
     if (this.hoverTimer) {

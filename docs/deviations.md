@@ -3696,3 +3696,55 @@ log 上兩次都停在同一個數字:
 擴充 API,把 MV3 那 30 秒的閒置計時歸零。alarm 是事後的救生索,
 keepalive 是事前的 —— gemma 實測 9–68 秒,等於每一張免費檔的圖
 本來都在賭 worker 活不活得過那一輪。
+
+## DK. 那片 chip 點得下去 —— 它只是在滑鼠碰到之前就被自己刪掉
+
+使用者:「點這裡放大讀是點哪裡 那個 tip 不能點」。
+
+先量再說(`scripts/probe-image.mjs`,真的瀏覽器、真的滑鼠):
+
+```
+chip 可達性: {"hitsChip":true,"looksLikeImage":false,"opened":1,"chipW":176}
+```
+
+**那片 chip 打得到,而且按下去 action 真的觸發了。** 所以不是
+`pointer-events`、不是 z-index、不是 onclick 沒綁 —— 每一段都是對的。
+
+錯的是滑鼠**走過去的那半秒**:
+
+```ts
+move(target, x, y) {
+  const img = imageUnder(target);   // ← chip 上的 target 是 host,不是 <img>
+  if (!img) { this.leave(); return; }   // ← 收掉 cue
+```
+
+closed shadow root 會把事件目標**重定向成 host**。所以「滑鼠停在我們的
+chip 上」從外面看起來就是「滑鼠不在任何圖片上」——和「滑鼠跑到頁面別處」
+一模一樣。`imageUnder()` 回 null,`leave()` 把 cue 收掉,那片
+「⤢ 點這裡放大讀」在滑鼠碰到它的前一刻消失。
+
+而且是**兩半**壞的:就算滑鼠快到能在消失前按下去,`leave()` 也已經把
+`current` 清成 null,`openZoom()` 直接回 false。只修一半的話,使用者
+按下去仍然什麼都不會發生。
+
+修法兩條:
+
+1. `ImageHost.ownsTarget(t)` —— 只有 host 那一層分得出「這是我們自己的
+   疊層」。整層只有 chip 與放大檢視吃滑鼠事件,所以這個判斷不會誤收別的。
+2. `LEAVE_GRACE_MS = 220`:chip 貼在圖的外緣,中間那一兩個像素兩邊都不屬於,
+   而 `mousemove` 節流到每幀一次 —— 快速移動剛好會取樣在那裡。
+
+### DK-1. 我的第一版測試是綠的,而 bug 還在
+
+寫完測試我先驗它會不會抓到舊 bug:把 `ownsTarget` 那條拿掉重跑 ——
+**全綠**。
+
+原因是我把斷言寫成同步的:拿掉修正之後走的是 `scheduleLeave()`,
+而寬限期把症狀蓋住了 220 毫秒,剛好蓋過我的斷言。
+
+真正要驗的不是「不會馬上消失」,是「**停著不動也不會消失**」——
+使用者在 chip 上讀完那行字、把手移過去按,遠不只 220 毫秒。改成
+`await sleep(LEAVE_GRACE_MS + 120)` 之後,兩條測試立刻紅。
+
+通則:**新寫的測試要先確認它抓得到那個 bug**,方法是把修正拿掉重跑一次。
+一條從來沒紅過的測試,和沒有測試的差別只是它會消耗 CI 時間。

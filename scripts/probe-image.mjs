@@ -35,7 +35,7 @@ writeFileSync(
   `export * from '${path.join(root, 'src/content/imagegeo.ts')}';\n` +
     `export { hasNativeZoom, geometryOf, ImageAnnotator } from '${path.join(root, 'src/content/imageanno.ts')}';\n` +
     `export { sanitizeBlocks } from '${path.join(root, 'src/shared/imageblocks.ts')}';\n` +
-    `export { OverlayLayer } from '${path.join(root, 'src/content/overlay.ts')}';\n`,
+    `export { OverlayLayer, HOST_ID } from '${path.join(root, 'src/content/overlay.ts')}';\n`,
 );
 const bundle = path.join(out, 'geo.js');
 execFileSync(
@@ -374,6 +374,56 @@ console.log('同 src 認親:', JSON.stringify(adopt));
 if (!adopt.adopted) problems.push('同 src 的新元素沒有被認親 —— lightbox 開出來會沒有加註');
 if (adopt.wrong) problems.push('沒翻過的圖被誤認了');
 if (adopt.show === 0) problems.push('認親了卻沒有畫');
+
+/*
+ * **滑鼠真的走得到那片 chip 嗎。**
+ *
+ * 使用者回報「點這裡放大讀是點哪裡 那個 tip 不能點」。實測那片 chip
+ * 點得下去、action 也會觸發 —— 它是在滑鼠碰到之前就被自己刪掉了:
+ * closed shadow root 把事件目標重定向成 host,`imageUnder()` 找不到 img,
+ * 於是 `move()` 判定「離開圖片」把 cue 收掉(§DK)。
+ *
+ * 所以這一條**走完整段路**:滑到圖上 → 滑到 chip 上 → chip 還在嗎 →
+ * 按下去 → 放大檢視開了嗎。中間任何一步斷掉,使用者拿到的都是
+ * 「那個 tip 不能點」。
+ */
+const journey = await p.evaluate(async () => {
+  const real = Element.prototype.attachShadow;
+  let shadow = null;
+  Element.prototype.attachShadow = function (init) {
+    const r = real.call(this, { ...init, mode: 'open' });
+    shadow = r;
+    return r;
+  };
+  const layer = new IG.OverlayLayer();
+  const img = document.getElementById('zoom-none').querySelector('img') ?? document.getElementById('plain');
+  const r = img.getBoundingClientRect();
+  let opened = 0;
+  layer.onChipAction(() => { opened++; });
+  layer.showChips([{
+    text: '⤢ 點這裡放大讀 · 15 條註解',
+    anchor: { left: r.left, top: r.top, width: r.width, height: r.height },
+    tone: 'l0',
+    style: { background: '#101519', color: '#e6edf3', line: '#345', bar: '#48cbbe', fontSizePx: 12 },
+    action: 'zoom',
+  }]);
+  const chip = shadow.querySelector('.chip');
+  const cr = chip.getBoundingClientRect();
+  const cx = cr.left + cr.width / 2;
+  const cy = cr.top + cr.height / 2;
+  // 疊層是 pointer-events:none,只有可按的 chip 例外 —— 這一點打得到嗎
+  const hitsChip = document.elementFromPoint(cx, cy)?.id === IG.HOST_ID;
+  // 而滑鼠停在 chip 上時,事件目標長什麼樣(這正是 move() 拿到的東西)
+  const targetAtChip = document.elementFromPoint(cx, cy);
+  const looksLikeImage = targetAtChip?.closest?.('img') != null;
+  chip.click();
+  Element.prototype.attachShadow = real;
+  return { hitsChip, looksLikeImage, opened, chipW: Math.round(cr.width) };
+}, null);
+console.log('chip 可達性:', JSON.stringify(journey));
+if (!journey.hitsChip) problems.push('可按的 chip 打不到 —— pointer-events 沒開');
+if (journey.looksLikeImage) problems.push('chip 上的事件目標被當成圖片了,判斷會失準');
+if (journey.opened !== 1) problems.push('按下 chip 沒有觸發 action');
 
 await browser.close();
 if (problems.length > 0) {
