@@ -163,6 +163,14 @@ const imageAnno = new ImageAnnotator(
     setActivePin(n, block) {
       layer?.setActivePin(n, block);
     },
+    /*
+     * closed shadow root 把事件目標重定向成 host,所以「滑鼠在我們的 chip 上」
+     * 從外面看就是「目標 === 那個 host」。整層只有 chip 與放大檢視吃滑鼠事件,
+     * 所以這個判斷不會誤收別的東西(§DK)。
+     */
+    ownsTarget(t) {
+      return t instanceof Element && t.id === HOST_ID;
+    },
     cue(el, text, tone, action) {
       imageCue = text === null ? null : { el, text, tone, action };
       renderChips();
@@ -1854,11 +1862,7 @@ function onKeyDown(e: KeyboardEvent): void {
    * Alt 會先單獨到達,整層收起來閃一下,直到放開 Alt 才回來。
    * 收到第二個鍵就把它放回去 —— hold 的意圖只有在 Alt 單獨按住時才成立。
    */
-  if (hiddenAll && e.key !== 'Alt') {
-    hiddenAll = false;
-    layer?.setHiddenAll(false);
-    updateHud();
-  }
+  if (hiddenAll && e.key !== 'Alt') restoreLayer();
   if (e.altKey && e.shiftKey && (e.key === 'D' || e.key === 'd')) {
     e.preventDefault();
     toggleDebugPanel();
@@ -1866,10 +1870,7 @@ function onKeyDown(e: KeyboardEvent): void {
   if (e.altKey && e.shiftKey && (e.key === 'H' || e.key === 'h')) {
     e.preventDefault();
     // 這個和弦要按住 Alt,而 Alt 已經把整層收起來了 —— 先放回來再切掃視
-    if (hiddenAll) {
-      hiddenAll = false;
-      layer?.setHiddenAll(false);
-    }
+    restoreLayer();
     toggleAltScan();
   }
 }
@@ -1884,20 +1885,31 @@ function toggleAltScan(): void {
 }
 
 function onKeyUp(e: KeyboardEvent): void {
-  if (e.key === 'Alt' && hiddenAll) {
-    hiddenAll = false;
-    layer?.setHiddenAll(false);
-    updateHud();
-  }
+  if (e.key === 'Alt' && hiddenAll) restoreLayer();
+}
+
+/**
+ * 把整層放回來。
+ *
+ * **兩件事,不是一件。** Alt 按下去時做了兩個動作:`setHiddenAll(true)`
+ * 收文字疊層、`hideImage()` 收圖片加註。放開時上一版只做了第一件的反面 ——
+ * 文字回來了,圖片加註沒有,而且**永遠回不來**:`move()` 看到滑鼠還在
+ * 同一張圖上就不會重畫(§DL)。使用者的原話是「alt 按下後 layer 不見就
+ * 再也不會回來了」。
+ *
+ * 收起來的動作有幾個,放回來的只能有一個 —— 否則下次又會漏掉一半。
+ */
+function restoreLayer(): void {
+  if (!hiddenAll) return;
+  hiddenAll = false;
+  layer?.setHiddenAll(false);
+  imageAnno.repaint();
+  updateHud();
 }
 
 function onBlur(): void {
   // 切走視窗時 keyup 收不到,Alt 會卡在按住的狀態 —— 疊層就再也回不來了
-  if (hiddenAll) {
-    hiddenAll = false;
-    layer?.setHiddenAll(false);
-    updateHud();
-  }
+  restoreLayer();
   closeChip(true);
 }
 
@@ -3033,6 +3045,17 @@ function onZoomResize(): void {
 }
 
 function onImageMove(e: MouseEvent): void {
+  /*
+   * **最後一道保險:Alt 已經放開了,但 keyup 沒有到。**
+   *
+   * keyup 可能整個消失(焦點被別的東西搶走、切分頁再切回來、
+   * 作業系統攔截了那一下)。`blur` 接得住大部分,接不住的就卡在
+   * 「整層不見」的狀態 —— 使用者的原話是「再也不會回來了」。
+   *
+   * 而 mousemove 每一顆事件都帶著 `altKey`:滑鼠一動就是最好的訊號,
+   * 而且使用者想看回譯文時本來就會動滑鼠。
+   */
+  if (hiddenAll && !e.altKey) restoreLayer();
   if (settings.imageMode === 'off') return;
   lastImageMove = { target: e.target, x: e.clientX, y: e.clientY };
   if (imageMoveRaf) return;
