@@ -183,6 +183,36 @@ export function looksConcatenated(text: string, zh: string): boolean {
 }
 
 /**
+ * 直排文字:兩檔模型**都讀壞**,而且不會自己說。
+ *
+ * 實測(§13-4,合成的日文直排海報):
+ *
+ * ```
+ * 「秋の特別展示」   → lite「開催ただし(税場盟」 / gemma「秋祭」
+ * 「開催期間 十月…」 → 「興展兼囊」
+ * ```
+ *
+ * 模型把直排當橫排讀,字跨欄串起來變成沒有意義的東西。**而且沒有一塊
+ * 回報 `v: true`** —— prompt 有要,模型不給。
+ *
+ * 但它有給另一個訊號:那七塊裡有五六塊 `c` 掉到 0.5–0.9。模型知道自己
+ * 不確定,只是不知道原因。加上幾何:直排的框**又高又窄**
+ * (實測 204×15),而橫排的 CJK 文字塊不會長這樣。
+ *
+ * 兩個訊號合起來就夠了 —— 標成低信心,讓框線變色、讓使用者知道
+ * 這一塊要自己看原圖。**不靜默做錯**(sukemu handoff §11 的態度)。
+ */
+export const VERTICAL_ASPECT = 3;
+
+export function looksVertical(box: readonly [number, number, number, number], text: string): boolean {
+  const h = box[2] - box[0];
+  const w = box[3] - box[1];
+  if (w <= 0 || h / w < VERTICAL_ASPECT) return false;
+  // 只有 CJK 會直排;又高又窄的拉丁文字塊是別的東西(側邊欄標籤之類)
+  return /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text);
+}
+
+/**
  * 模型輸出 → 可用的區塊。座標防呆 + 串接偵測 + 欄位補齊一次做完。
  *
  * 這是視覺回應唯一的入口:worker 拿到什麼都先過這裡,
@@ -208,7 +238,10 @@ export function sanitizeBlocks(
     blocks: blocks
       .filter((b) => b.box[2] > b.box[0] && b.box[3] > b.box[1])
       .filter((b) => b.zh.length > 0 || b.text.length > 0)
-      .map((b) => (looksConcatenated(b.text, b.zh) ? { ...b, c: Math.min(b.c, 0.5) } : b)),
+      .map((b) => (looksConcatenated(b.text, b.zh) ? { ...b, c: Math.min(b.c, 0.5) } : b))
+      .map((b) =>
+        looksVertical(b.box, b.text) ? { ...b, v: true, c: Math.min(b.c, 0.5) } : b,
+      ),
     spec,
   };
 }

@@ -16,12 +16,28 @@ import { dbg, warn } from '../shared/log.ts';
 /**
  * 送給模型之前先縮圖。
  *
- * 1536 是**猜的**,而且我知道它是猜的 —— `docs/plan-images.md` §13-1
- * 列了縮圖敏感度量測(1536 / 1024 / 768 對區域數與 box 準度的影響)當
- * 實作後要補的功課。在那之前它至少是個保守的值:2042px 的截圖縮到 1536
- * 仍然看得到卡片上的小字。
+ * **2048 是量出來的**(`scripts/measure-vision.mjs`,§13-1),而且量出來的
+ * 結論和直覺相反 —— 原本猜 1536,以為「小一點省 token」:
+ *
+ * | 長邊 | lite 召回 | gemma 召回 | 輸入 token |
+ * | --- | --- | --- | --- |
+ * | 原尺寸 2042 | 100% | 100% | 1362 / 518 |
+ * | 1536 | 97% | **93%** | 1362 / 518 |
+ * | 1024 | 100% | **61%** | 1362 / 518 |
+ * | 768 | 100% | 63% | 1362 / 518 |
+ *
+ * 兩件事:
+ *
+ * 1. **輸入 token 完全不隨尺寸變。** API 端會自己正規化再貼磚,
+ *    所以縮圖**一毛錢都省不到** —— 原本那個理由整個不存在。
+ * 2. 密集截圖上,縮圖會讓 **free 檔的召回崩掉**(1024 只剩 61%)。
+ *    lite 不受影響,照片型素材兩檔都不受影響 —— 受害的正好是
+ *    「免費檔 + 小字密集」這個最需要它的組合。
+ *
+ * 所以縮圖唯一買得到的是上傳體積與延遲,而賣掉的是免費檔的召回。
+ * 上限拉到 2048:大到蓋住實務上的內文圖,又擋得住掃描檔那種怪物。
  */
-export const MAX_EDGE = 1536;
+export const MAX_EDGE = 2048;
 
 /** 超過這個大小的圖不抓。4MB 的 PNG 已經是海報級,不會是文章插圖 */
 export const MAX_BYTES = 4 * 1024 * 1024;
@@ -79,7 +95,13 @@ function toBase64(bytes: Uint8Array): string {
  * 縮圖。長邊超過 `MAX_EDGE` 才動,沒超過就原樣回傳 ——
  * **不重新編碼**是刻意的:重編一次 JPEG 會多一層失真,而模型要讀的是小字。
  */
-async function downscale(
+/*
+ * 匯出是為了**量測**(`scripts/measure-vision.mjs` 的縮圖敏感度)。
+ *
+ * 量測腳本自己寫一份縮圖就等於在量另一個系統(§DB-2 / §DF),
+ * 而縮圖正是那次量測要判斷的東西 —— 更不能換掉。
+ */
+export async function downscale(
   blob: Blob,
   mime: string,
 ): Promise<{ blob: Blob; mime: string; w: number; h: number } | null> {
@@ -112,13 +134,21 @@ async function downscale(
   ctx.drawImage(bitmap, 0, 0, w, h);
   bitmap.close();
   /*
-   * 一律轉 PNG。
+   * **輸出格式跟著來源走。**
    *
-   * 縮完之後圖上都是**小字**,而 JPEG 對高對比細線的失真正好落在
-   * 文字的筆畫上 —— 省下來的那點 token 換不到辨識率。
+   * 上一版一律轉 PNG,理由是「JPEG 對高對比細線的失真落在文字筆畫上」——
+   * 那對截圖是對的,對**照片**是災難:量測時一張 113KB 的 JPEG 新聞照
+   * 縮到 1536 之後變成 **1048KB 的 PNG**,膨脹九倍。照片本來就是連續色調,
+   * PNG 存不了它,而且來源已經失真過一次,再無損也救不回來。
+   *
+   * 於是:PNG 來源(截圖、圖表、有透明度的)維持 PNG;JPEG 來源用 q=0.92
+   * 的 JPEG —— 那個品質下文字筆畫的失真肉眼看不出來,而體積回到正常。
    */
-  const out = await canvas.convertToBlob({ type: 'image/png' });
-  return { blob: out, mime: 'image/png', w, h };
+  const jpeg = mime === 'image/jpeg' || mime === 'image/jpg';
+  const out = jpeg
+    ? await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.92 })
+    : await canvas.convertToBlob({ type: 'image/png' });
+  return { blob: out, mime: jpeg ? 'image/jpeg' : 'image/png', w, h };
 }
 
 /**

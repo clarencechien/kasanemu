@@ -6,6 +6,7 @@ import {
   MIN_PATCH_FONT_PX,
   fontSizeFor,
   looksConcatenated,
+  looksVertical,
   normalizeBoxes,
   patchable,
   sanitizeBlocks,
@@ -380,4 +381,38 @@ test('錨點命中測試:疊層收不到滑鼠事件,所以要自己算', () => 
   assert.ok(pinAt(placed, cx, cy), '正中央要命中');
   assert.ok(pinAt(placed, cx + 10, cy), '半徑內要命中(錨點只有 14px,要求精準太苛)');
   assert.equal(pinAt(placed, cx + 60, cy), null, '離太遠不該命中');
+});
+
+/* --------------------------------------------------------------- 直排偵測 */
+
+test('直排的框又高又窄且是 CJK → 標低信心(兩檔模型都讀壞)', () => {
+  /*
+   * 實測(§13-4):「秋の特別展示」被讀成「秋祭」、
+   * 「開催期間 十月一日から」被讀成「興展兼囊」——
+   * 模型把直排當橫排讀,字跨欄串起來。而且**沒有一塊回 v: true**。
+   *
+   * 但它有給別的訊號:c 掉到 0.5–0.9,加上框的形狀(實測 204×15)。
+   * 兩個合起來就能標出來 —— 不靜默做錯。
+   */
+  const { blocks } = sanitizeBlocks([
+    { box: [94, 381, 298, 396], text: '開催ただし(税場盟', zh: '舉辦，但是', c: 0.9 },
+  ]);
+  assert.equal(blocks[0]!.v, true, '沒認出直排');
+  assert.ok(blocks[0]!.c <= 0.5, '直排要標低信心');
+});
+
+test('又高又窄但不是 CJK → 不算直排(側邊欄標籤那種)', () => {
+  const { blocks } = sanitizeBlocks([
+    { box: [100, 10, 400, 40], text: 'SIDEBAR', zh: '側邊欄', c: 1 },
+  ]);
+  assert.notEqual(blocks[0]!.v, true);
+  assert.equal(blocks[0]!.c, 1);
+});
+
+test('正常的橫排 CJK 不會被誤判成直排', () => {
+  const { blocks } = sanitizeBlocks([
+    { box: [100, 100, 130, 500], text: '台風18号 鹿児島', zh: '颱風18號 鹿兒島', c: 1 },
+  ]);
+  assert.notEqual(blocks[0]!.v, true);
+  assert.equal(blocks[0]!.c, 1);
 });
