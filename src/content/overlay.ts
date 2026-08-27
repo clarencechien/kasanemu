@@ -362,7 +362,7 @@ export const LAYER_CSS = `
   overflow: visible;
 }
 /*
- * veil = **毛玻璃**,不是壓平;而且**沒有邊**。
+ * veil = **毛玻璃**,不是壓平;**沒有邊**;而且**不住在自己的塊裡**。
  *
  * 走過四版,每一版都留下數字(docs/plan-images.md §13-7):
  *
@@ -374,39 +374,76 @@ export const LAYER_CSS = `
  * - 重模糊:破壞筆劃、不動明度。原文退場,而看得出底下是深色圖表還是
  *   白底截圖 —— 那就是毛玻璃感。代價是玻璃場的亮度不可預測,
  *   所以譯文不站在上面,它自己帶底。
- * - **現在**:拿掉方框(§DQ)。前三版都是圓角矩形加邊框加陰影,
- *   使用者的話是「希望能更不突兀…邊角也羽毛 而不是方的」——
+ * - 拿掉方框(§DQ):前三版都是圓角矩形加邊框加陰影,
  *   一個帶邊框陰影的圓角矩形讀起來永遠是**貼在圖上的另一個物件**。
  *
- * 三個改動:膜換中性灰(暖白會在冷色圖上多一層黃)、邊緣用橢圓遮罩
- * 化開、邊框與上緣高光與投影全部拿掉。羽化幾乎不花錢 ——
- * probe:veil 四種素材裡最差的殘留 3.1 → 3.1、最差的譯文 7.2 → 6.9,
- * 門檻是殘留 < 4、譯文 >= 4.5。
+ * **玻璃是一整層,不是每塊各自一片(§DR-1)。** 以前 veil 是 .iblk 的
+ * 子元素,於是繪製順序 = 塊的順序:第二塊的灰玻璃畫在第一塊的譯文
+ * **上面**。密集的圖上到處是「灰底蓋到白底」。現在所有的 veil 排在
+ * 所有的 .iblk 前面 —— 玻璃永遠在下,字永遠在上,不管有幾塊、誰先誰後。
  *
- * inset: -8px 是配合羽化的:邊緣的玻璃變薄,所以要往外站遠一點,
- * 讓淡出發生在原文之外。再遠(實測 -12)玻璃就會溢到隔壁的圖形上。
+ * 它因此需要自己的座標(JS 寫 left/top/width/height,外擴 VEIL_PAD),
+ * 而不能再靠 inset: -8px 相對於父塊。
  */
-.iblk .veil {
+.iveil {
   position: absolute;
-  inset: -8px;
-  border-radius: 8px;
-  backdrop-filter: blur(9px) saturate(.6);
-  -webkit-backdrop-filter: blur(9px) saturate(.6);
+  /* 外擴距離。JS 那邊的 VEIL_PAD 要跟這個一致 —— 它決定框畫多大 */
+  --ksnm-pad: 26px;
+  /*
+   * 羽毛 = **兩道線性漸層相交**,不是一個橢圓(§DR-2)。
+   *
+   * 橢圓不認框的形狀:一個 480x120 的長標籤,橢圓的濃核只蓋得到中間,
+   * 兩端的原文露出來(實測殘留 3.1 → 3.7,差點撞到 4 的門檻)。
+   * 兩軸各自淡出、相交出來的是一個**四邊都軟的長方形** —— 跟著框長,
+   * 而四個角因為兩軸相乘會更淡,所以還是沒有角。
+   *
+   * 用絕對長度不用百分比:羽毛的寬度是一個**視覺量**,不該因為框大小而變。
+   * 全濃的位置正好落在原文框的邊上,所以整段淡出都發生在原文之外。
+   */
+  --ksnm-feather:
+    linear-gradient(to right,
+      transparent 0,
+      rgba(0, 0, 0, .20) calc(var(--ksnm-pad) * .42),
+      rgba(0, 0, 0, .68) calc(var(--ksnm-pad) * .76),
+      #000 var(--ksnm-pad),
+      #000 calc(100% - var(--ksnm-pad)),
+      rgba(0, 0, 0, .68) calc(100% - var(--ksnm-pad) * .76),
+      rgba(0, 0, 0, .20) calc(100% - var(--ksnm-pad) * .42),
+      transparent 100%),
+    linear-gradient(to bottom,
+      transparent 0,
+      rgba(0, 0, 0, .20) calc(var(--ksnm-pad) * .42),
+      rgba(0, 0, 0, .68) calc(var(--ksnm-pad) * .76),
+      #000 var(--ksnm-pad),
+      #000 calc(100% - var(--ksnm-pad)),
+      rgba(0, 0, 0, .68) calc(100% - var(--ksnm-pad) * .76),
+      rgba(0, 0, 0, .20) calc(100% - var(--ksnm-pad) * .42),
+      transparent 100%);
+  backdrop-filter: blur(13px) saturate(.55);
+  -webkit-backdrop-filter: blur(13px) saturate(.55);
   /* 中性灰:不推暖也不推冷,套在任何顏色的圖上都不會多一層色偏 */
-  background: rgba(140, 142, 146, calc(var(--ksnm-veil, .30) * .74));
-  /* 橢圓遮罩 = 沒有角,也沒有邊 —— 玻璃自己淡出去 */
-  mask-image: radial-gradient(ellipse 76% 72% at 50% 50%, #000 58%, transparent 100%);
-  -webkit-mask-image: radial-gradient(ellipse 76% 72% at 50% 50%, #000 58%, transparent 100%);
+  background: rgba(138, 140, 145, calc(var(--ksnm-veil, .30) * .50));
+  mask-image: var(--ksnm-feather);
+  mask-composite: intersect;
+  -webkit-mask-image: var(--ksnm-feather);
+  -webkit-mask-composite: source-in;
 }
 /*
- * 譯文是 inline 的,所以**寬度由字決定**(max-width: none + nowrap)。
- * 這是使用者踩出來的:短標籤被框寬夾住會折成「不適 / 用」兩行,
- * 原話是「如果真的太小 應該加長 label 不要折字」。長句才折,
- * 折行點由 .itx.wrap 另外打開。
+ * 版面信心低:以前是換邊框顏色,而現在沒有邊框了。
+ * 改成把膜染成警示色 —— 一樣在說「這一塊要自己看原圖」,
+ * 但用的是同一種語彙(密度與色調),不是再加一個物件回來。
  */
+.iveil.low {
+  background: rgba(170, 94, 62, calc(var(--ksnm-veil, .30) * .90));
+}
 .iblk .itx {
   position: relative;
   isolation: isolate;
+  /*
+   * **不設上限、不折行**:貼片的寬度由字決定,所以短標籤往橫向長,
+   * 不會折成「不適 / 用」那樣兩行(使用者原話:「如果真的太小
+   * 應該加長 label 不要折字」)。長句才由 .wrap 打開折行。
+   */
   max-width: none;
   line-height: 1.24;
   font-weight: 700;
@@ -414,39 +451,34 @@ export const LAYER_CSS = `
   white-space: nowrap;
 }
 /*
- * 譯文底下的那片白 —— **羽化的,沒有硬邊**。
+ * 譯文底下的那片白 —— 羽化的,沒有硬邊,而且**大到和霧接得上**。
  *
- * 上一版是不透明的圓角貼片加陰影,使用者的原話是「這有點像 OK 繃」。
- * 對:一個帶陰影的圓角矩形是**另一個物件**,而這裡要的是
- * 「玻璃在這裡比較厚」。
+ * 白色本身拿不掉,那是量出來的(§13-7):玻璃保留明度,所以深色圖表上的
+ * 玻璃場還是深的,深墨橘站上去只有 1.8:1;把膜濃到不像玻璃也只有 4.3:1。
  *
- * 但白色不能整個拿掉,那是量出來的(§13-7):玻璃保留明度,所以深色
- * 圖表上的玻璃場還是深的,深墨橘站上去只有 **1.8:1**。把膜濃度整條
- * 掃過也救不回來 —— 濃到 .72(那已經不像玻璃了)還是只有 4.3:1。
+ * 兩輪修掉了它的兩個問題:
  *
- * 所以留下的是同一片白,只是**畫在偽元素上再模糊掉**:對比一模一樣
- * (7.7:1),而邊界不見了。它不再是一個物件,是一團密度。
+ * - §DP-1「像 OK 繃」:不透明圓角貼片加陰影是**另一個物件**。
+ *   同一片白畫在偽元素上再模糊掉,對比一模一樣而邊界消失。
+ * - §DR-2「還是看得到一條帶子」:量出來霧的外緣其實已經看不見了
+ *   (1.02:1),使用者看到的是**密度的階梯** —— 深卡 → 霧 → 白貼片 → 橘字,
+ *   中間兩階各自有自己的邊。把白羽放大到和霧的濃核重疊,四階變成一條坡。
+ *
+ * 代價是白光暈往原文之外多灑一點(量到 2.6:1,原本 1.0),
+ * 這是**買到融入感付的錢**,不是漏掉的東西。
  */
 .iblk .itx::before {
   content: '';
   position: absolute;
-  inset: -.16em -.3em;
+  inset: -.34em -.62em;
   border-radius: 6px;
   background: rgba(255, 252, 247, .95);
-  filter: blur(4px);
+  filter: blur(11px);
   z-index: -1;
 }
 .iblk .itx.wrap {
   white-space: normal;
   word-break: break-word;
-}
-/*
- * 版面信心低:以前是換邊框顏色,而現在沒有邊框了。
- * 改成把膜染成警示色 —— 一樣在說「這一塊要自己看原圖」,
- * 但用的是同一種語彙(密度與色調),不是再加一個物件回來。
- */
-.iblk.low .veil {
-  background: rgba(168, 96, 64, calc(var(--ksnm-veil, .30) * .84));
 }
 .iblk.vert .itx { writing-mode: vertical-rl; white-space: nowrap; }
 
@@ -605,11 +637,13 @@ export const LAYER_CSS = `
  * 差別在於使用者知不知道它還在。
  */
 .zoom .zimg .iblk,
+.zoom .zimg .iveil,
 .zoom .zimg .ipin,
 .zoom .zlist {
   transition: opacity .16s ease, transform .16s ease, filter .16s ease;
 }
 .zoom.lift .zimg .iblk,
+.zoom.lift .zimg .iveil,
 .zoom.lift .zimg .ipin,
 .zoom.lift .zlist {
   opacity: 0;
@@ -619,9 +653,11 @@ export const LAYER_CSS = `
 }
 @media (prefers-reduced-motion: reduce) {
   .zoom .zimg .iblk,
+  .zoom .zimg .iveil,
   .zoom .zimg .ipin,
   .zoom .zlist { transition: none; }
   .zoom.lift .zimg .iblk,
+  .zoom.lift .zimg .iveil,
   .zoom.lift .zimg .ipin,
   .zoom.lift .zlist { transform: none; filter: none; }
 }
@@ -635,6 +671,21 @@ export const LAYER_CSS = `
   color: #8fa0b0;
 }
 `;
+
+/**
+ * 玻璃往原文框外擴幾 px。
+ *
+ * 羽化之後邊緣的玻璃是薄的,所以要往外站遠一點,讓**淡出發生在原文之外**
+ * —— 否則收尾收在字上,字的邊緣會半糊不糊。
+ *
+ * 這個數字和 .iveil 的 --ksnm-pad 是同一件事的兩半:JS 決定框畫多大,
+ * CSS 決定羽毛在框裡怎麼收。**兩邊要一起改**,render-veil.mjs 會對帳。
+ *
+ * 掃過 3 / 8 / 12 / 18 / 26:原文殘留 3.3 / 3.2 / 2.9 / 2.8 / 2.6。
+ * 早期停在 8 是因為方框太遠會溢到隔壁的圖形;換成兩軸相交的羽毛之後
+ * 濃的核心只有中間那塊,才敢一路放到 26(§DR-2)。
+ */
+export const VEIL_PAD = 26;
 
 /** 一個要畫出來的貼片 */
 export interface ChipItem {
@@ -1080,7 +1131,7 @@ export class OverlayLayer {
     w.style.setProperty('--ksnm-iy', `${rect.top}px`);
     w.style.setProperty('--ksnm-iw', `${rect.width}px`);
     w.style.setProperty('--ksnm-ih', `${rect.height}px`);
-    w.replaceChildren(...placed.map((p) => this.blockNode(p)));
+    w.replaceChildren(...this.blockNodes(placed));
     w.classList.add('show');
   }
 
@@ -1144,6 +1195,36 @@ export class OverlayLayer {
     return w;
   }
 
+  /**
+   * 一張圖的所有節點,**分兩趟**:先全部的玻璃,再全部的字與錨點。
+   *
+   * 順序就是繪製順序(這一層裡沒有人動 z-index),所以兩趟等於
+   * 「玻璃永遠在下、字永遠在上」——不管有幾塊、誰和誰重疊。
+   *
+   * 以前 veil 是 .iblk 的子元素,一塊一片玻璃各自獨立,於是**下一塊的
+   * 灰玻璃會蓋到上一塊的譯文和它的白羽**(使用者原話:「不能是灰底蓋到
+   * 白底」)。字和字互相擋是排版問題,擋不住就是圖太擠;
+   * 但玻璃蓋到字是**層級問題**,一次修掉就不會再有(§DR-1)。
+   *
+   * 順帶一個好處:veil 的 backdrop-filter 取樣的是「畫在它下面的東西」,
+   * 分層之後那裡面**不再包含別塊的譯文**,不會再把隔壁的字糊進自己的玻璃。
+   */
+  private blockNodes(placed: readonly PlacedBlock[]): HTMLElement[] {
+    const veils = placed.filter((p) => p.kind === 'veil').map((p) => this.veilNode(p));
+    return [...veils, ...placed.map((p) => this.blockNode(p))];
+  }
+
+  /** 玻璃:自己的座標,往四周外擴 VEIL_PAD 讓淡出發生在原文之外 */
+  private veilNode(p: PlacedBlock): HTMLElement {
+    const v = document.createElement('span');
+    v.className = `iveil${p.low ? ' low' : ''}`;
+    v.style.left = `${p.x - VEIL_PAD}px`;
+    v.style.top = `${p.y - VEIL_PAD}px`;
+    v.style.width = `${p.w + VEIL_PAD * 2}px`;
+    v.style.height = `${p.h + VEIL_PAD * 2}px`;
+    return v;
+  }
+
   private blockNode(p: PlacedBlock): HTMLElement {
     if (p.kind === 'pin') {
       const pin = document.createElement('div');
@@ -1162,13 +1243,11 @@ export class OverlayLayer {
     box.style.height = `${p.h}px`;
     box.style.fontSize = `${p.fontPx}px`;
     box.style.fontFamily = fontStack(false, 'sans-serif');
-    const veil = document.createElement('span');
-    veil.className = 'veil';
     const tx = document.createElement('span');
     // 短標籤一行到底(不折字);長句才允許折行
     tx.className = `itx${[...p.zh].length > SINGLE_LINE_CHARS ? ' wrap' : ''}`;
     tx.textContent = p.zh;
-    box.append(veil, tx);
+    box.append(tx);
     return box;
   }
 
@@ -1210,8 +1289,8 @@ export class OverlayLayer {
     const z = this.zoomBox;
     const holder = z?.querySelector('.zimg');
     if (!z || !holder) return;
-    for (const old of holder.querySelectorAll('.iblk, .ipin')) old.remove();
-    for (const p of placed) holder.appendChild(this.blockNode(p));
+    for (const old of holder.querySelectorAll('.iblk, .iveil, .ipin')) old.remove();
+    for (const n of this.blockNodes(placed)) holder.appendChild(n);
 
     const list = z.querySelector('.zlist') as HTMLDivElement | null;
     if (!list) return;

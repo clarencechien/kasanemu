@@ -20,6 +20,7 @@
     "probe:snapshot": "node scripts/probe-snapshot.mjs",
     "probe:image": "node scripts/probe-image.mjs",
     "probe:veil": "node scripts/probe-veil.mjs",
+    "render:veil": "node scripts/render-veil.mjs",
     "audit:sites": "node scripts/audit-sites.mjs",
     "audit:tree": "node scripts/audit-tree.mjs"
   },

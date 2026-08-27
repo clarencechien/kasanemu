@@ -67,18 +67,25 @@ const H = 120;
  * `bare` 是對照(原文本來多清楚)、`veil` 量原文退了多少、
  * `plate` 是**沒有字的貼片**(墨要對比的就是這片底)、`ink` 是實際樣子。
  */
+/*
+ * 玻璃是 .iblk 的**兄弟**不是子元素(§DR-1),而且往外擴 VEIL_PAD ——
+ * 這裡照抄那個結構,不是「差不多的結構」:上一次 probe 和實作長得不一樣,
+ * 量到的是 probe 自己的排版(§DL-4)。
+ */
+const PAD = 26;
 const stage = (bg, fg, mode) => `
 <div class="stage" style="background:${bg}">
   <div class="orig" style="color:${fg}">Elasticsearch ESQL</div>
-  ${mode === 'bare' ? '' : `<div class="wrap"><div class="iblk" style="left:0;top:0;width:${W}px;height:${H}px">
-    <span class="veil"></span>${
+  ${mode === 'bare' ? '' : `<div class="wrap">
+    <span class="iveil" style="left:${-PAD}px;top:${-PAD}px;width:${W + PAD * 2}px;height:${H + PAD * 2}px"></span>
+    <div class="iblk" style="left:0;top:0;width:${W}px;height:${H}px">${
       mode === 'ink'
         ? `<span class="itx" style="font-size:34px">彈性搜尋 ESQL</span>`
         : mode === 'plate'
           ? `<span class="itx" style="font-size:34px;color:transparent;text-shadow:none">彈性搜尋 ESQL</span>`
           : ''
-    }
-  </div></div>`}
+    }</div>
+  </div>`}
 </div>`;
 
 const page = `<!doctype html><meta charset=utf-8>

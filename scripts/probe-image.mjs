@@ -275,6 +275,29 @@ const render = await p.evaluate(async ([fx, cx]) => {
   layer.setActivePin(0);
   const popGone = shadow?.querySelector('.ipop') === null;
 
+  /*
+   * **玻璃在下、字在上,而且是整層對整層(§DR-1)。**
+   *
+   * 這一條以前是靠 DOM 巧合成立的:veil 是 .iblk 的子元素,所以只要
+   * 兩塊不重疊就看不出問題。一重疊,下一塊的灰玻璃就畫在上一塊的譯文
+   * 和白羽**上面**(使用者原話:「不能是灰底蓋到白底」)。
+   *
+   * 量兩件事,都在真的畫出來的 DOM 上問:
+   * 1. 沒有任何 .iveil 還住在 .iblk 裡面(結構回歸)
+   * 2. 最後一片玻璃排在第一個文字塊前面(繪製順序 —— 這一層沒有人動
+   *    z-index,所以 DOM 順序就是疊放順序)
+   */
+  const layerOrder = (root) => {
+    const kids = [...(root?.children ?? [])];
+    const lastVeil = kids.map((e) => e.classList.contains('iveil')).lastIndexOf(true);
+    const firstBlk = kids.findIndex((e) => e.classList.contains('iblk'));
+    return {
+      veils: kids.filter((e) => e.classList.contains('iveil')).length,
+      nested: (root?.querySelectorAll('.iblk .iveil').length ?? 0),
+      ordered: lastVeil < 0 || firstBlk < 0 || lastVeil < firstBlk,
+    };
+  };
+
   // 註解清單:錨點標位置,清單給字。少了它,放大檢視還是 53 個圓點
   const rows = shadow?.querySelectorAll('.zrow').length ?? 0;
   const hasList = shadow?.querySelector('.zoom')?.classList.contains('haslist') ?? false;
@@ -309,6 +332,14 @@ const render = await p.evaluate(async ([fx, cx]) => {
   await settle();
   const zoomAnnoAfterAlt = annoIn();
 
+  /*
+   * 順序要在**疊字模式**的 DOM 上問 —— 上面那份放大檢視是 47 個錨點,
+   * 一片玻璃都沒有,問了永遠是對的(第一版就是這樣寫的,assert 形同虛設)。
+   * 圖表那份放大之後才是整張疊字,所以換它畫進去再問。
+   */
+  layer.setZoomBlocks(cBig);
+  const zoomOrder = layerOrder(shadow?.querySelector('.zoom .zimg'));
+
   Element.prototype.attachShadow = real;
   // 從 host 外面能看到的只有它存在;內部要靠 layer 自己回報
   return {
@@ -329,6 +360,9 @@ const render = await p.evaluate(async ([fx, cx]) => {
     chartSmallPin: cSmall.filter((b) => b.kind === 'pin').length,
     chartBigVeil: cBig.filter((b) => b.kind === 'veil').length,
     chartBigPin: cBig.filter((b) => b.kind === 'pin').length,
+    veilLayerOrdered: zoomOrder.ordered,
+    veilNestedInBlock: zoomOrder.nested,
+    veilLayerCount: zoomOrder.veils,
     zoomSize: layer.zoomSize(),
     imageVisible: layer.imageVisible(),
     zoomVisible: layer.zoomVisible(),
@@ -359,6 +393,14 @@ if (render.rows !== render.pinCount) {
  * `.zoom` 是 `.layer` 的兄弟節點,所以掛在 `.layer` 上的 hidden-all 管不到它。
  */
 if (!render.zoomAnnoBefore) problems.push('放大檢視裡本來就沒畫加註,這條驗不到東西');
+/*
+ * 層級:玻璃整層在下、字整層在上(§DR-1)。
+ * 「灰底蓋到白底」是層級問題,修一次就該永遠不再有 —— 所以它進 probe。
+ */
+if (render.veilNestedInBlock > 0)
+  problems.push(`有 ${render.veilNestedInBlock} 片玻璃又住回 .iblk 裡了 —— 重疊時會蓋到前一塊的譯文`);
+if (render.veilLayerCount > 0 && !render.veilLayerOrdered)
+  problems.push('玻璃排在文字塊後面 —— 下一塊的灰底會蓋掉上一塊的白羽和字');
 if (render.zoomAnnoWhileAlt) problems.push('按住 Alt 在放大檢視裡看不到原圖 —— 加註沒有掀開');
 if (!render.zoomAnnoAfterAlt) problems.push('放開 Alt 之後加註沒有回來');
 if (render.zoomVeil > 0 && render.zoomPin > 0) {
