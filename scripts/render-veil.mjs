@@ -41,8 +41,8 @@ const out = mkdtempSync(path.join(tmpdir(), 'ksnm-render-'));
 const bundle = path.join(out, 'css.js');
 writeFileSync(
   path.join(out, 'e.ts'),
-  `import { LAYER_CSS, VEIL_PAD } from ${JSON.stringify(path.resolve('src/content/overlay.ts'))};\n` +
-    `(globalThis as any).KS = { LAYER_CSS, VEIL_PAD };\n`,
+  `import { LAYER_CSS, VEIL_PAD, paintPlates } from ${JSON.stringify(path.resolve('src/content/overlay.ts'))};\n` +
+    `(globalThis as any).KS = { LAYER_CSS, VEIL_PAD, paintPlates };\n`,
 );
 await esbuild.build({
   entryPoints: [path.join(out, 'e.ts')],
@@ -263,6 +263,13 @@ await p.evaluate(() => {
   s.textContent = globalThis.KS.LAYER_CSS;
   /* LAYER_CSS 要排在配方覆蓋的前面,否則覆蓋不掉 */
   document.head.prepend(s);
+});
+/*
+ * 白貼片是**量出來的第三層**(§DT),不是 CSS 的偽元素 ——
+ * 所以這裡要呼叫同一支函式,不能自己畫一個差不多的東西(§DF)。
+ */
+await p.evaluate(() => {
+  for (const w of document.querySelectorAll('.imgwrap')) globalThis.KS.paintPlates(w);
 });
 await p.waitForTimeout(300);
 

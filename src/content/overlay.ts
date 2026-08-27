@@ -438,7 +438,6 @@ export const LAYER_CSS = `
 }
 .iblk .itx {
   position: relative;
-  isolation: isolate;
   /*
    * **不設上限、不折行**:貼片的寬度由字決定,所以短標籤往橫向長,
    * 不會折成「不適 / 用」那樣兩行(使用者原話:「如果真的太小
@@ -451,30 +450,29 @@ export const LAYER_CSS = `
   white-space: nowrap;
 }
 /*
- * 譯文底下的那片白 —— 羽化的,沒有硬邊,而且**大到和霧接得上**。
+ * 譯文底下的那片白 —— 羽化的,沒有硬邊,大到和霧接得上,
+ * 而且**它自己也是一層**(§DT)。
  *
  * 白色本身拿不掉,那是量出來的(§13-7):玻璃保留明度,所以深色圖表上的
  * 玻璃場還是深的,深墨橘站上去只有 1.8:1;把膜濃到不像玻璃也只有 4.3:1。
  *
- * 兩輪修掉了它的兩個問題:
+ * 三輪修掉了它的三個問題:
  *
  * - §DP-1「像 OK 繃」:不透明圓角貼片加陰影是**另一個物件**。
- *   同一片白畫在偽元素上再模糊掉,對比一模一樣而邊界消失。
- * - §DR-2「還是看得到一條帶子」:量出來霧的外緣其實已經看不見了
- *   (1.02:1),使用者看到的是**密度的階梯** —— 深卡 → 霧 → 白貼片 → 橘字,
- *   中間兩階各自有自己的邊。把白羽放大到和霧的濃核重疊,四階變成一條坡。
+ *   同一片白模糊掉,對比一模一樣而邊界消失。
+ * - §DR-2「還是看得到一條帶子」:量出來霧的外緣已經看不見了(1.02:1),
+ *   看到的是**密度的階梯**。把白羽放大到和霧的濃核重疊,四階變成一條坡。
+ * - §DT「白底蓋到字」:它以前是 .itx 的偽元素,所以**跟著自己那一塊走**
+ *   —— 下一塊的白暈畫在上一塊的字上面。現在是自己的元素、自己的一層。
  *
- * 代價是白光暈往原文之外多灑一點(量到 2.6:1,原本 1.0),
- * 這是**買到融入感付的錢**,不是漏掉的東西。
+ * 尺寸要量:貼片的寬度由字決定(這正是「不折字」的前提),
+ * 所以排版之後才知道它多大。padding 用 em —— 字大羽毛就大,一致。
  */
-.iblk .itx::before {
-  content: '';
+.iplate {
   position: absolute;
-  inset: -.34em -.62em;
   border-radius: 6px;
   background: rgba(255, 252, 247, .95);
   filter: blur(11px);
-  z-index: -1;
 }
 .iblk .itx.wrap {
   white-space: normal;
@@ -638,12 +636,14 @@ export const LAYER_CSS = `
  */
 .zoom .zimg .iblk,
 .zoom .zimg .iveil,
+.zoom .zimg .iplate,
 .zoom .zimg .ipin,
 .zoom .zlist {
   transition: opacity .16s ease, transform .16s ease, filter .16s ease;
 }
 .zoom.lift .zimg .iblk,
 .zoom.lift .zimg .iveil,
+.zoom.lift .zimg .iplate,
 .zoom.lift .zimg .ipin,
 .zoom.lift .zlist {
   opacity: 0;
@@ -654,10 +654,12 @@ export const LAYER_CSS = `
 @media (prefers-reduced-motion: reduce) {
   .zoom .zimg .iblk,
   .zoom .zimg .iveil,
+  .zoom .zimg .iplate,
   .zoom .zimg .ipin,
   .zoom .zlist { transition: none; }
   .zoom.lift .zimg .iblk,
   .zoom.lift .zimg .iveil,
+  .zoom.lift .zimg .iplate,
   .zoom.lift .zimg .ipin,
   .zoom.lift .zlist { transform: none; filter: none; }
 }
@@ -686,6 +688,57 @@ export const LAYER_CSS = `
  * 濃的核心只有中間那塊,才敢一路放到 26(§DR-2)。
  */
 export const VEIL_PAD = 26;
+
+/**
+ * 白貼片往字外面撐多少(em,乘上那一塊的字級)。
+ *
+ * 用 em 不用 px:字大羽毛就大,一整張圖上看起來才是同一種東西。
+ * 這兩個數字以前寫在 CSS 的 `inset: -.34em -.62em` 裡,
+ * 搬出來是因為現在要在 JS 裡算座標 —— 只能有一份。
+ */
+export const PLATE_PAD_X = 0.62;
+export const PLATE_PAD_Y = 0.34;
+
+/**
+ * 量出每一段譯文實際占多大,補一層白貼片墊在**所有**譯文下面(§DT)。
+ *
+ * 為什麼要量:貼片的寬度由字決定(這正是「短標籤不折字」的前提),
+ * 排版之前算不出來。所以順序是「先把字放進去 → 量 → 把貼片插到字前面」。
+ *
+ * 為什麼是插到前面而不是給 z-index:和玻璃同一個理由(§DR-1)——
+ * `.zoom.lift` 會給每個 `.iblk` 小於 1 的 opacity,那 160ms 之內
+ * 每一塊都是自己的堆疊脈絡,z-index 當場失效。**DOM 順序不挑時機。**
+ *
+ * 讀寫分開:先把所有的 rect 量完再開始插,不要邊量邊插 ——
+ * 每插一個就重新排版一次的話,一張 50 塊的圖會排 50 次。
+ */
+export function paintPlates(container: HTMLElement): void {
+  const base = container.getBoundingClientRect();
+  const specs: { x: number; y: number; w: number; h: number }[] = [];
+  for (const tx of container.querySelectorAll('.itx')) {
+    const r = tx.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) continue;
+    const fs = parseFloat(getComputedStyle(tx).fontSize) || 14;
+    const px = fs * PLATE_PAD_X;
+    const py = fs * PLATE_PAD_Y;
+    specs.push({
+      x: r.left - base.left - px,
+      y: r.top - base.top - py,
+      w: r.width + px * 2,
+      h: r.height + py * 2,
+    });
+  }
+  const first = container.querySelector('.iblk');
+  for (const s of specs) {
+    const el = document.createElement('span');
+    el.className = 'iplate';
+    el.style.left = `${s.x}px`;
+    el.style.top = `${s.y}px`;
+    el.style.width = `${s.w}px`;
+    el.style.height = `${s.h}px`;
+    container.insertBefore(el, first);
+  }
+}
 
 /** 一個要畫出來的貼片 */
 export interface ChipItem {
@@ -1132,6 +1185,8 @@ export class OverlayLayer {
     w.style.setProperty('--ksnm-iw', `${rect.width}px`);
     w.style.setProperty('--ksnm-ih', `${rect.height}px`);
     w.replaceChildren(...this.blockNodes(placed));
+    // 字放進去了才量得到它多寬 —— 貼片是第三層,插在字前面(§DT)
+    paintPlates(w);
     w.classList.add('show');
   }
 
@@ -1289,8 +1344,9 @@ export class OverlayLayer {
     const z = this.zoomBox;
     const holder = z?.querySelector('.zimg');
     if (!z || !holder) return;
-    for (const old of holder.querySelectorAll('.iblk, .iveil, .ipin')) old.remove();
+    for (const old of holder.querySelectorAll('.iblk, .iveil, .iplate, .ipin')) old.remove();
     for (const n of this.blockNodes(placed)) holder.appendChild(n);
+    paintPlates(holder as HTMLElement);
 
     const list = z.querySelector('.zlist') as HTMLDivElement | null;
     if (!list) return;

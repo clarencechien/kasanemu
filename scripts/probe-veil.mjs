@@ -39,7 +39,10 @@ try {
 
 const out = mkdtempSync(path.join(tmpdir(), 'ksnm-veil-'));
 const entry = path.join(out, 'entry.ts');
-writeFileSync(entry, `export { LAYER_CSS } from '${path.join(root, 'src/content/overlay.ts')}';\n`);
+writeFileSync(
+  entry,
+  `export { LAYER_CSS, paintPlates } from '${path.join(root, 'src/content/overlay.ts')}';\n`,
+);
 const bundle = path.join(out, 'css.js');
 execFileSync(
   'npx',
@@ -117,6 +120,12 @@ await p.evaluate(() => {
   const s = document.createElement('style');
   s.textContent = globalThis.KS.LAYER_CSS;
   document.head.append(s);
+  /*
+   * 白貼片是**量出來的第三層**(§DT):字放進去之後才知道它多寬。
+   * 這裡呼叫的是實作那支函式,不是照著寫一個差不多的 —— 上一次
+   * probe 的排版和實作長得不一樣,量到的就是 probe 自己(§DL-4)。
+   */
+  for (const w of document.querySelectorAll('.wrap')) globalThis.KS.paintPlates(w);
 });
 await p.waitForTimeout(200);
 
