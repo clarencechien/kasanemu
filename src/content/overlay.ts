@@ -480,63 +480,17 @@ export const LAYER_CSS = `
 }
 .iblk.vert .itx { writing-mode: vertical-rl; white-space: nowrap; }
 
-/* 字太小疊不下的改走編號錨點(§2.3) */
-.ipin {
-  position: absolute;
-  width: 14px;
-  height: 14px;
-  margin: -7px 0 0 -7px;
-  border-radius: 50%;
-  background: #FF4A14;
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, .92), 0 1px 5px rgba(0, 0, 0, .4);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 8px;
-  font-weight: 500;
-  color: #fff;
-  line-height: 1;
-}
-.ipin.on { transform: scale(1.35); z-index: 2; }
-
 /*
- * 錨點的貼片 —— §2.3 說的「hover pin 出貼片」。
+ * **編號錨點、錨點貼片、放大檢視的側邊清單都退場了(§DW)。**
  *
- * **這一段以前不存在。** setActivePin 只把圓點放大 1.35 倍就收工,
- * 於是一張 15 個錨點的圖等於**一個字都讀不到**:圓點標出了位置,
- * 卻沒有任何地方顯示譯文(使用者原話:「點了標號也沒有 tooltip」)。
+ * 它們解的是「字太小疊不下」,而那個問題在網頁上其實不存在:
+ * 圖是別人排好版的,字小的那些多半也不重要。使用者的話是
+ * 「這樣標註幾乎是退場了 需要標註的 應該是另一個題目 像 sukemu 的題目」——
+ * 拍照翻譯才是錨點的主場,那是另一個產品。
  *
- * 樣式跟著譯文貼片走(同一片米白底、同一支深墨橘),因為它們是**同一件事**
- * 的兩種擺法:字大就地疊,字小移到旁邊。兩種語彙看起來要像一家人。
+ * 現在整張圖只有一種語彙:疊字。放不下的塊留給放大檢視,
+ * 那裡畫布大,同一份譯文放得下更多。
  */
-.ipop {
-  position: absolute;
-  max-width: 260px;
-  padding: 5px 9px 6px;
-  border-radius: 6px;
-  background: rgba(255, 252, 247, .97);
-  color: #8E2605;
-  font-weight: 700;
-  font-size: 13px;
-  line-height: 1.4;
-  text-align: left;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, .3), inset 0 0 0 1px rgba(142, 38, 5, .18);
-  /* 錨點在圖上任何位置,貼片要能往左往上翻 —— 由 JS 決定,這裡只負責畫 */
-  transform: translate(var(--ksnm-px, 0), var(--ksnm-py, 0));
-  z-index: 3;
-  pointer-events: none;
-}
-/* 原文小一號、灰一階:是佐證不是主角(標註色只給譯文) */
-.ipop .src {
-  display: block;
-  margin-top: 3px;
-  font-weight: 500;
-  font-size: 11px;
-  line-height: 1.35;
-  color: rgba(60, 52, 48, .72);
-}
-
-/* 放大檢視:進黑窗本身就是「我要讀字」,所以加註在這裡常駐 */
 .zoom {
   position: fixed;
   inset: 0;
@@ -564,69 +518,6 @@ export const LAYER_CSS = `
 .zoom .zimg img { display: block; width: 100%; height: 100%; object-fit: contain; }
 
 /*
- * 註解清單 —— 錨點在圖上標位置,清單在旁邊給字。
- *
- * 沒有這一塊的話,一張 15 個錨點的截圖點開放大檢視還是 15 個圓點:
- * 使用者的原話是「放大檢視要怎麼放大 點了標號也沒有 tooltip」。
- * 錨點模式本來就是 sukemu 的「C 註解」,而註解的另一半就是清單
- * (handoff §7 那條「用 order:-1 + sticky,不要 scrollIntoView」)。
- *
- * 只在錨點模式出現:整張疊字的圖旁邊掛一份清單是重複的。
- */
-.zoom .zlist {
-  flex: 0 1 320px;
-  align-self: stretch;
-  margin: 30px 30px 30px 18px;
-  overflow-y: auto;
-  display: none;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 13px;
-  line-height: 1.5;
-  scrollbar-width: thin;
-}
-.zoom.haslist .zlist { display: flex; }
-.zoom .zrow {
-  display: grid;
-  grid-template-columns: 22px 1fr;
-  gap: 8px;
-  padding: 7px 9px;
-  border-radius: 6px;
-  background: rgba(255, 252, 247, .93);
-  color: #8E2605;
-  font-weight: 700;
-  text-align: left;
-}
-.zoom .zrow .no {
-  justify-self: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #FF4A14;
-  color: #fff;
-  font-size: 10px;
-  font-weight: 500;
-  line-height: 18px;
-  text-align: center;
-}
-.zoom .zrow .src {
-  display: block;
-  margin-top: 2px;
-  font-weight: 500;
-  font-size: 11px;
-  color: rgba(60, 52, 48, .7);
-}
-/*
- * 選中的那一列**移到最上面並且釘住**,不用 scrollIntoView ——
- * 那會讓整個畫面跳(sukemu handoff §7 的陷阱清單原文)。
- */
-.zoom .zrow.on {
-  order: -1;
-  position: sticky;
-  top: 0;
-  box-shadow: 0 0 0 2px #FF4A14, 0 4px 12px rgba(0, 0, 0, .45);
-}
-/*
  * 按住 Alt 看原圖 —— **掀起來,不是關掉**。
  *
  * 位移 + 縮放 + 模糊的「掀」是 sukemu handoff §7 的照抄項
@@ -636,16 +527,12 @@ export const LAYER_CSS = `
  */
 .zoom .zimg .iblk,
 .zoom .zimg .iveil,
-.zoom .zimg .iplate,
-.zoom .zimg .ipin,
-.zoom .zlist {
+.zoom .zimg .iplate {
   transition: opacity .16s ease, transform .16s ease, filter .16s ease;
 }
 .zoom.lift .zimg .iblk,
 .zoom.lift .zimg .iveil,
-.zoom.lift .zimg .iplate,
-.zoom.lift .zimg .ipin,
-.zoom.lift .zlist {
+.zoom.lift .zimg .iplate {
   opacity: 0;
   transform: translateY(-1.6%) scale(1.03);
   filter: blur(4px);
@@ -654,14 +541,10 @@ export const LAYER_CSS = `
 @media (prefers-reduced-motion: reduce) {
   .zoom .zimg .iblk,
   .zoom .zimg .iveil,
-  .zoom .zimg .iplate,
-  .zoom .zimg .ipin,
-  .zoom .zlist { transition: none; }
+  .zoom .zimg .iplate { transition: none; }
   .zoom.lift .zimg .iblk,
   .zoom.lift .zimg .iveil,
-  .zoom.lift .zimg .iplate,
-  .zoom.lift .zimg .ipin,
-  .zoom.lift .zlist { transform: none; filter: none; }
+  .zoom.lift .zimg .iplate { transform: none; filter: none; }
 }
 .zoom .zhint {
   position: fixed;
@@ -1198,51 +1081,7 @@ export class OverlayLayer {
     return this.imgWrap?.classList.contains('show') === true;
   }
 
-  /**
-   * 錨點的 hover 態:圓點放大**並且出貼片**。
-   *
-   * 命中測試在 content 那邊算(疊層收不到滑鼠事件),所以這裡拿到的是
-   * 已經算好的那一塊 —— 位置也一起帶進來,免得這一層再算一次幾何。
-   */
-  setActivePin(n: number, block?: { x: number; y: number; w: number; h: number; zh: string; text: string }): void {
-    const w = this.imgWrap;
-    if (!w) return;
-    for (const el of w.querySelectorAll('.ipin')) {
-      el.classList.toggle('on', Number((el as HTMLElement).dataset['n']) === n);
-    }
-    w.querySelector('.ipop')?.remove();
-    if (n === 0 || !block) return;
-
-    const pop = document.createElement('div');
-    pop.className = 'ipop';
-    pop.textContent = block.zh;
-    if (block.text && block.text !== block.zh) {
-      const src = document.createElement('span');
-      src.className = 'src';
-      src.textContent = block.text;
-      pop.append(src);
-    }
-    /*
-     * 先放上去量,再決定往哪邊翻。
-     *
-     * 不能用固定的偏移:錨點可能在圖的右下角,貼片會整片跑到圖外面,
-     * 而 `.imgwrap` 是 `overflow: hidden` —— 使用者會看到一片被切掉的白。
-     */
-    const cx = block.x + block.w / 2;
-    const cy = block.y + block.h / 2;
-    pop.style.left = `${cx}px`;
-    pop.style.top = `${cy + 12}px`;
-    w.append(pop);
-    const pr = pop.getBoundingClientRect();
-    const wr = w.getBoundingClientRect();
-    // 右邊放不下就往左翻;下面放不下就翻到錨點上方
-    const flipX = cx + pr.width + 14 > wr.width;
-    const flipY = cy + 12 + pr.height > wr.height;
-    pop.style.setProperty('--ksnm-px', flipX ? `${-pr.width - 12}px` : '12px');
-    pop.style.setProperty('--ksnm-py', flipY ? `${-pr.height - 26}px` : '0px');
-  }
-
-  private makeImgWrap(): HTMLDivElement {
+    private makeImgWrap(): HTMLDivElement {
     const w = document.createElement('div');
     w.className = 'imgwrap';
     this.layer.appendChild(w);
@@ -1251,22 +1090,17 @@ export class OverlayLayer {
   }
 
   /**
-   * 一張圖的所有節點,**分兩趟**:先全部的玻璃,再全部的字與錨點。
+   * 一張圖的所有節點,**分三趟**:玻璃 → 白貼片 → 字。
    *
-   * 順序就是繪製順序(這一層裡沒有人動 z-index),所以兩趟等於
-   * 「玻璃永遠在下、字永遠在上」——不管有幾塊、誰和誰重疊。
+   * 順序就是繪製順序(這一層裡沒有人動 z-index),所以三趟等於
+   * 「字在最上層,只能被字蓋到」——使用者寫下的那條不變式(§DT)。
+   * 貼片那一趟量得到字才畫得出來,所以由 `paintPlates()` 在插進去之後補。
    *
-   * 以前 veil 是 .iblk 的子元素,一塊一片玻璃各自獨立,於是**下一塊的
-   * 灰玻璃會蓋到上一塊的譯文和它的白羽**(使用者原話:「不能是灰底蓋到
-   * 白底」)。字和字互相擋是排版問題,擋不住就是圖太擠;
-   * 但玻璃蓋到字是**層級問題**,一次修掉就不會再有(§DR-1)。
-   *
-   * 順帶一個好處:veil 的 backdrop-filter 取樣的是「畫在它下面的東西」,
-   * 分層之後那裡面**不再包含別塊的譯文**,不會再把隔壁的字糊進自己的玻璃。
+   * 以前這裡還要分「疊字還是錨點」。錨點退場之後(§DW)只剩一種語彙,
+   * 而那正是「一下有疊字 一下註解 不太統一」那個回報的終點。
    */
   private blockNodes(placed: readonly PlacedBlock[]): HTMLElement[] {
-    const veils = placed.filter((p) => p.kind === 'veil').map((p) => this.veilNode(p));
-    return [...veils, ...placed.map((p) => this.blockNode(p))];
+    return [...placed.map((p) => this.veilNode(p)), ...placed.map((p) => this.blockNode(p))];
   }
 
   /** 玻璃:自己的座標,往四周外擴 VEIL_PAD 讓淡出發生在原文之外 */
@@ -1281,15 +1115,6 @@ export class OverlayLayer {
   }
 
   private blockNode(p: PlacedBlock): HTMLElement {
-    if (p.kind === 'pin') {
-      const pin = document.createElement('div');
-      pin.className = 'ipin';
-      pin.dataset['n'] = String(p.n);
-      pin.style.left = `${p.x + p.w / 2}px`;
-      pin.style.top = `${p.y + p.h / 2}px`;
-      pin.textContent = String(p.n);
-      return pin;
-    }
     const box = document.createElement('div');
     box.className = `iblk${p.low ? ' low' : ''}${p.vertical ? ' vert' : ''}`;
     box.style.left = `${p.x}px`;
@@ -1344,37 +1169,9 @@ export class OverlayLayer {
     const z = this.zoomBox;
     const holder = z?.querySelector('.zimg');
     if (!z || !holder) return;
-    for (const old of holder.querySelectorAll('.iblk, .iveil, .iplate, .ipin')) old.remove();
+    for (const old of holder.querySelectorAll('.iblk, .iveil, .iplate')) old.remove();
     for (const n of this.blockNodes(placed)) holder.appendChild(n);
     paintPlates(holder as HTMLElement);
-
-    const list = z.querySelector('.zlist') as HTMLDivElement | null;
-    if (!list) return;
-    const pins = placed.filter((p) => p.kind === 'pin');
-    z.classList.toggle('haslist', pins.length > 0);
-    list.replaceChildren(
-      ...pins.map((p) => {
-        const row = document.createElement('div');
-        row.className = 'zrow';
-        row.dataset['n'] = String(p.n);
-        const no = document.createElement('span');
-        no.className = 'no';
-        no.textContent = String(p.n);
-        const body = document.createElement('span');
-        body.textContent = p.zh;
-        if (p.text && p.text !== p.zh) {
-          const src = document.createElement('span');
-          src.className = 'src';
-          src.textContent = p.text;
-          body.append(src);
-        }
-        row.append(no, body);
-        // 清單在 .zoom 裡,而 .zoom 是整層唯二吃滑鼠事件的東西 —— 這裡收得到
-        row.addEventListener('mouseenter', () => this.setZoomPin(p.n));
-        row.addEventListener('mouseleave', () => this.setZoomPin(0));
-        return row;
-      }),
-    );
   }
 
   /**

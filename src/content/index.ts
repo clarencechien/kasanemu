@@ -161,9 +161,6 @@ const imageAnno = new ImageAnnotator(
     hideImage() {
       layer?.hideImage();
     },
-    setActivePin(n, block) {
-      layer?.setActivePin(n, block);
-    },
     /*
      * closed shadow root 把事件目標重定向成 host,所以「滑鼠在我們的 chip 上」
      * 從外面看就是「目標 === 那個 host」。整層只有 chip 與放大檢視吃滑鼠事件,
@@ -2296,7 +2293,6 @@ async function start(): Promise<void> {
   /*
    * 錨點的命中測試要**連續的座標** —— `mouseover` 只在跨元素邊界時觸發,
    * 而錨點是畫在疊層上的,滑鼠在同一張圖裡移動不會產生新的 mouseover。
-   * 疊層是 pointer-events: none,所以命中只能自己算(imagegeo.pinAt)。
    */
   document.addEventListener('mousemove', onImageMove, { passive: true, capture: true });
   document.addEventListener('click', onImageClick, true);

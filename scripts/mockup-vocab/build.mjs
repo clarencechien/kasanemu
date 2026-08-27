@@ -86,7 +86,6 @@ function geometry(fx) {
         x: rnd(r.x), y: rnd(r.y), w: rnd(r.w), h: rnd(r.h),
         label, text: b.text,
         font: rnd(pl.fs), pw: rnd(pl.w), ph: rnd(pl.h),
-        fits: IB.patchable(fontPx),
       });
     }
     widths[W] = {

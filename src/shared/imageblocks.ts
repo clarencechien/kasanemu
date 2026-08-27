@@ -89,6 +89,33 @@ const fold = (s: string): string => s.replace(/\s+/gu, ' ').trim().toLowerCase()
  *
  * 超過這個長度就是句子而不是標籤了,折行反而正常。
  */
+/**
+ * 譯文貼片可以佔掉畫面的多少 —— **加註的總預算**。
+ *
+ * 這是 §DW 之後整張圖唯一的取捨:依框的大小由大到小加進來,加到撞上
+ * 這個數字為止。它同時回答了兩個以前分開問的問題:「翻多少」和
+ * 「這張圖適不適合疊字」。
+ *
+ * 5.5% 是量出來又用眼睛定的(`docs/plan-images.md` §13-9):
+ * 圖表家族三塊標籤全部進得來(實際只用 2.1–3%),密集截圖進來 2–13 塊,
+ * 剛好是標題與大標。使用者的話是「預算拉到 5 6% 只要標題就好」。
+ */
+export const PLATE_BUDGET = 0.055;
+
+/**
+ * 扣掉「譯完等於沒譯」之後**還有這麼多塊**,這張圖就不是圖,是文件。
+ *
+ * 使用者的原話:「前幾輪有些不需要翻的都扣掉了 還一堆量的話
+ * 這張圖應該算是不要翻才是」——網頁截圖、手機截圖那一類。
+ *
+ * 量到的落差很大:圖表家族扣完是 3 塊,截圖家族是 31 與 47
+ * (`docs/plan-images.md` §13-10)。24 取在中間偏上,而且**它不是死路** ——
+ * 行內不畫,放大檢視照畫(那裡畫得下,而且是使用者自己點開的)。
+ *
+ * 只有四份素材,所以這是**第一版的門檻**,不是定論。
+ */
+export const TEXT_HEAVY_BLOCKS = 24;
+
 export const SINGLE_LINE_CHARS = 10;
 
 /** 加註字級的上限:再大就比原圖的字還醒目,喧賓奪主 */
@@ -215,13 +242,32 @@ export function fontSizeFor(
 }
 
 /**
- * 這一塊要疊字,還是落到編號錨點?
+ * 譯文貼片畫出來會多大 —— **預算算的就是這個**。
  *
- * 唯一的量尺是**這個字在螢幕上有幾個像素高**(`docs/plan-images.md` §2.3)——
- * 所以同一份快取資料在行內縮圖走錨點、在放大檢視走疊字,不必重問模型。
+ * 字級用**渲染時的**那個(有 `MIN_PATCH_FONT_PX` 的地板),不是「塞得進框
+ * 裡的」那個:框小的塊字級不跟著縮,貼片因此長出框外,而那正是密集素材
+ * 「糊成一片」的來源。用塞得進去的字級算,每個顯示尺寸會量出一樣的結果 ——
+ * 那量的是原文的框,不是譯文(`docs/plan-images.md` §13-9)。
+ *
+ * 中文大致全形、拉丁字母大致半形,左右各留 `PLATE_PAD_EM` 的白羽。
+ * 這是估值不是量測:要判斷的是擠不擠,排得出大小順序就夠。
+ * 真正畫出來的尺寸由 `overlay.paintPlates()` 量,那時候才知道字型的實際寬度。
  */
-export function patchable(fontPx: number): boolean {
-  return fontPx >= MIN_PATCH_FONT_PX;
+export const PLATE_PAD_EM = 0.62;
+const WIDE = /[\u3000-\u9fff\uff00-\uffef]/u;
+
+export function plateSize(label: string, fontPx: number): { w: number; h: number; fs: number } {
+  const fs = Math.max(fontPx, MIN_PATCH_FONT_PX);
+  const cols = [...label].reduce((n, c) => n + (WIDE.test(c) ? 1 : 0.55), 0);
+  return { w: cols * fs + fs * PLATE_PAD_EM * 2, h: fs * 1.24, fs };
+}
+
+/** 兩片貼片有沒有壓到 */
+export function platesOverlap(
+  a: { x: number; y: number; w: number; h: number },
+  b: { x: number; y: number; w: number; h: number },
+): boolean {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }
 
 /**

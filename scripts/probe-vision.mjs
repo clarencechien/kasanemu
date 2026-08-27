@@ -44,7 +44,7 @@ const entry = path.join(out, 'entry.ts');
 writeFileSync(
   entry,
   `export { callVision, visionPrompt } from '${path.join(root, 'src/worker/vision.ts')}';\n` +
-    `export { fontSizeFor, patchable } from '${path.join(root, 'src/shared/imageblocks.ts')}';\n`,
+    `export { fontSizeFor, plateSize } from '${path.join(root, 'src/shared/imageblocks.ts')}';\n`,
 );
 const bundle = path.join(out, 'vision.mjs');
 execFileSync(
