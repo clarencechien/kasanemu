@@ -607,9 +607,10 @@ export async function translateImage(
   url: string,
   lane: 'l0' | 'l1',
   tier: Tier,
+  brief = false,
 ): Promise<void> {
   await mutateImageQueue((q) =>
-    addJob(q, { url, pageKey, tabId, lane, tier, at: Date.now(), attempts: 0 }),
+    addJob(q, { url, pageKey, tabId, lane, tier, at: Date.now(), attempts: 0, brief }),
   );
   void drainImages();
 }
@@ -760,7 +761,13 @@ async function runImage(job: ImageJob): Promise<void> {
      * ——所以這裡只擋「真的要送出去」的,見下面 `countImage()` 的位置。
      */
     // URL 快取:命中就不用連線(同一頁重複進出、放大檢視再看一次)
-    const urlKey = await cache.keyFor(`img:url:${job.url}`, settings.targetLang, spec.modelId, 0);
+    /*
+     * **大字版和完整版是兩份不同的答案**,所以鍵要分家。
+     * 混用的話,重試一次拿到大字版之後,別的地方再滑上同一張圖
+     * 就永遠只看得到那幾塊 —— 而且看不出為什麼。
+     */
+    const ask = job.brief ? 'brief:' : '';
+    const urlKey = await cache.keyFor(`img:url:${ask}${job.url}`, settings.targetLang, spec.modelId, 0);
     const cachedByUrl = await cache.get(settings.cacheMode, urlKey);
     if (cachedByUrl !== null) {
       const parsed = readCachedBlocks(cachedByUrl);
@@ -786,7 +793,7 @@ async function runImage(job: ImageJob): Promise<void> {
     const image = fetched.image;
 
     // bytes 快取:同一張圖不同 URL 參數只付一次錢
-    const hashKey = await cache.keyFor(`img:${image.hash}`, settings.targetLang, spec.modelId, 0);
+    const hashKey = await cache.keyFor(`img:${ask}${image.hash}`, settings.targetLang, spec.modelId, 0);
     const cachedByHash = await cache.get(settings.cacheMode, hashKey);
     if (cachedByHash !== null) {
       const parsed = readCachedBlocks(cachedByHash);
@@ -856,6 +863,7 @@ async function runImage(job: ImageJob): Promise<void> {
       image,
       settings.targetLang,
       usePrompt ? gloss.filter((t) => t.to !== undefined).slice(0, 30) : [],
+      job.brief === true,
     );
 
     if (!res.ok) {

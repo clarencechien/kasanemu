@@ -64,6 +64,13 @@ export type ToWorker =
       lane: 'l0' | 'l1';
       /** 這個網域選的檔位。`lane: 'l0'` 時會被忽略 —— 免費那條路一律走 free */
       tier: Tier;
+      /**
+       * 只問最顯眼的幾塊。
+       *
+       * 逾時的出路(`docs/deviations.md` §DS-2):整頁截圖的區塊多到
+       * 輸出跑不完 100 秒,同一份請求再送一次只會再逾時一次。
+       */
+      brief?: boolean;
     };
 
 /** worker → content,以及 popup → content */

@@ -43,6 +43,13 @@ export interface ImageJob {
    * 規則把它殺了(`docs/deviations.md` §DJ)。
    */
   startedAt?: number;
+  /**
+   * 只問最顯眼的幾塊(`docs/deviations.md` §DS-2)。
+   *
+   * 使用者點了逾時的重試才會是 true。它**進 jobKey 之外的欄位**——
+   * 同一張圖的完整版與大字版是同一筆工作的兩種問法,不是兩筆工作。
+   */
+  brief?: boolean;
 }
 
 export const LANE_CONCURRENCY: Record<'l0' | 'l1', number> = { l0: 1, l1: 2 };

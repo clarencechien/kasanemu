@@ -49,8 +49,13 @@ export interface ImageEntry {
 }
 
 export interface ImageHost {
-  /** 送出請求。lane 決定用哪個模型 */
-  request(url: string, lane: 'l0' | 'l1'): void;
+  /**
+   * 送出請求。lane 決定用哪個模型;`brief` 只問最顯眼的幾塊。
+   *
+   * brief 是**逾時的出路**:整頁截圖的輸出長到跑不完 100 秒,
+   * 同一份請求再送一次只會再逾時(§DS-2)。
+   */
+  request(url: string, lane: 'l0' | 'l1', brief?: boolean): void;
   showImage(
     rect: { left: number; top: number; width: number; height: number },
     placed: readonly PlacedBlock[],
@@ -185,9 +190,20 @@ export function geometryOf(img: HTMLImageElement): {
 export class ImageAnnotator {
   /** 已經翻過的圖,以 `currentSrc` 為鍵 —— 同 src 的新元素直接命中(§2.4) */
   private byUrl = new Map<string, ImageEntry>();
-  /** 送出去還沒回來的,避免 hover 抖動重送 */
-  private inFlight = new Set<string>();
-  private failed = new Map<string, string>();
+  /**
+   * 送出去還沒回來的:url → 走的是哪一條道。
+   *
+   * **記到 lane 而不只是「有沒有」**,因為兩者要問的問題不同:
+   * hover 防抖問「有沒有」,而 Alt+click 問的是「有沒有**已經在升級**」。
+   * 只記「有沒有」的那一版,免費檔還在跑的時候按升級會被整個吞掉 ——
+   * 回傳 true(於是連結也不會走),卻什麼都沒送出去。
+   * worker 那邊本來就允許 l1 蓋過同一張圖的 l0(imagequeue 的 addJob)。
+   */
+  private inFlight = new Map<string, 'l0' | 'l1'>();
+  /** url → 這張圖為什麼失敗、能不能點一下再來一次 */
+  private failed = new Map<string, Fail & { lane: 'l0' | 'l1' }>();
+  /** 使用者親手升級過的圖。失敗之後重試要留在 l1,不要偷偷退回免費檔 */
+  private upgraded = new Set<string>();
 
   private hoverTimer = 0;
   /** 延後收起來的計時器 —— 讓滑鼠有時間走到 chip 上 */
@@ -223,14 +239,21 @@ export class ImageAnnotator {
     this.watchdogs.clear();
     this.cancelLeave();
     this.failed.clear();
+    this.upgraded.clear();
     this.leave();
   }
 
   /** 送出一個請求:登記 in-flight 並上看門狗 */
-  private send(img: HTMLImageElement, url: string, lane: 'l0' | 'l1', busy: string): void {
-    this.inFlight.add(url);
+  private send(
+    img: HTMLImageElement,
+    url: string,
+    lane: 'l0' | 'l1',
+    busy: string,
+    brief = false,
+  ): void {
+    this.inFlight.set(url, lane);
     this.host.cue(img, busy, 'busy');
-    this.host.request(url, lane);
+    this.host.request(url, lane, brief);
     const prev = this.watchdogs.get(url);
     if (prev) clearTimeout(prev);
     this.watchdogs.set(
@@ -255,11 +278,10 @@ export class ImageAnnotator {
   private giveUp(url: string): void {
     this.watchdogs.delete(url);
     if (!this.inFlight.delete(url)) return;
-    this.failed.set(url, '沒有回應 · 滑開再滑回來重試');
+    const fail = { text: '沒有回應 · 點一下重試', retry: true, lane: this.laneOf(url) };
+    this.failed.set(url, fail);
     diag('warn', 'image-watchdog', { waitedMs: IMAGE_WATCHDOG_MS });
-    if (this.current && this.urlOf(this.current) === url) {
-      this.host.cue(this.current, '沒有回應 · 滑開再滑回來重試', 'warn');
-    }
+    if (this.current && this.urlOf(this.current) === url) this.showFail(this.current, fail);
   }
 
   private urlOf(img: HTMLImageElement): string {
@@ -320,7 +342,7 @@ export class ImageAnnotator {
     }
     const err = this.failed.get(url);
     if (err !== undefined) {
-      this.host.cue(img, err, 'warn');
+      this.showFail(img, err);
       return;
     }
     if (this.inFlight.has(url)) {
@@ -409,10 +431,47 @@ export class ImageAnnotator {
     const url = this.urlOf(img);
     const known = this.byUrl.get(url);
     if (known?.tier === 'l1') return false;
-    if (this.inFlight.has(url)) return true;
+    if (this.inFlight.get(url) === 'l1') return true;
     this.failed.delete(url);
+    this.upgraded.add(url);
     this.send(img, url, 'l1', '升級中…');
     diag('info', 'image-upgrade', {});
+    return true;
+  }
+
+  /**
+   * 失敗的 chip:文案和「能不能按」來自**同一格**(§DS-1)。
+   *
+   * 分開寫的那一版每一句都寫著「再點一次重試」而一個 action 都沒帶,
+   * 於是文案在說謊而沒有任何測試會發現 —— chip 畫得好好的,只是點不下去。
+   */
+  private showFail(img: HTMLImageElement, f: Fail): void {
+    this.host.cue(img, f.text, 'warn', f.retry ? 'retry' : undefined);
+  }
+
+  /** 這張圖上次是走哪一條道 —— 升級過就別退回免費檔重試 */
+  private laneOf(url: string): 'l0' | 'l1' {
+    return this.byUrl.get(url)?.tier === 'l1' || this.upgraded.has(url) ? 'l1' : 'l0';
+  }
+
+  /**
+   * 點失敗的 chip:**真的再送一次**。
+   *
+   * 以前這條路完全不存在。文案寫著「再點一次重試」、「滑開再滑回來重試」,
+   * 而 `arm()` 看到 `failed` 只會把同一句話再印一次 —— 從任何入口都回不去。
+   * 使用者的原話:「怎麼點都沒有反應」。
+   *
+   * 逾時的重試會帶 `brief`:同一份請求再送一次只會再逾時一次(§DS-2)。
+   */
+  retry(): boolean {
+    const img = this.current;
+    if (!img) return false;
+    const url = this.urlOf(img);
+    const f = this.failed.get(url);
+    if (!f || !f.retry || this.inFlight.has(url)) return false;
+    this.failed.delete(url);
+    this.send(img, url, f.lane, f.brief ? '只翻大字…' : '重試中…', f.brief);
+    diag('info', 'image-retry', { lane: f.lane, brief: f.brief === true });
     return true;
   }
 
@@ -439,14 +498,13 @@ export class ImageAnnotator {
   onError(url: string, reason: string): void {
     this.inFlight.delete(url);
     this.clearWatchdog(url);
-    const text =
+    const known =
       FRIENDLY[reason] ??
       FRIENDLY_PREFIX.find(([p]) => reason.startsWith(p))?.[1] ??
-      '辨識失敗 · 再點一次重試';
-    this.failed.set(url, text);
-    if (this.current && this.urlOf(this.current) === url) {
-      this.host.cue(this.current, text, 'warn');
-    }
+      { text: '辨識失敗 · 點一下重試', retry: true };
+    const fail = { ...known, lane: this.laneOf(url) };
+    this.failed.set(url, fail);
+    if (this.current && this.urlOf(this.current) === url) this.showFail(this.current, fail);
   }
 
   private render(img: HTMLImageElement, entry: ImageEntry): void {
@@ -599,27 +657,43 @@ export class ImageAnnotator {
 /**
  * 失敗的原因要說得出來 —— 「這張圖太大」和「辨識失敗」對使用者是兩件事,
  * 而第二種值得再點一次,第一種不值得。
+ *
+ * **文案和「能不能點」寫在同一格(§DS-1)。** 上一版只有文案,
+ * 於是每一句都寫著「再點一次重試」而 cue 一個 action 都沒帶 ——
+ * chip 拿不到 act 類別、onclick 是 null、pointer-events 沒開。
+ * 使用者的原話是「所以是要點哪裡? 怎麼點都沒有反應」。
+ * 兩個欄位綁在一起,它們就不會再各自漂走。
  */
-const FRIENDLY: Record<string, string> = {
-  'too-large': '圖片太大,不翻',
-  'decode-failed': '這個格式讀不了',
-  'unsupported-scheme': '這張圖抓不到',
-  'page-cap': '本頁 token 上限已滿',
-  'daily-cap': '今日預算已用完',
-  'no-key': '還沒設定 API key',
-  'page-image-cap': '本頁圖片翻譯已達上限',
+interface Fail {
+  text: string;
+  /** 點一下值不值得再送一次 —— 額度用完、格式讀不了那些點了也一樣 */
+  retry: boolean;
+  /** 重試時**只問大字**:逾時多半是輸出太長,同一份請求再送一次還是會逾時 */
+  brief?: boolean;
+}
+
+const FRIENDLY: Record<string, Fail> = {
+  'too-large': { text: '圖片太大,不翻', retry: false },
+  'decode-failed': { text: '這個格式讀不了', retry: false },
+  'unsupported-scheme': { text: '這張圖抓不到', retry: false },
+  'page-cap': { text: '本頁 token 上限已滿', retry: false },
+  'daily-cap': { text: '今日預算已用完', retry: false },
+  'no-key': { text: '還沒設定 API key', retry: false },
+  'page-image-cap': { text: '本頁圖片翻譯已達上限', retry: false },
   // worker 把排太久的工作丟掉時送的:使用者可能早就捲過去了
-  stale: '等太久已取消 · 滑開再滑回來重試',
-  empty: '圖片是空的',
-  'fetch-timeout': '這張圖抓不下來 · 再點一次重試',
+  stale: { text: '等太久已取消 · 點一下重試', retry: true },
+  empty: { text: '圖片是空的', retry: false },
+  'fetch-timeout': { text: '這張圖抓不下來 · 點一下重試', retry: true },
   // 重派過還是沒回來 —— 別再叫使用者「滑開再滑回來」,那條路已經走過了
-  'gave-up': '試過兩次都沒回應 · 點一下再試',
+  'gave-up': { text: '試過兩次都沒回應 · 點一下只翻大字', retry: true, brief: true },
 };
 
-/**
- * 模型逾時的訊息帶著毫秒數(`timeout 100000ms`),不是固定字串,
- * 所以查不到表。這種前綴比對放在查表**之後**當退路。
- */
-const FRIENDLY_PREFIX: [string, string][] = [
-  ['timeout ', '模型沒有在時限內回應 · 再點一次重試'],
+const FRIENDLY_PREFIX: [string, Fail][] = [
+  /*
+   * 逾時**不是隨機的**,是輸出太長(§DS-2):實測 ~2.3 秒一塊,
+   * 100 秒的時限等於 43 塊。整頁截圖輕鬆超過,所以同一份請求再送一次
+   * 只會再等 100 秒 —— 使用者已經證實了(Alt+click 升級之後照樣逾時)。
+   * 重試因此要**問得比較少**:只要最顯眼的那幾塊。
+   */
+  ['timeout ', { text: '字太多沒能在時限內翻完 · 點一下只翻大字', retry: true, brief: true }],
 ];

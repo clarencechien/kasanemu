@@ -151,9 +151,9 @@ node scripts/audit-coverage.mjs <url>     # 單頁詳細
 
 ```bash
 npm run typecheck
-npm test          # 217 個測試(node:test + jsdom)
+npm test          # 329 個測試(node:test + jsdom)
 npm run build     # 也會回報 dist 體積對 §10.2 的 1.5 MB 預算
-npm run check     # typecheck + test + build + 三支 probe ← 提交前跑這個
+npm run check     # typecheck + 文件稽核 + test + build + 五支 probe ← 提交前跑這個
 npm run zip       # dist/ → release/kasanemu-<version>.zip(自己寫的 zip,無外部依賴)
 npm run watch
 ```
@@ -165,7 +165,11 @@ jsdom 沒有 layout,所以**凡是牽涉幾何的規則都用真瀏覽器驗**(p
 npm run probe:detect     # 選取規則(scripts/fixtures/detect.html)
 npm run probe:colors     # 背景與前景色解析(lab / oklch / 半透明疊色)
 npm run probe:snapshot   # 匯出的 HTML 快照能不能疊、能不能看原文
-npm run probe:image      # 圖片加註的幾何:object-fit 換算、字級分流、文件座標
+npm run probe:image      # 圖片加註的幾何:object-fit 換算、字級分流、三層順序
+npm run probe:veil       # 毛玻璃的可讀性:原文殘留 < 4:1、譯文 >= 4.5:1
+npm run render:veil out.png [--sweep]   # 玻璃的目視稿與配方掃描(眼睛選的那一格)
+npm run audit:docs       # 文件和 repo 對不對得起來(§ 編號、npm run、檔案路徑)
+npm run audit:tree <url> # 爬一個站的子路徑,對每一頁跑偵測稽核
 GEMINI_API_KEY=... npm run probe:gemma       # 模型行為:thinking、schema、echo 對位
 GEMINI_API_KEY=... node scripts/probe-glossary.mjs   # 詞表遵循率 + 速度品質對打
 gemini_key=... node scripts/probe-vision.mjs 圖.png  # 圖片加註:打包 production 的 vision.ts
@@ -181,7 +185,8 @@ src/
   manifest.json
   shared/   types · models(三檔與牌價)· settings · hash · log · diag · report · messages
             glossary(詞表解析:純函式,content 與 worker 共用同一份判斷)
-            imageblocks(圖片區塊:座標防呆 · 字級 · 信心。同樣兩邊共用)
+            imageblocks(圖片區塊:座標防呆 · 字級 · 信心 · 值不值得蓋。兩邊共用)
+            imagetiming(圖片那條路的所有時限 —— 它們彼此有順序,所以住在一起)
   content/  detect(選取規則)· cover/geometry/measure/bleed(幾何)· styleprobe(顏色)
             imagegeo(圖片座標:object-fit / position 換算 · 字級分流,純函式)
             imageanno(圖片加註的生命週期:hover → L0、Alt+click → L1)
@@ -189,18 +194,22 @@ src/
             l0(Translator API)· queue(L0 併發池)· mask(佔位符)· lang · motion
             upgrade(升級管線的純判斷)· unit · device · fonts · index(協調)
   worker/   gemini · protocol(batch 協定與 id 紀律)· scheduler(IO 與流程)
-            vision(視覺請求)· imagefetch(bytes/縮圖/指紋)· imagequeue(兩條道)
+            vision(視覺請求)· visionprompt(問法:規則 / 詞表 / 只翻大字)
+            imagefetch(bytes/縮圖/指紋 · 認檔案本身不認 Content-Type)· imagequeue
             queuelogic(切批/去重/退避的純函式)· tokenBucket · budget · cache · index
   options/  設定頁(金鑰、三檔、視覺、捲動策略、快取、保險絲、匯入匯出)
   popup/    啟用、管線、檔位、L0 語言包、本頁階層統計、花費、匯出 log / 頁面 / 快取
-scripts/    audit-sites · audit-coverage · probe-{detect,colors,snapshot,gemma,image,vision}
-            fetch-fonts(subset 打包)· zip · sites.txt · fixtures/
-tests/      271 個 node:test;fixtures/vision/ 是真實 API 回應(地面實況)
+scripts/    audit-{sites,tree,coverage,docs}(廣度 / 深度 / 覆蓋 / 文件對齊)
+            probe-{detect,colors,snapshot,image,veil,gemma,vision,glossary}
+            render-veil(玻璃的目視稿:量測選不出來的那一格)· measure-vision
+            fetch-fonts(subset 打包)· zip · sites.txt · fixtures/ · bench-vocab/
+tests/      329 個 node:test;fixtures/vision/ 是真實 API 回應(地面實況)
 docs/       lessons(通則)· deviations(逐件記錄)· acceptance(人工驗收)
             fonts(subset 實測)· plan-annotation(加翻層規格)
             plan-glossary(詞表規格 + 模型實測)· plan-images(圖片翻譯規格)
             manual.html(使用說明)
 feature.md  漸進式翻譯的規格
+TODO.md     還沒決定、或決定了還沒做的事
 ```
 
 ## 發版
@@ -240,8 +249,13 @@ PRD Phase 1 §2–§11 全部完成,§12 驗收的自動化只涵蓋選取與協
 | L1 佇列看門狗 + 兩側對帳 | 「排進去了但沒有變 L1」查了三輪,決定讓那個狀態不存在 |
 | 捲動策略 auto / always / strict | Gmail 要藏、長文不要閃,同一個開關兩種答案 |
 | 37 站批次稽核 | 一次修一張截圖太慢,而同一頁常同時卡著五種原因 |
+| 爬單一站的子路徑 | 兩個偵測 bug 是同一個站的不同頁回報的,中間隔了一輪 |
+| 圖片加註的三層 | 「字只能被字蓋到」是不變式,一次修完比修一個零件划算 |
+| 文件對齊稽核 | 註解和文件互相指名道姓,而那些指名沒有任何東西在維護 |
 
-**Phase 2 圖片翻譯不做** —— 進場條件是文字階段連續用兩週。
+**Phase 2 圖片翻譯做了**(v0.2.0)—— 原本的進場條件是文字階段連續用兩週,
+實際上是文字穩下來之後直接接著做的。規格 `docs/plan-images.md`,
+逐件的出入從 `docs/deviations.md` §DE 起。
 
 ## 已知的失敗情形(接受)
 

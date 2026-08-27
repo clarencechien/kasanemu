@@ -2,7 +2,8 @@
 
 > Kasanemu · Feature 規格 v1.0 · 2026-08-24
 >
-> **狀態:待啟動。** 本 feature 在 `kasanemu-phase1-prd.md` 的 Phase 1 驗收通過、且已實際自用兩週之後才實作。
+> **狀態:已實作**,而且已經是預設管線(`defaultPipeline: 'progressive'`)。
+> 原本寫的進場條件是「Phase 1 驗收通過、且已實際自用兩週之後才實作」。
 >
 > **前置文件:** `kasanemu-phase1-prd.md`(基準規格)、`docs/gemini-api-lessons.md`(模型與保險絲教訓)。本文件只描述**相對於 Phase 1 的增量**,未提及的行為一律沿用 Phase 1。
 
