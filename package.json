@@ -23,7 +23,8 @@
     "render:veil": "node scripts/render-veil.mjs",
     "audit:sites": "node scripts/audit-sites.mjs",
     "audit:tree": "node scripts/audit-tree.mjs",
-    "audit:docs": "node scripts/audit-docs.mjs"
+    "audit:docs": "node scripts/audit-docs.mjs",
+    "measure:vocab": "node --experimental-strip-types scripts/measure-vocab.mjs"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.268",
