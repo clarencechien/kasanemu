@@ -171,9 +171,7 @@ npm run probe:occlusion  # 疊層該不該藏:body 傳播 overflow(不該藏)vs 
 npm run audit:occlusion <url>  # 這一頁的疊層被誰藏了、差多少
 npm run render:veil out.png [--sweep]   # 玻璃的目視稿與配方掃描(眼睛選的那一格)
 npm run audit:docs       # 文件和 repo 對不對得起來(§ 編號、npm run、檔案路徑)
-npm run measure:vocab    # 加註語彙的量尺:譯文佔版 / 擠壓 / 遮蔽,四份真實回應 × 五個寬度
-npm run mockup:vocab out.png [--width 620]   # 同一張圖:全錨點 vs 預算內的疊字,並排
-node --experimental-strip-types scripts/mockup-vocab/build.mjs  # 同一件事的可互動版(真圖 + 拉桿)
+npm run measure:vocab    # 出貨中的加註規則在四份真實回應 × 五個寬度上放得下幾塊
 npm run audit:tree <url> # 爬一個站的子路徑,對每一頁跑偵測稽核
 GEMINI_API_KEY=... npm run probe:gemma       # 模型行為:thinking、schema、echo 對位
 GEMINI_API_KEY=... node scripts/probe-glossary.mjs   # 詞表遵循率 + 速度品質對打
@@ -209,7 +207,6 @@ scripts/    audit-{sites,tree,coverage,docs}(廣度 / 深度 / 覆蓋 / 文件�
             probe-{detect,colors,snapshot,image,veil,gemma,vision,glossary}
             render-veil(玻璃的目視稿:量測選不出來的那一格)· measure-vision
             fetch-fonts(subset 打包)· zip · sites.txt · fixtures/
-            bench-vocab/(六種語彙的比較台)· mockup-vocab/(規則對照,可互動)
 tests/      334 個 node:test;fixtures/vision/ 是真實 API 回應(地面實況)
 docs/       lessons(通則)· deviations(逐件記錄)· acceptance(人工驗收)
             fonts(subset 實測)· plan-annotation(加翻層規格)

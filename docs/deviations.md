@@ -4661,7 +4661,9 @@ export function overflowGoesToViewport(el: Element): boolean {
 (兩條要一起,少了前半是什麼都不畫,少了後半是永遠讀不到);
 圖表兩個尺寸候選總數要守恆、放大之後畫得只能更多。
 
-比較用的兩支腳本(`mockup-vocab.mjs`、`scripts/mockup-vocab/`)**退役了** ——
-決定做完之後留著就是留著一份會分岔的舊規則(lessons §1)。
-可互動的那一份留在 artifact 當紀錄。`measure-vocab.mjs` 改成量**出貨中的規則**,
-下次要動那兩個常數時有東西可以看。
+比較用的三支(`mockup-vocab.mjs`、`scripts/mockup-vocab/`、`scripts/bench-vocab/`)
+**全部退役了** —— 它們的工作是幫人做決定,而決定做完了;留著就是留著三份
+會慢慢分岔的舊規則與舊樣式(lessons §1)。可互動的那一份留在 artifact 當紀錄。
+
+`measure-vocab.mjs` 留下來但換了工作:改成量**出貨中的規則**,
+下次要動 `PLATE_BUDGET` 或 `TEXT_HEAVY_BLOCKS` 時有東西可以看。
