@@ -8,3 +8,4 @@ dist/
 assets/fonts/*.woff2
 assets/fonts/.src/
 release/
+mockup-vocab.html
