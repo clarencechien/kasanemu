@@ -3991,3 +3991,79 @@ Wired 和 BBC 剛好都有,所以當時修好了 —— 但**靜態網站產生�
 `<aside>` 與 `<footer>` 裝著真正的內容是**極常見**的寫法 ——
 The Verge、AP News、Stratechery 全部因此改善。使用者回報的是一個
 GitHub Pages 小站的頁尾,而修好的是網路上一整類的版型。
+
+## DO. 我們把伺服器的 `Content-Type` 原樣轉給了模型
+
+使用者:「圖形功能好像出錯了 不能用了」。log 上三次:
+
+```
+00:58:09.700 ! [worker] image-failed {"reason":"{\n  \"error\": {\n    \"code\": 400,
+                                       \n    \"message\": \"Unsupported …(137)"}
+```
+
+### DO-1. 病根:格式以宣告為準,而宣告會騙人
+
+```ts
+const mime = (res.headers.get('content-type') ?? 'image/png').split(';')[0]!.trim();
+const scaled = await downscale(new Blob([buf], { type: mime }), mime);
+```
+
+而 `downscale` 有一條捷徑:
+
+```ts
+if (edge <= MAX_EDGE) {
+  return { blob, mime, w: w0, h: h0 };   // ← 原樣送,連 mime 一起
+}
+```
+
+實測那個站(`node scripts/…`,15 張顯示 ≥200×100 的圖):
+
+```
+1216x684  application/octet-stream  gemini_3-5_transcribe.width-1600.format-webp.webp
+1000x562  application/octet-stream  gemini-3-5-transcribe__testimoni.width-1000.format-webp.webp
+283x283   application/octet-stream  thumbnail_BfIj9lP...format-webp.webp
+```
+
+**Google Cloud Storage 把每一張 WebP 都標成 `application/octet-stream`。**
+WebP 模型是收的 —— 掛掉的原因不是格式,是那個字串。
+
+瀏覽器不在乎(`createImageBitmap` 自己嗅 bytes,所以圖片正常顯示、
+`image-done` 也真的成功過一次),而我們把伺服器說的話原樣轉給了模型。
+
+修法兩層:
+
+1. **`sniffMime()` 認檔頭**,不看 header。PNG / JPEG / WebP / GIF / BMP
+   各有魔數;AVIF 與 HEIC 共用 `ftyp` 外殼,靠 brand 分 ——
+   這兩個要分得開,因為**模型收 HEIC 不收 AVIF**。
+2. **白名單**:認出來而且在白名單上才走捷徑,其餘一律重編
+   (bitmap 已經解出來了,重編只是多一次 canvas)。這順帶也修好了
+   AVIF —— 瀏覽器解得開、模型不收的那一類。
+
+### DO-2. 使用者看不到原因,因為 JSON 外殼把它吃掉了
+
+`once()` 對錯誤回應做 `body.slice(0, 400)`,而回應長這樣:
+
+```
+{\n  "error": {\n    "code": 400,\n    "message": "Unsupported MIME type: …
+```
+
+診斷再截一次之後,log 上是
+`{"error":{"code":400,"message":"Unsupported …(137)`。
+
+**真正有用的那半句被外殼吃掉了。** 一個 400 正是最需要看清楚訊息的時候
+—— 它在說「你送的東西我不收」,而「哪裡不收」就在被截掉的地方。
+使用者只能說「圖形功能好像出錯了」,因為畫面上和 log 上都沒有別的話可說。
+
+改成先 `JSON.parse` 挖 `error.message`,挖不到才原樣截。同一則錯誤現在是
+`Unsupported MIME type: application/octet-stream` —— 一行就指到病根。
+
+### DO-3. 驗的方式:素材從出事的那個站抓
+
+- 單元測試餵**真的檔頭**(`tests/fixtures/mime/real-headers.json`,
+  連 `application/octet-stream` 這個 header 一起記著)。手寫的檔頭只能驗
+  「我以為的格式」,驗不到「伺服器實際會說什麼」。
+- probe 走**整條路**:抓那張圖 → `downscale` → 檢查出口的 `mime`
+  在不在白名單上。中間那條「夠小就原樣送」的捷徑正是出事的地方,
+  只驗 `sniffMime` 驗不到它。
+- 拿掉修正重跑,probe 印出
+  `sent: "application/octet-stream"` 並且不合格 —— 確認它抓得到。

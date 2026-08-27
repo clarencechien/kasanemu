@@ -35,7 +35,8 @@ writeFileSync(
   `export * from '${path.join(root, 'src/content/imagegeo.ts')}';\n` +
     `export { hasNativeZoom, geometryOf, ImageAnnotator } from '${path.join(root, 'src/content/imageanno.ts')}';\n` +
     `export { sanitizeBlocks } from '${path.join(root, 'src/shared/imageblocks.ts')}';\n` +
-    `export { OverlayLayer, HOST_ID } from '${path.join(root, 'src/content/overlay.ts')}';\n`,
+    `export { OverlayLayer, HOST_ID } from '${path.join(root, 'src/content/overlay.ts')}';\n` +
+    `export { downscale, sniffMime } from '${path.join(root, 'src/worker/imagefetch.ts')}';\n`,
 );
 const bundle = path.join(out, 'geo.js');
 execFileSync(
@@ -464,6 +465,43 @@ console.log('chip 可達性:', JSON.stringify(journey));
 if (!journey.hitsChip) problems.push('可按的 chip 打不到 —— pointer-events 沒開');
 if (journey.looksLikeImage) problems.push('chip 上的事件目標被當成圖片了,判斷會失準');
 if (journey.opened !== 1) problems.push('按下 chip 沒有觸發 action');
+
+/*
+ * **送出去的 mime 一定是模型收得下的。**
+ *
+ * `sniffMime` 的單元測試驗的是「這段 bytes 是什麼格式」;這裡驗的是
+ * 整條路的出口 —— `downscale` 之後那個 `mime` 欄位。中間有一條
+ * 「夠小就原樣送」的捷徑,而它正是 §DO 出事的地方:原樣送的時候
+ * 連 `Content-Type` 一起原樣送,而伺服器的宣告會騙人。
+ *
+ * bytes 是從出事的那個站抓下來的(`tests/fixtures/mime/real-headers.json`
+ * 記著它的 header 是 application/octet-stream)。
+ */
+const GCS_WEBP = 'https://storage.googleapis.com/gweb-uniblog-publish-prod/images/gemini_3-5_transcribe.width-1600.format-webp.webp';
+let mimeOut = null;
+try {
+  const r = await fetch(GCS_WEBP, { signal: AbortSignal.timeout(20_000) });
+  const declared = r.headers.get('content-type') ?? '';
+  const b64 = Buffer.from(await r.arrayBuffer()).toString('base64');
+  mimeOut = await p.evaluate(async ([data, declaredType]) => {
+    const bin = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
+    // 完全比照 fetchImage:blob 帶著**伺服器宣告的**型別
+    const out = await IG.downscale(new Blob([bin], { type: declaredType }), declaredType);
+    return { declared: declaredType, sent: out?.mime ?? null, w: out?.w ?? 0, h: out?.h ?? 0 };
+  }, [b64, declared]);
+  console.log('送出去的 mime:', JSON.stringify(mimeOut));
+} catch (e) {
+  console.log('略過 mime 檢查(抓不到素材):', String(e).slice(0, 60));
+}
+if (mimeOut) {
+  const OK_MIMES = ['image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif'];
+  if (mimeOut.declared !== 'application/octet-stream') {
+    console.log(`  (提醒:那個站的 Content-Type 變成 ${mimeOut.declared} 了,這條驗不到原本的坑)`);
+  }
+  if (!OK_MIMES.includes(mimeOut.sent)) {
+    problems.push(`送給模型的 mime 是「${mimeOut.sent}」—— 模型只收 ${OK_MIMES.join(' / ')}`);
+  }
+}
 
 await browser.close();
 if (problems.length > 0) {

@@ -1,6 +1,6 @@
 import type { TierSpec } from '../shared/models';
-import { warn, dbg } from '../shared/log';
-import { RESPONSE_SCHEMA, systemPrompt, userPayload } from './protocol';
+import { warn, dbg } from '../shared/log.ts';
+import { RESPONSE_SCHEMA, systemPrompt, userPayload } from './protocol.ts';
 import type { UnitRequest } from '../shared/types';
 import type { Term } from '../shared/glossary';
 
@@ -175,6 +175,32 @@ export async function callBatch(
   return callWithLadder(apiKey, spec, (v) => buildBody(v, spec, units, targetLang, glossary));
 }
 
+/**
+ * 從 API 的錯誤回應裡挖出**那句話**,不要整包 JSON。
+ *
+ * 原本是 `body.slice(0, 400)`,而回應長這樣:
+ *
+ *   {\n  "error": {\n    "code": 400,\n    "message": "Unsupported MIME type: …
+ *
+ * 診斷再截一次之後,使用者看到的是 `{"error":{"code":400,"message":"Unsupported …`
+ * —— **真正有用的那半個字被 JSON 外殼吃掉了**。一個 400 正是最需要看清楚
+ * 訊息的時候:它在說「你送的東西我不收」,而「哪裡不收」就在被截掉的地方
+ * (`docs/deviations.md` §DO-2)。
+ */
+function apiMessage(body: string): string {
+  try {
+    const j = JSON.parse(body) as { error?: { message?: unknown } };
+    const m = j.error?.message;
+    if (typeof m === 'string' && m.length > 0) return m.slice(0, 400);
+  } catch {
+    // 不是 JSON(HTML 錯誤頁、代理的純文字)—— 原樣截
+  }
+  return body.slice(0, 400);
+}
+
+/** 只給測試 —— `apiMessage` 是內部細節,但它的行為是使用者看得到的那句話 */
+export const apiMessageForTest = (body: string): string => apiMessage(body);
+
 async function once(
   apiKey: string,
   spec: TierSpec,
@@ -208,7 +234,7 @@ async function once(
     return {
       ok: false,
       status: res.status,
-      message: body.slice(0, 400),
+      message: apiMessage(body),
       retriable: res.status === 429 || res.status >= 500,
     };
   }
