@@ -598,6 +598,14 @@ export class ImageAnnotator {
     if (!size) return false;
     this.zoomUrl = url;
     this.paintZoom(size, entry, natural, url);
+    /*
+     * **chip 的工作到這裡結束**(§EC)。
+     *
+     * 它是 fixed 定位、又只認滑鼠的 leave —— 黑窗開了它就浮在最上面,
+     * 像個忘了收的路牌,要等滑鼠動一下或視窗失焦才被別的路收走。
+     * 使用者的原話:「點了 3 秒內要消失」—— 不用等 3 秒,點開就收。
+     */
+    this.host.cue(img, null, 'idle');
     diag('info', 'image-zoom', { blocks: entry.blocks.length });
     return true;
   }
@@ -633,8 +641,18 @@ export class ImageAnnotator {
 
   closeZoom(): void {
     if (!this.zoomUrl) return;
+    const url = this.zoomUrl;
     this.zoomUrl = null;
     this.host.closeZoom();
+    /*
+     * 關窗後把 chip 畫回來:滑鼠多半還停在原圖上,而 `move()` 看到
+     * `img === this.current` 不會重畫(§DL 的同一個坑)—— 開窗時收掉的
+     * chip 沒有這一條就永遠回不來,要滑走再滑回來才有。
+     */
+    if (this.current && this.urlOf(this.current) === url) {
+      const entry = this.byUrl.get(url);
+      if (entry) this.render(this.current, entry);
+    }
   }
 
   zoomOpen(): boolean {

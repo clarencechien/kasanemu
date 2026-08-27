@@ -4987,3 +4987,31 @@ Alt 的判斷在 zoom 守門**前面**;黑窗開著時回 `hide-keep-zoom` —�
 黑窗提示原本寫「Esc 或點黑處關閉 · 按住 Alt 看原圖 · 滑過編號看對應位置」
 —— 編號在 §DW 就退場了,句子一直沒跟上。
 改成「Esc 或點黑處關閉 · 按住滑鼠或 Alt 看原圖」。
+
+## EC. 黑窗開著,「點這裡放大讀」的路牌還浮在最上面
+
+> 點這裡放大的tip 應該是點了 3秒內要消失 現在是 黑底視窗會看到他
+> 大概有好幾秒 要滑鼠 mouse 或是各種lost focus 才會消失
+
+原因很單純:chip 是 fixed 定位,收它的路只有三條 —— 滑鼠 leave 過了
+寬限期、視窗 blur、或有人明確叫 `cue(null)`。**點開黑窗不在其中任何
+一條上**:`openZoom()` 畫了黑窗就結束了,chip 留在原座標,疊在黑窗
+上面,直到滑鼠動一下觸發 leave 才被收走。
+
+修法一組兩半,缺一不可:
+
+- **開窗收 chip**(`openZoom` 裡 `cue(null)`):不用等 3 秒,點開就收。
+- **關窗畫回來**(`closeZoom` 裡重跑 `render`):滑鼠多半還停在原圖上,
+  而 `move()` 看到 `img === this.current` 不會重畫 —— 這是 §DL 的同一個
+  坑。只做上半的話,chip 收掉之後要滑走再滑回來才會再出現。
+
+兩半各自拿掉測試都會紅(`tests/imagehover.test.ts`),紅的訊息不同。
+
+### 順便回答:diag log 會不會吃爆使用者的空間
+
+會自己滾,而且**不在 IndexedDB**。`shared/diag.ts` 是環狀緩衝:
+每個 scope(content / worker / popup)上限 **300 則**,寫入時
+`slice(-CAP)`;字串一律截 60 字。存的是 `chrome.storage.session` ——
+關瀏覽器就清空,連磁碟都不落。所以 release 開著 diag 不會累積。
+有上限的 IndexedDB 是**譯文快取**(`persistentCacheMB`,預設 50MB LRU),
+跟 log 是兩回事。

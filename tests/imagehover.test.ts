@@ -375,3 +375,29 @@ test('已經在升級了就不重複送 —— 連按兩下只算一次', async 
   assert.equal(h.sent.length, n);
   h.done();
 });
+
+test('點開黑窗那一刻 chip 要收掉,關窗再畫回來(§EC)', () => {
+  /*
+   * chip 是 fixed 定位、只認滑鼠的 leave —— 黑窗開了它就浮在最上面,
+   * 像個忘了收的路牌,要等滑鼠動一下或視窗失焦才被別的路收走。
+   * 使用者的原話:「點這裡放大的 tip 應該是點了 3 秒內要消失,
+   * 現在黑底視窗會看到他好幾秒」。
+   *
+   * 關窗那半也要驗:滑鼠多半還停在原圖上,而 move() 看到同一張圖
+   * 不會重畫(§DL)—— 開窗時收掉的 chip 沒人畫回來就永遠回不來。
+   */
+  const h = harness();
+  h.anno.move(h.img, 10, 10);
+  h.anno.onResult('https://example.com/a.png', 'hash', 'l0', [
+    { box: [100, 100, 200, 500], text: 'Storage size', zh: '儲存大小', c: 1 },
+  ]);
+  assert.ok(h.cues.at(-1) !== null, '翻好之後本來就該有 cue');
+  assert.ok(h.anno.openZoom(), '黑窗開不起來,後面驗不到東西');
+  assert.equal(h.cues.at(-1), null, '黑窗開著 chip 還浮在最上面 —— 忘了收的路牌');
+  h.anno.closeZoom();
+  assert.ok(
+    h.cues.at(-1) !== null,
+    '關窗之後 chip 沒回來 —— 要滑走再滑回來才有(§DL 的同一個坑)',
+  );
+  h.done();
+});
