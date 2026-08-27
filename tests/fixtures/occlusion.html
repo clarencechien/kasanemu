@@ -12,6 +12,9 @@
   兩個都要驗,不然「修好上面」很容易變成「下面也不裁了」。
 -->
 <style>
+  #rail { z-index: 5; }
+  #chrome-bar { position: fixed; left: 0; right: 0; bottom: 0; height: 80px;
+                background: #333; color: #fff; z-index: 9; }
   html { overflow: visible; }
   body { margin: 0; overflow-x: hidden; height: 100vh; font: 16px system-ui; }
   .filler { height: 1200px; background: #f4f4f4; }
@@ -33,6 +36,19 @@
   A second paragraph far below the fold, for the same reason as the one above it.
 </p>
 
+<!--
+  黏著的側欄 vs 真的頁尾列。
+  兩個都是 position: sticky、都很高、都碰得到視窗下緣 ——
+  差別只有**寬度**:側欄佔一條,門面橫跨畫面(§DY)。
+
+  側欄要**蓋住 75% 那個取樣點**,不然這條測試等於沒驗 —— 第一版寬 24%
+  貼右緣,在 1000px 的視窗上是 x 760..1000,而取樣點在 750,差 10px 就滑掉了,
+  於是「拿掉寬度判斷」照樣是綠的。32% 是 x 680..1000,穩穩蓋住。
+-->
+<div id="rail" style="position:sticky;bottom:0;float:right;width:32%;height:70vh;background:#eef;">
+  sticky sidebar
+</div>
+
 <div id="inner">
   <p id="scrolled-in">This one is inside a real inner scroller and is in view.</p>
   <div style="height:400px"></div>
@@ -41,3 +57,5 @@
     so the page itself does not draw it. The overlay must be hidden.
   </p>
 </div>
+
+<div id="chrome-bar">a real bottom bar, full width</div>

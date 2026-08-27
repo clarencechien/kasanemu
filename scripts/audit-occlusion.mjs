@@ -63,6 +63,49 @@ const { ctx, page } = await newPage(browser, detectJs);
 await settle(page, url);
 await page.addScriptTag({ content: readFileSync(occBundle, 'utf8') });
 
+/*
+ * 黏著的東西**多半捲下去才出現**,所以每個捲動位置各量一次。
+ */
+const SPOTS = [0, 600, 1400, 2600, 4200];
+const bands = [];
+for (const y of SPOTS) {
+  await page.evaluate((v) => window.scrollTo(0, v), y);
+  await page.waitForTimeout(450);
+  bands.push(
+    await page.evaluate(() => {
+      const d = (x) => {
+        if (!x.by) return { band: Math.round(x.band), raw: Math.round(x.raw), clamped: x.clamped, by: null };
+        const cs = getComputedStyle(x.by);
+        const r = x.by.getBoundingClientRect();
+        return {
+          band: Math.round(x.band),
+          raw: Math.round(x.raw),
+          clamped: x.clamped,
+          by: `<${x.by.tagName.toLowerCase()}${typeof x.by.className === 'string' && x.by.className ? ' class="' + x.by.className.trim().slice(0, 46) + '"' : ''}>`,
+          pos: cs.position,
+          rect: `${Math.round(r.top)}..${Math.round(r.bottom)} (h ${Math.round(r.height)})`,
+          span: `寬 ${Math.round(r.width)} / ${window.innerWidth}(${Math.round((r.width / window.innerWidth) * 100)}%)· 左 ${Math.round(r.left)}`,
+          chain: (() => {
+            const out = [];
+            for (let p = x.by; p && p !== document.body && out.length < 4; p = p.parentElement) {
+              out.push(p.tagName.toLowerCase() + (typeof p.className === 'string' && p.className ? '.' + p.className.trim().split(/\s+/).slice(0, 2).join('.') : ''));
+            }
+            return out.join(' < ');
+          })(),
+        };
+      };
+      return {
+        y: Math.round(window.scrollY),
+        vh: window.innerHeight,
+        top: d(globalThis.OCC.chromeBandDetail(2, true)),
+        bottom: d(globalThis.OCC.chromeBandDetail(window.innerHeight - 2, false)),
+      };
+    }),
+  );
+}
+await page.evaluate(() => window.scrollTo(0, 0));
+await page.waitForTimeout(300);
+
 const report = await page.evaluate(() => {
   /** 實作那一份說得出「是哪一層」的版本 —— 這裡只負責把它變成人看得懂的字 */
   const why = (el) => {
@@ -99,14 +142,31 @@ const report = await page.evaluate(() => {
       why: w,
     });
   }
-  return { total: units.length, rows, scrollY: window.scrollY, vh: window.innerHeight };
+  return {
+    total: units.length,
+    rows,
+    scrollY: window.scrollY,
+    vh: window.innerHeight,
+  };
 });
 
 await ctx.close();
 await browser.close();
 
 const bad = report.rows.filter((r) => r.clipped);
-console.log(`\n${report.total} 個單元,${bad.length} 個會被藏起來\n`);
+console.log(`\n視窗高 ${report.vh}px · 門面帶(疊層會從上下裁掉這麼多)\n`);
+for (const b of bands) {
+  const line = (side, x) => {
+    const flag = x.clamped ? '  ← 咬到上限(視窗的一半)' : '';
+    return `    ${side} ${String(x.band).padStart(4)}px(未夾 ${x.raw})${flag}` +
+      (x.by ? `\n         ${x.by} ${x.pos} · ${x.rect}\n         ${x.span}\n         ${x.chain}` : '');
+  };
+  console.log(`  捲到 ${String(b.y).padStart(5)}px`);
+  if (b.top.band > 0 || b.top.by) console.log(line('上', b.top));
+  if (b.bottom.band > 0 || b.bottom.by) console.log(line('下', b.bottom));
+  if (b.top.band === 0 && b.bottom.band === 0) console.log('    —— 沒有固定元素');
+}
+console.log(`\n${report.total} 個單元,${bad.length} 個會被祖先裁掉\n`);
 const byCause = new Map();
 for (const r of bad) {
   const key = `${r.why.hit} · <${r.why.tag ?? '?'} class="${r.why.cls ?? ''}"> overflow ${r.why.ov ?? ''}`;

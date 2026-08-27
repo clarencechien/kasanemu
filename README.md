@@ -168,7 +168,7 @@ npm run probe:snapshot   # 匯出的 HTML 快照能不能疊、能不能看原�
 npm run probe:image      # 圖片加註的幾何:object-fit 換算、字級分流、三層順序
 npm run probe:veil       # 毛玻璃的可讀性:原文殘留 < 4:1、譯文 >= 4.5:1
 npm run probe:occlusion  # 疊層該不該藏:body 傳播 overflow(不該藏)vs 內層捲動(該藏)
-npm run audit:occlusion <url>  # 這一頁的疊層被誰藏了、差多少
+npm run audit:occlusion <url> [--vh 631]  # 這一頁的疊層被誰藏了、上下門面帶量到多少
 npm run render:veil out.png [--sweep]   # 玻璃的目視稿與配方掃描(眼睛選的那一格)
 npm run audit:docs       # 文件和 repo 對不對得起來(§ 編號、npm run、檔案路徑)
 npm run measure:vocab    # 出貨中的加註規則在四份真實回應 × 五個寬度上放得下幾塊
@@ -196,7 +196,7 @@ src/
   content/  detect(選取規則)· cover/geometry/measure/bleed(幾何)· styleprobe(顏色)
             imagegeo(圖片座標:object-fit / position 換算 · 字級分流,純函式)
             imageanno(圖片加註的生命週期:hover → L0、Alt+click → L1)
-            occlusion(疊層該不該藏:祖先裁切 + overflow 傳播)
+            occlusion(疊層該不該畫在這裡:祖先裁切 · overflow 傳播 · 上下門面帶)
             overlay(closed shadow DOM)· annotate(加翻層)· snapshot(匯出)
             l0(Translator API)· queue(L0 併發池)· mask(佔位符)· lang · motion
             upgrade(升級管線的純判斷)· unit · device · fonts · index(協調)

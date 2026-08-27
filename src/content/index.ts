@@ -39,7 +39,7 @@ import {
   unlockScales,
 } from './geometry';
 import { clipInsets, scrolls, type Box } from './cover';
-import { clippedAway } from './occlusion';
+import { chromeBand, clippedAway } from './occlusion';
 import { hidePinnedWhileScrolling, motionGuard } from './motion';
 import { deviceProfile, type DeviceProfile } from './device';
 import { probePackagedFonts } from './fonts';
@@ -2389,42 +2389,6 @@ function onDocLeave(): void {
  *  2. 一個可見單元當哨兵(內容自己在動的話,整批座標都要重算)
  * 兩個都對得上就什麼都不做。
  */
-/**
- * 找出視窗上下緣被 position: fixed / sticky 的頁面元素佔掉多少。
- *
- * 為什麼需要:原文捲到固定頁首**底下**會被蓋住,而我們的疊層 z-index 是
- * 2147483000,畫在頁首**上面** —— 位置完全正確,卻浮在頁首上。
- * 使用者一路回報的「跑到 header」就是這個,不是幾何錯位
- * (診斷 log 裡 position-drift 是零筆,座標一直都對)。
- *
- * 疊層的 pointer-events: none 在這裡第二次派上用場:
- * elementFromPoint 打不到我們自己,回來的一定是頁面的東西。
- */
-function chromeBand(y: number, top: boolean): number {
-  /*
-   * 取樣三個 x,取最大的帶。
-   *
-   * 原本只在正中央取一次 —— 而 Gmail 的 Reply / Forward 列只佔左半邊,
-   * 正中央那一點打到的是它右邊的空白。回報的「下面超出的部分」
-   * 就是這樣漏掉的:整條列明明釘在那裡,我們卻量到 0。
-   */
-  let band = 0;
-  for (const ratio of [0.25, 0.5, 0.75]) {
-    const x = Math.round(window.innerWidth * ratio);
-    const hit = document.elementFromPoint(x, y);
-    for (let el: Element | null = hit; el && el !== document.body; el = el.parentElement) {
-      const cs = getComputedStyle(el);
-      if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
-      // 透明的覆蓋層不會擋住文字,不要當成頁首
-      if (Number(cs.opacity) === 0 || cs.visibility === 'hidden') continue;
-      const r = el.getBoundingClientRect();
-      const b = top ? r.bottom : window.innerHeight - r.top;
-      if (b > band) band = b;
-      break;
-    }
-  }
-  return Math.max(0, Math.min(band, window.innerHeight / 2));
-}
 
 /**
  * 會裁切這個單元的祖先(`overflow` 不是 visible 的那些)。
