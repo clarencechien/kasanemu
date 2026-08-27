@@ -646,22 +646,36 @@ test('brief 的 prompt 要說得出上限與挑法 —— 逾時的唯一出路'
   assert.ok(brief.length > full.length);
 });
 
-test('塊數上限是硬的 —— 「只翻標題」是個數量,不是比例(§DX)', () => {
+test('塊數上限是硬的,而且跟著畫布走 —— 小圖 6、大畫布 ×2(§DX、§EA)', () => {
   /*
    * 只有面積預算的那一版,在 1102px 的產品截圖上疊了 **21 塊**,
    * 而帳面才 13% —— 面積隨圖的大小反著跑:大圖放縱、小圖苛刻。
-   * 塊數上限不看圖多大,所以兩邊都管得住。
+   * 塊數上限不看比例,所以兩邊都管得住。
+   *
+   * §EA 補上另一半:「圖放大了預算就多」。畫布 ≥ BIG_CANVAS_W 時
+   * 上限放兩倍 —— 放大檢視與站方 lightbox 的大圖走同一個尺寸閘門。
    */
-  const drawn = drawnRect({ w: 2000, h: 1200 }, { w: 1200, h: 720 }, 'contain', parsePosition('50% 50%'));
-  const many = Array.from({ length: 20 }, (_, i) => ({
-    box: [i * 45, 0, i * 45 + 36, 260] as [number, number, number, number],
-    text: `heading ${i}`,
-    zh: `標題${i}`,
-    c: 1,
-  }));
-  const out = placeBlocks(many, drawn, { w: 1200, h: 720 });
-  assert.equal(out.placed.length, MAX_PLATES, '大圖上塊數上限沒生效');
-  assert.equal(out.left, 20 - MAX_PLATES);
+  const many = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      box: [i * 45, 0, i * 45 + 36, 260] as [number, number, number, number],
+      text: `heading ${i}`,
+      zh: `標題${i}`,
+      c: 1,
+    }));
+  // 行內小圖(< BIG_CANVAS_W):上限就是 MAX_PLATES
+  const smallDrawn = drawnRect({ w: 2000, h: 1200 }, { w: 800, h: 480 }, 'contain', parsePosition('50% 50%'));
+  const small = placeBlocks(many(20), smallDrawn, { w: 800, h: 480 });
+  assert.equal(small.placed.length, MAX_PLATES, '小圖上塊數上限沒生效');
+  assert.equal(small.left, 20 - MAX_PLATES);
+  // 大畫布(≥ BIG_CANVAS_W):同一份資料放兩倍
+  const bigDrawn = drawnRect({ w: 2000, h: 1200 }, { w: 1200, h: 720 }, 'contain', parsePosition('50% 50%'));
+  const big = placeBlocks(many(20), bigDrawn, { w: 1200, h: 720 });
+  assert.equal(big.placed.length, MAX_PLATES * 2, '大畫布沒有放兩倍');
+  // 上限可調(settings.imageMaxPlates):傳進來的數字才是主閘
+  const custom = placeBlocks(many(20), smallDrawn, { w: 800, h: 480 }, 2);
+  assert.equal(custom.placed.length, 2, '自訂上限沒生效');
+  const customBig = placeBlocks(many(20), bigDrawn, { w: 1200, h: 720 }, 2);
+  assert.equal(customBig.placed.length, 4, '自訂上限在大畫布沒有放兩倍');
 });
 
 test('白貼片的預算要算糊出去的那一圈 —— 那是畫面上最顯眼的部分', () => {

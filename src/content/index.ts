@@ -188,6 +188,7 @@ const imageAnno = new ImageAnnotator(
   },
   () => settings.imageMode !== 'off' && running,
   () => settings.imageAlwaysOn,
+  () => settings.imageMaxPlates,
 );
 
 /** 圖片 chip 的內容。和 UI 標籤貼片共用同一條渲染路 */
@@ -1844,8 +1845,13 @@ function onKeyDown(e: KeyboardEvent): void {
    * 掃視哪些區塊被翻了是偶爾除錯才做的。常用的動作該配最好按的鍵。
    *
    * 而且「按住看原文、放開回來」本來就該是 hold,不是 toggle。
+   *
+   * `AltGraph`:Windows 上的右 Alt 送來的 `key` 不是 `'Alt'` 而是
+   * `'AltGraph'`(歐洲鍵盤佈局的組字鍵)。使用者從 ChromeOS 換到
+   * Windows 之後回報「按了 alt 也不會消失」—— 按的是右 Alt。
+   * 兩顆都收:hold 的意圖一樣,不該分左右。
    */
-  if (e.key === 'Alt' && !e.shiftKey && !hiddenAll) {
+  if (isAltKey(e.key) && !e.shiftKey && !hiddenAll) {
     hiddenAll = true;
     layer?.setHiddenAll(true);
     // 對稱律的另一半(§2.5):文字掀開看原文,圖片就是收掉加註看原圖
@@ -1860,7 +1866,7 @@ function onKeyDown(e: KeyboardEvent): void {
    * Alt 會先單獨到達,整層收起來閃一下,直到放開 Alt 才回來。
    * 收到第二個鍵就把它放回去 —— hold 的意圖只有在 Alt 單獨按住時才成立。
    */
-  if (hiddenAll && e.key !== 'Alt') restoreLayer();
+  if (hiddenAll && !isAltKey(e.key)) restoreLayer();
   if (e.altKey && e.shiftKey && (e.key === 'D' || e.key === 'd')) {
     e.preventDefault();
     toggleDebugPanel();
@@ -1883,7 +1889,12 @@ function toggleAltScan(): void {
 }
 
 function onKeyUp(e: KeyboardEvent): void {
-  if (e.key === 'Alt' && hiddenAll) restoreLayer();
+  if (isAltKey(e.key) && hiddenAll) restoreLayer();
+}
+
+/** 左 Alt 是 `'Alt'`,Windows 的右 Alt 是 `'AltGraph'` —— 對我們是同一顆鍵 */
+function isAltKey(key: string): boolean {
+  return key === 'Alt' || key === 'AltGraph';
 }
 
 /**

@@ -14,6 +14,8 @@ class FakeImageElement extends FakeElement {}
 const g = globalThis as unknown as Record<string, unknown>;
 g['Element'] = FakeElement;
 g['HTMLImageElement'] = FakeImageElement;
+// 統一放大檢視入口(§EA)之後,成功路徑也會問 hasNativeZoom → instanceof 要有殼
+g['HTMLAnchorElement'] = class extends FakeElement {};
 g['window'] = globalThis;
 /*
  * `imageUnder` 在 target 不是圖片時會退而問 `elementsFromPoint` ——

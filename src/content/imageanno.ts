@@ -9,7 +9,7 @@
  */
 
 import { diag } from '../shared/diag.ts';
-import type { ImageBlock } from '../shared/imageblocks';
+import { MAX_PLATES, type ImageBlock } from '../shared/imageblocks.ts';
 // 時限彼此有順序,所以住在同一個檔案裡(`shared/imagetiming.ts` 的開頭有那張圖)
 import { IMAGE_WATCHDOG_MS } from '../shared/imagetiming.ts';
 import {
@@ -211,6 +211,8 @@ export class ImageAnnotator {
   private host: ImageHost;
   private enabled: () => boolean;
   private alwaysOn: () => boolean;
+  /** 行內最多疊幾塊(settings.imageMaxPlates)。放大檢視在 placeBlocks 裡自動 ×2 */
+  private maxPlates: () => number;
 
   /*
    * 刻意不用建構子參數屬性(`private host: ImageHost`)。
@@ -220,10 +222,16 @@ export class ImageAnnotator {
    * 也就是「chip 還沒被碰到就被自己刪掉」那一類 bug 的家(§DK)。
    * 少寫三行換到整條路可測,划算。
    */
-  constructor(host: ImageHost, enabled: () => boolean, alwaysOn: () => boolean) {
+  constructor(
+    host: ImageHost,
+    enabled: () => boolean,
+    alwaysOn: () => boolean,
+    maxPlates: () => number = () => MAX_PLATES,
+  ) {
     this.host = host;
     this.enabled = enabled;
     this.alwaysOn = alwaysOn;
+    this.maxPlates = maxPlates;
   }
 
   reset(): void {
@@ -493,7 +501,7 @@ export class ImageAnnotator {
 
   private render(img: HTMLImageElement, entry: ImageEntry): void {
     const { drawn, clip, rect } = geometryOf(img);
-    const out = placeBlocks(entry.blocks, drawn, clip);
+    const out = placeBlocks(entry.blocks, drawn, clip, this.maxPlates());
     this.placed = out.placed;
     /*
      * **不畫的三種情況,說的話不一樣。**
@@ -522,26 +530,37 @@ export class ImageAnnotator {
     }
     this.host.showImage(rect, this.placed);
     /*
-     * **有塊沒放下才給放大檢視的入口。**
+     * **翻好的圖統一有放大檢視的入口**(§EA)。
      *
-     * 以前的信號是「有錨點」,而錨點退場了(§DW)。新的信號更直接:
-     * 預算裝不下的塊就是放大檢視存在的理由 —— 畫布大一點,同一份譯文
-     * 放得下更多。全部都放下的圖出這顆按鈕只是多一個沒用的東西。
+     * 以前只有「有塊沒放下」才出 —— 使用者的疑問是「原本沒有點開的
+     * windows 決定要翻了就可以點 tip 開視窗?」:入口有時在有時不在,
+     * 看起來像亂數。改成:行內畫了東西就能放大讀,畫布大、上限自動 ×2,
+     * 行內被擋在門外的塊在裡面攤得開 —— 這正是「圖放大了預算就多」的
+     * 具體形狀。
      *
-     * 站方自己有 lightbox 就不出(§2.4)—— 跟著站方走,加註靠同 src 認親。
+     * 站方自己有 lightbox 就不出(§2.4)—— 跟著站方走,加註靠同 src
+     * 認親跟過去;站方的大圖畫布 ≥900px 時 placeBlocks 的尺寸閘門
+     * 一樣會放兩倍,不用另外接線。
      */
-    const canZoom = out.left > 0 && !hasNativeZoom(img);
+    const canZoom = !hasNativeZoom(img);
     /*
      * 文案要說得出**動作**,不是狀態。
      *
      * 使用者的原話是「放大檢視要怎麼放大」—— 舊文案看起來像一個標籤,
      * 而它其實是一顆按鈕。可按的 cue 全世界只有這一個(§3.3 的窄例外),
-     * 所以它必須自己講出來。
+     * 所以它必須自己講出來。還有塊沒放下就把數字說出來 —— 「還有 N 塊」
+     * 是點進去的理由,全放下的圖則只是「換個大畫布讀」。
      */
     this.host.cue(
       img,
       canZoom
-        ? `⤢ 點這裡放大讀 · 還有 ${out.left} 塊`
+        ? `⤢ 點這裡放大讀${
+            out.left > 0
+              ? ` · 還有 ${out.left} 塊`
+              : entry.tier === 'l0'
+                ? ' · Alt+click 升級'
+                : ''
+          }`
         : entry.tier === 'l0'
           ? '↑ Alt+click 升級'
           : `L1 · ${this.placed.length} 塊`,
@@ -586,7 +605,7 @@ export class ImageAnnotator {
   private place(size: { w: number; h: number }, entry: ImageEntry, natural: { w: number; h: number }) {
     // 放大檢視一律 contain 置中,所以 drawn 就是整個 size
     const drawn = drawnRect(natural, size, 'contain', { x: { pct: 0.5 }, y: { pct: 0.5 } });
-    return placeBlocks(entry.blocks, drawn, size);
+    return placeBlocks(entry.blocks, drawn, size, this.maxPlates());
   }
 
   /**

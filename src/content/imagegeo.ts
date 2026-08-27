@@ -12,6 +12,7 @@
 // 副檔名是刻意的:node --experimental-strip-types 解不了無副檔名的**值**匯入,
 // 而這個檔要被 node:test 直接載入(queuelogic.ts 因為同一個理由這樣寫)
 import {
+  BIG_CANVAS_W,
   BOX_SCALE,
   LOW_CONFIDENCE,
   MAX_PLATES,
@@ -218,6 +219,8 @@ export function placeBlocks(
   blocks: readonly ImageBlockLike[],
   drawn: Rect,
   clip: { w: number; h: number },
+  /** 行內的塊數上限(settings.imageMaxPlates)。大畫布自動放兩倍(§EA) */
+  maxPlates: number = MAX_PLATES,
 ): Placement {
   const cand: { r: Rect; label: string; fontPx: number; b: ImageBlockLike }[] = [];
   for (const b of blocks) {
@@ -249,9 +252,11 @@ export function placeBlocks(
   const taken: { x: number; y: number; w: number; h: number }[] = [];
   const placed: PlacedBlock[] = [];
   let used = 0;
+  // 大畫布(放大檢視、站方 lightbox)是使用者自己點開的「我要讀」—— 放兩倍
+  const cap = clip.w >= BIG_CANVAS_W ? maxPlates * 2 : maxPlates;
   for (const c of order) {
     // 「只要標題」是個數量,不是比例 —— 圖多大都一樣(§DX)
-    if (placed.length >= MAX_PLATES) break;
+    if (placed.length >= cap) break;
     const pl = plateSize(c.label, c.fontPx);
     /*
      * 預算算**含光暈的**(那是畫面上最顯眼的部分),
