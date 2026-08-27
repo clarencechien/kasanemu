@@ -103,6 +103,45 @@ function toBase64(bytes: Uint8Array): string {
  * 量測腳本自己寫一份縮圖就等於在量另一個系統(§DB-2 / §DF),
  * 而縮圖正是那次量測要判斷的東西 —— 更不能換掉。
  */
+/**
+ * 模型收得下的圖片格式(Gemini vision:PNG / JPEG / WebP / HEIC / HEIF)。
+ *
+ * 白名單而不是黑名單:送不認得的東西過去,拿回來的是一個 400 和一句
+ * 沒人看得懂的話。認得的才直接送,其餘一律重編成 PNG —— 反正 bitmap
+ * 已經解出來了,重編只是多一次 canvas。
+ */
+const API_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif']);
+
+/**
+ * 從**檔頭**認格式,不看 `Content-Type`。
+ *
+ * 伺服器的宣告會騙人,而且不是罕見情況:blog.google 的圖放在
+ * Google Cloud Storage 上,每一張 WebP 都以 `application/octet-stream`
+ * 送出。瀏覽器不在乎(它自己嗅 bytes),但我們把那個字串原樣轉給模型,
+ * 換回 `400 Unsupported MIME type: application/octet-stream`
+ * —— 整個網站的圖片翻譯都掛掉(`docs/deviations.md` §DO)。
+ *
+ * 認不出來就回 null,交給呼叫端重編 —— 猜錯格式比不猜更糟。
+ */
+export function sniffMime(bytes: Uint8Array): string | null {
+  const at = (i: number): number => bytes[i] ?? -1;
+  const ascii = (i: number, s: string): boolean =>
+    [...s].every((c, k) => at(i + k) === c.charCodeAt(0));
+
+  if (at(0) === 0x89 && ascii(1, 'PNG')) return 'image/png';
+  if (at(0) === 0xff && at(1) === 0xd8 && at(2) === 0xff) return 'image/jpeg';
+  if (ascii(0, 'RIFF') && ascii(8, 'WEBP')) return 'image/webp';
+  if (ascii(0, 'GIF8')) return 'image/gif';
+  if (at(0) === 0x42 && at(1) === 0x4d) return 'image/bmp';
+  // ISO-BMFF:`....ftyp<brand>` —— AVIF 與 HEIC 共用這個外殼,靠 brand 分
+  if (ascii(4, 'ftyp')) {
+    const brand = String.fromCharCode(at(8), at(9), at(10), at(11));
+    if (brand === 'avif' || brand === 'avis') return 'image/avif';
+    if (brand.startsWith('hei') || brand === 'mif1' || brand === 'msf1') return 'image/heic';
+  }
+  return null;
+}
+
 export async function downscale(
   blob: Blob,
   mime: string,
@@ -119,12 +158,19 @@ export async function downscale(
     bitmap.close();
     return null;
   }
+  /*
+   * 格式以**檔頭**為準:`Content-Type` 會騙人(§DO)。
+   * 認不出來就當成不支援 —— 重編一次,而不是把一個猜的字串送出去。
+   */
+  const sniffed = sniffMime(new Uint8Array(await blob.arrayBuffer()));
+  const srcMime = sniffed ?? mime;
+  const supported = sniffed !== null && API_MIMES.has(sniffed);
   const edge = Math.max(w0, h0);
-  if (edge <= MAX_EDGE) {
+  if (edge <= MAX_EDGE && supported) {
     bitmap.close();
-    return { blob, mime, w: w0, h: h0 };
+    return { blob, mime: srcMime, w: w0, h: h0 };
   }
-  const scale = MAX_EDGE / edge;
+  const scale = Math.min(1, MAX_EDGE / edge);
   const w = Math.round(w0 * scale);
   const h = Math.round(h0 * scale);
   const canvas = new OffscreenCanvas(w, h);
@@ -146,7 +192,11 @@ export async function downscale(
    * 於是:PNG 來源(截圖、圖表、有透明度的)維持 PNG;JPEG 來源用 q=0.92
    * 的 JPEG —— 那個品質下文字筆畫的失真肉眼看不出來,而體積回到正常。
    */
-  const jpeg = mime === 'image/jpeg' || mime === 'image/jpg';
+  /*
+   * AVIF 也走 JPEG:它幾乎都是照片,轉 PNG 會像 §13-4 量到的那樣膨脹九倍。
+   * 其餘認不出來的(GIF、BMP、嗅不出來的)走 PNG —— 那些通常是圖形。
+   */
+  const jpeg = srcMime === 'image/jpeg' || srcMime === 'image/jpg' || srcMime === 'image/avif';
   const out = jpeg
     ? await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.92 })
     : await canvas.convertToBlob({ type: 'image/png' });

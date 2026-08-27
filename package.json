@@ -20,7 +20,8 @@
     "probe:snapshot": "node scripts/probe-snapshot.mjs",
     "probe:image": "node scripts/probe-image.mjs",
     "probe:veil": "node scripts/probe-veil.mjs",
-    "audit:sites": "node scripts/audit-sites.mjs"
+    "audit:sites": "node scripts/audit-sites.mjs",
+    "audit:tree": "node scripts/audit-tree.mjs"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.268",

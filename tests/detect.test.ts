@@ -828,6 +828,131 @@ test('「裡面是目次就當內容」的例外不給頁首 —— mega menu �
   assert.ok(inAside.includes('Pricing'));
 });
 
+/* ---- 頂層 <header> 裡的頁面標題:外殼還是內容(§DM) ---- */
+
+const PAGE_HEAD = `<header class="masthead">
+  <div class="eyebrow">Companion to the blog post</div>
+  <h1>Know your unknowns</h1>
+  <p class="intro">The map is not the territory — the gap between them is your unknowns.
+    Eleven self-contained artifacts for discovering them before, during, and after
+    implementation.</p>
+  <nav class="toc"><a href="#pre">Pre-implementation</a><a href="#post">Post-implementation</a></nav>
+</header>`;
+
+test('頂層 <header> 裝著頁面的標題與導言 —— 那是內容,不是站台外殼', () => {
+  /*
+   * **使用者回報「整塊都沒翻到」的就是這個。**
+   *
+   * §CH 為 Wired / BBC 開的例外只蓋到 `<article><header>`。而靜態網站
+   * 產生器與大多數部落格的寫法是頂層的 `<header>` 直接裝著 h1 與導言,
+   * 外面沒有 `<article>` —— 於是整頁最重要的兩行字被當成外殼跳過。
+   */
+  const texts = findCandidates(mount(PAGE_HEAD), () => false).map((c) => c.src);
+  assert.ok(texts.includes('Know your unknowns'), `h1 沒撿到:${JSON.stringify(texts)}`);
+  assert.ok(
+    texts.some((t) => t.startsWith('The map is not the territory')),
+    `導言沒撿到:${JSON.stringify(texts)}`,
+  );
+});
+
+test('分辨的訊號是散文,不是「有沒有 h1」—— logo 包在 h1 裡的橫幅照樣是外殼', () => {
+  /*
+   * 只看 h1 會把「站名包在 h1 裡」的正常橫幅全部誤判成內容。
+   * 所以兩個條件都要:有標題,而且有一段長到不可能是標語的字。
+   */
+  const banner = `<header>
+    <h1><a href="/">Acme</a></h1>
+    <p class="tagline">Ship faster</p>
+    <nav><a href="/docs">Docs</a><a href="/pricing">Pricing</a></nav>
+  </header>`;
+  assert.deepEqual(findCandidates(mount(banner), () => false), []);
+});
+
+test('<footer> 裡是一句完整的話 —— 那也是內容', () => {
+  /*
+   * **使用者回報的第二個形狀。** §DM 只補了 <header>,而同一件事在
+   * <footer> 與 <aside> 上各發生一次(§DN)。
+   *
+   * 版權行、連結欄都短;一句完整的話就是內容。
+   */
+  const foot = `<footer>
+    <span class="k">Everything on this page is itself a single .html file. See also
+      the companion index for more examples.</span>
+    <span><a href="/repo">View the repo</a></span>
+  </footer>`;
+  const texts = findCandidates(mount(foot), () => false).map((c) => c.src);
+  assert.ok(
+    texts.some((t) => t.startsWith('Everything on this page')),
+    `footer 的那句話沒撿到:${JSON.stringify(texts)}`,
+  );
+});
+
+test('一般的版權頁尾照舊是外殼 —— 短的就是短的', () => {
+  const foot = `<footer>
+    <p>© 2026 Acme Inc. All rights reserved.</p>
+    <nav><a href="/tos">Terms</a><a href="/privacy">Privacy</a></nav>
+  </footer>`;
+  assert.deepEqual(findCandidates(mount(foot), () => false), []);
+});
+
+test('<aside> 裡是結論段落 —— 那也是內容', () => {
+  const aside = `<aside>
+    <h2>Recommendation</h2>
+    <p>Go with approach 02, the custom hook. The codebase already has three places
+      that hand-roll the same debounce inline, so this consolidates them.</p>
+  </aside>`;
+  const texts = findCandidates(mount(aside), () => false).map((c) => c.src);
+  assert.ok(texts.includes('Recommendation'), `實得 ${JSON.stringify(texts)}`);
+  assert.ok(texts.some((t) => t.startsWith('Go with approach 02')));
+});
+
+test('散文不限於 <p> —— 提示詞裝在 <div> 裡也算', () => {
+  /*
+   * §DM 第一版的散文選擇器是 `p,blockquote,li,dd`,而爬完整個站發現
+   * 提示詞裝在 `<div class="prompt-box">` 裡,選擇器沒收到 ——
+   * 8 頁的標題區照樣被跳過。範圍限制要跟著證據走,不是跟著直覺。
+   */
+  const head = `<header>
+    <h1>Three ways to implement debounced search</h1>
+    <div class="prompt-box">Show me three different ways to implement debounced search
+      in this codebase, with the trade-offs of each spelled out.</div>
+  </header>`;
+  const texts = findCandidates(mount(head), () => false).map((c) => c.src);
+  assert.ok(
+    texts.includes('Three ways to implement debounced search'),
+    `實得 ${JSON.stringify(texts)}`,
+  );
+});
+
+test('散文只看葉子 —— 外層容器把子孫加起來不算', () => {
+  /*
+   * 拿容器的 textContent 去比,任何裝了三個選單項目的 <div> 都會過關,
+   * 於是每一個站台頁尾都變成內容。
+   */
+  const foot = `<footer><div>
+    <a href="/a">Products</a><a href="/b">Pricing</a><a href="/c">Docs</a>
+    <a href="/d">Careers</a><a href="/e">Blog</a><a href="/f">Support</a>
+  </div></footer>`;
+  assert.deepEqual(findCandidates(mount(foot), () => false), []);
+});
+
+test('mega menu 的長說明不算散文 —— 導覽區裡的東西不列入判斷', () => {
+  /*
+   * 下拉選單的說明文字動輒上百字。如果拿它當「這是頁面標題區」的證據,
+   * 每一個有 mega menu 的站台橫幅都會被誤判成內容 —— 那是最糟的方向,
+   * 因為橫幅在每一頁都出現。
+   */
+  const megaHead = `<header>
+    <h2>Acme</h2>
+    <nav><ul>
+      <li><a href="#1">Cloud — run everything without operating any of it yourself, with
+        automatic scaling, backups and monitoring included from day one</a></li>
+      <li><a href="#2">Docs</a></li>
+    </ul></nav>
+  </header>`;
+  assert.deepEqual(findCandidates(mount(megaHead), () => false), []);
+});
+
 test('頁首裡的標籤仍然滑得到 —— 不畫疊層不等於整棵消失', () => {
   const root = mount('<header><nav><a href="#1">Products</a><a href="#2">Pricing</a></nav></header>');
   assert.deepEqual(findCandidates(root, () => false), []);

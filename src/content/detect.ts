@@ -831,6 +831,77 @@ function hasFloatDescendant(el: Element): boolean {
  */
 const TOC_HOSTS = 'nav,aside,[role="navigation"],[role="complementary"]';
 
+const NAV_HOSTS = 'nav,[role="navigation"],[role="menubar"],[role="menu"],[role="tablist"]';
+
+/** 這個節點在 `host` 底下的某個導覽區裡嗎 */
+function insideNavOf(host: Element, n: Element): boolean {
+  const nav = n.closest(NAV_HOSTS);
+  return nav !== null && nav !== host && host.contains(nav);
+}
+
+/**
+ * 一段字要多長才算「散文」而不是標語。
+ *
+ * 站台橫幅裡最長的東西是標語(「The best place to build software」= 32 字),
+ * 而頁面的導言動輒上百字。80 留了一倍以上的餘裕。
+ */
+const PAGE_PROSE_MIN = 80;
+
+/**
+ * 這個外殼標籤底下有**散文**嗎。
+ *
+ * 「散文」的定義刻意窄:一個**沒有區塊子元素的葉子**,自己的可見文字
+ * 長度 ≥ `PAGE_PROSE_MIN`。看葉子是必要的 —— 拿外層 `<div>` 的
+ * textContent 去比,任何裝了三個選單的容器都會過關。
+ *
+ * 導覽區裡的東西不算:mega menu 的說明文字動輒上百字,拿它當證據的話
+ * 每一個有下拉選單的站台橫幅都會被誤判成內容,而橫幅**每一頁都出現**。
+ */
+function hasProse(host: Element): boolean {
+  for (const n of host.querySelectorAll('p,blockquote,li,dd,div,span,section,figcaption,td')) {
+    if (insideNavOf(host, n)) continue;
+    // 只看葉子:有區塊子元素的容器,它的文字是子孫加起來的
+    if (hasContainerChild(n)) continue;
+    if (visibleTextOf(n).length >= PAGE_PROSE_MIN) return true;
+  }
+  return false;
+}
+
+/**
+ * 這個外殼標籤其實裝的是**內容**,不是外殼。
+ *
+ * §DM 修過一次:靜態網站產生器把頁面的 h1 與導言放在頂層 `<header>` 裡,
+ * 外面沒有 `<article>`,整塊被跳過。當時只補了 `<header>`,而且散文只認
+ * `p / blockquote / li / dd`。
+ *
+ * 用 `scripts/audit-tree.mjs` 爬完整個站之後,同一個形狀在**三個標籤上
+ * 各出現一次**(`docs/deviations.md` §DN):
+ *
+ * - `<header>` 裡的提示詞裝在 `<div class="prompt-box">` —— 選擇器沒收到
+ * - `<aside>` 裡是「Recommendation」加三段結論 —— 標籤沒收到
+ * - `<footer>` 裡是一句完整的話 —— 標籤沒收到,而且沒有標題
+ *
+ * 所以規則要一次講完:**外殼標籤 + 散文 = 內容**。
+ * `<header>` 另外要求有標題,因為「站名包在 h1 裡、旁邊一句長標語」
+ * 是正常橫幅的樣子,只看散文會把它們全部誤判。
+ * `<nav>` 不走這條 —— 它有自己的目次規則(`TOC_HOSTS`)。
+ */
+function isContentBearingChrome(el: Element): boolean {
+  if (el.tagName === 'HEADER') {
+    let heading = false;
+    for (const h of el.querySelectorAll('h1,h2')) {
+      if (!insideNavOf(el, h) && visibleTextOf(h).length > 0) {
+        heading = true;
+        break;
+      }
+    }
+    if (!heading) return false;
+    return hasProse(el);
+  }
+  if (el.tagName === 'FOOTER' || el.tagName === 'ASIDE') return hasProse(el);
+  return false;
+}
+
 function isAppChrome(el: Element): boolean {
   if (!CHROME_TAGS.has(el.tagName) && !el.matches(CHROME_SELECTOR)) return false;
   /*
@@ -845,6 +916,8 @@ function isAppChrome(el: Element): boolean {
   if ((el.tagName === 'HEADER' || el.tagName === 'FOOTER') && el.closest('article') !== null) {
     return false;
   }
+  // 外殼標籤但裝的是內容 —— header 的標題區、aside 的結論、footer 的一句話(§DM、§DN)
+  if (isContentBearingChrome(el)) return false;
   if (!el.matches(TOC_HOSTS)) return true;
   return !hasContentList(el);
 }

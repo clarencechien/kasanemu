@@ -302,3 +302,25 @@ test('逾時的層級要由內而外遞增,最外層是 content 的看門狗', (
   assert.ok(ORPHAN_MS + 30_000 < IMAGE_WATCHDOG_MS, '孤兒清掃趕不上看門狗');
   assert.equal(ORPHAN_MS, TIMING_ORPHAN_MS, '佇列用的和時限表上的不是同一個數字');
 });
+
+/* ------------------------------- API 的錯誤訊息要看得到重點(§DO-2) */
+
+test('400 的錯誤訊息要挖出那句話,不是整包 JSON', async () => {
+  /*
+   * 使用者看到的是「圖形功能好像出錯了」,而 log 上是:
+   *   {"error":{"code":400,"message":"Unsupported …(137)
+   * 真正有用的那半句被 JSON 外殼吃掉了。一個 400 正是最需要看清楚訊息
+   * 的時候 —— 它在說「你送的東西我不收」,而「哪裡不收」就在被截掉的地方。
+   */
+  const { apiMessageForTest } = await import('../src/worker/gemini.ts');
+  const body = JSON.stringify({
+    error: { code: 400, message: 'Unsupported MIME type: application/octet-stream', status: 'INVALID_ARGUMENT' },
+  });
+  assert.equal(apiMessageForTest(body), 'Unsupported MIME type: application/octet-stream');
+});
+
+test('不是 JSON 的錯誤(HTML 錯誤頁、代理的純文字)原樣截', async () => {
+  const { apiMessageForTest } = await import('../src/worker/gemini.ts');
+  assert.equal(apiMessageForTest('<html>502 Bad Gateway</html>'), '<html>502 Bad Gateway</html>');
+  assert.equal(apiMessageForTest(''), '');
+});
