@@ -401,6 +401,33 @@ test('純數字與符號本來就不用翻 —— 模型硬要加東西也不算
   assert.equal(worthAnnotating('', ''), false);
 });
 
+test('數字加單位不用翻 —— 「5x」換到一個字,付出的是蓋掉整個數字', () => {
+  /*
+   * **使用者原話**:「像這個 5x 4x 其實也不用翻了」。
+   *
+   * `5x` → `5倍` 確實不同,所以「譯完等於沒譯」那條抓不到。但它換到的
+   * 是一個字,而付出的是把整個數字蓋掉 —— 數字本來就是跨語言的。
+   */
+  assert.equal(worthAnnotating('5x', '5倍'), false);
+  assert.equal(worthAnnotating('4x', '4倍'), false);
+  assert.equal(worthAnnotating('25GB', '25 GB'), false);
+  assert.equal(worthAnnotating('100ms', '100 毫秒'), false);
+  assert.equal(worthAnnotating('5G', '5G 網路'), false);
+});
+
+test('界線畫在字母數 —— 有字的句子照翻', () => {
+  /*
+   * 這條規則最危險的失敗方向是吃掉正常的譯文,所以界線要看得見:
+   * 字母 ≤ 2 而且有數字才算「數字加單位」。
+   */
+  assert.equal(worthAnnotating('5 tips', '五個訣竅'), true, '4 個字母,是句子');
+  assert.equal(worthAnnotating('Top 10', '前 10 名'), true, '3 個字母');
+  assert.equal(worthAnnotating('19 times smaller', '縮小 19 倍'), true);
+  // 沒有數字的短字不套這條 —— 交給「譯完等於沒譯」判斷
+  assert.equal(worthAnnotating('AI', '人工智慧'), true);
+  assert.equal(worthAnnotating('OK', 'OK'), false, '這個是靠「譯完一樣」擋掉的');
+});
+
 test('真的翻了就要蓋 —— 這條規則不可以吃掉正常的譯文', () => {
   assert.equal(worthAnnotating('Storage size', '儲存空間大小'), true);
   assert.equal(worthAnnotating('Lower is better', '越低越好'), true);

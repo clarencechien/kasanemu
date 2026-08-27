@@ -48,17 +48,31 @@ export const MIN_PATCH_FONT_PX = 11;
  * `Gemini 3.5 Transcribe Live`、`Deepgram Nova-3`、軸標籤、語言代碼)
  * 譯文和原文一模一樣 —— 純粹蓋住原圖,而且蓋得比原文糊。
  *
- * 兩條規則:
+ * 三條規則:
  *
  * 1. **譯完等於沒譯**:忽略大小寫與空白之後相同就跳過。專有名詞、
  *    產品名、數值單位大多落在這裡。
  * 2. **原文沒有半個字母**:純數字與符號(`15.77%`、`2024`、`→`)
  *    本來就不需要翻。這一條擋的是模型「硬要翻一下」的情況 ——
  *    `2024` → `2024年` 是它在加沒有的東西,不是翻譯。
+ * 3. **數字加單位**:`5x`、`25GB` 這種換到的字太少,不值得蓋掉數字。
  */
 export function worthAnnotating(text: string, zh: string): boolean {
   if (zh.length === 0) return false;
-  if (!/\p{L}/u.test(text)) return false;
+  const letters = (text.match(/\p{L}/gu) ?? []).length;
+  // 純數字與符號(`15.77%`、`→`)本來就不用翻
+  if (letters === 0) return false;
+  /*
+   * **數字加單位**:`5x`、`4x`、`25GB`、`100ms`、`5G`。
+   *
+   * 使用者看著 ClickHouse 那張三格數據卡說「像這個 5x 4x 其實也不用翻了」。
+   * `5x` → `5倍` 確實不同,所以「譯完等於沒譯」那條抓不到 —— 但它換到的
+   * 是一個字,而付出的是把整個數字蓋掉。數字本來就是跨語言的。
+   *
+   * 界線畫在**字母數 ≤ 2 而且有數字**:`5x`(1)、`25GB`(2) 進來,
+   * `5 tips`(4)、`Top 10`(3) 不進來。
+   */
+  if (letters <= 2 && /\d/u.test(text)) return false;
   return fold(text) !== fold(zh);
 }
 
