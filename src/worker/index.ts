@@ -110,7 +110,8 @@ chrome.runtime.onMessage.addListener((raw: ToWorker, sender, reply) => {
           break;
         }
         case 'translate-image': {
-          if (tabId >= 0) await translateImage(tabId, raw.pageKey, raw.url, raw.lane, raw.tier);
+          if (tabId >= 0)
+            await translateImage(tabId, raw.pageKey, raw.url, raw.lane, raw.tier, raw.brief);
           reply({ ok: true });
           break;
         }

@@ -26,7 +26,7 @@ g['getComputedStyle'] = () => ({ objectFit: 'fill', objectPosition: '50% 50%' })
 g['scrollX'] = 0;
 g['scrollY'] = 0;
 
-const { ImageAnnotator, LEAVE_GRACE_MS } = await import('../src/content/imageanno.ts');
+const { ImageAnnotator, LEAVE_GRACE_MS, IMAGE_HOVER_MS } = await import('../src/content/imageanno.ts');
 type Host = ConstructorParameters<typeof ImageAnnotator>[0];
 
 /**
@@ -67,10 +67,17 @@ function harness() {
   const cues: (string | null)[] = [];
   const shown: number[] = [];
   const hidden: number[] = [];
+  /** 每次 cue 帶不帶 action —— 「點一下重試」那句話算不算數就看它 */
+  const actions: (string | undefined)[] = [];
+  /** 送出去的請求:重試有沒有真的再送一次、送去哪一條道、有沒有帶 brief */
+  const sent: { url: string; lane: string; brief?: boolean }[] = [];
   const host = {
-    request: () => undefined,
-    cue: (_el: unknown, text: string | null) => {
+    request: (url: string, lane: string, brief?: boolean) => {
+      sent.push({ url, lane, brief });
+    },
+    cue: (_el: unknown, text: string | null, _tone: string, action?: string) => {
       cues.push(text);
+      actions.push(action);
     },
     showImage: () => {
       shown.push(1);
@@ -93,7 +100,7 @@ function harness() {
    * **一定要 reset**:hover 會排一個 500ms 的計時器,而它跑完會再排一個
    * 180 秒的看門狗 —— 沒收掉的話 node 會抱著那個計時器不結束。
    */
-  return { anno, cues, shown, hidden, img, chip, elsewhere, done: () => anno.reset() };
+  return { anno, cues, actions, sent, shown, hidden, img, chip, elsewhere, done: () => anno.reset() };
 }
 
 const removed = (cues: readonly (string | null)[], from: number) =>
@@ -244,5 +251,125 @@ test('沒有譯文的圖,repaint 不該亂畫', () => {
   const before = h.shown.length;
   h.anno.repaint();
   assert.equal(h.shown.length, before);
+  h.done();
+});
+
+/* ── 失敗之後回得去嗎(§DS) ─────────────────────────────────── */
+
+/** 滑上去、等過 hover 門檻、讓它真的送出一次 */
+async function armed(h: ReturnType<typeof harness>): Promise<void> {
+  h.anno.move(h.img, 10, 10);
+  await sleep(IMAGE_HOVER_MS + 40);
+}
+
+test('說「點一下重試」的 chip 就要真的能點 —— 文案不可以自己說了算', async () => {
+  /*
+   * 使用者的原話:「所以是要點哪裡? 怎麼點都沒有反應」。
+   *
+   * 上一版每一句失敗文案都寫著「再點一次重試」,而 cue **一個 action
+   * 都沒帶** —— chip 拿不到 act 類別、onclick 是 null、pointer-events
+   * 沒開。整條路上沒有任何一層在說謊,是文案和行為住在不同的地方,
+   * 於是它們各自漂走了(§DS-1)。
+   */
+  const h = harness();
+  await armed(h);
+  h.anno.onError('https://example.com/a.png', 'timeout 100000ms');
+  assert.equal(h.actions.at(-1), 'retry', '文案叫人點,chip 卻不能點');
+  h.done();
+});
+
+test('點不得的失敗不給 action —— 額度用完了點一百次也一樣', async () => {
+  const h = harness();
+  await armed(h);
+  h.anno.onError('https://example.com/a.png', 'daily-cap');
+  assert.equal(h.actions.at(-1), undefined, '不可重試的失敗給了一個假的入口');
+  assert.match(String(h.cues.at(-1)), /預算/, '而且文案也不該叫人點');
+  h.done();
+});
+
+test('重試要真的再送一次 —— 以前從任何入口都回不去', async () => {
+  /*
+   * 以前 `arm()` 看到 failed 只會把同一句話再印一次,而 failed 只有
+   * onResult 會清。點也沒用、滑開再滑回來也沒用 —— **失敗是終點站**。
+   */
+  const h = harness();
+  await armed(h);
+  const n = h.sent.length;
+  h.anno.onError('https://example.com/a.png', 'timeout 100000ms');
+  assert.equal(h.anno.retry(), true);
+  assert.equal(h.sent.length, n + 1, '點了重試卻沒有送出任何請求');
+  h.done();
+});
+
+test('逾時的重試只問大字 —— 同一份請求再送一次只會再逾時一次', async () => {
+  /*
+   * 使用者已經替我們驗過了:逾時之後 Alt+click 升級,**照樣逾時**。
+   * 逾時不是隨機的,是輸出太長(實測 ~2.3 秒一塊,100 秒 = 43 塊),
+   * 所以重試要問得比較少才回得來(§DS-2)。
+   */
+  const h = harness();
+  await armed(h);
+  h.anno.onError('https://example.com/a.png', 'timeout 100000ms');
+  h.anno.retry();
+  assert.equal(h.sent.at(-1)?.brief, true, '逾時的重試又送了一份完整的請求');
+  h.done();
+});
+
+test('抓不到圖那種重試不必縮水 —— 只有逾時是輸出太長', async () => {
+  const h = harness();
+  await armed(h);
+  h.anno.onError('https://example.com/a.png', 'fetch-timeout');
+  h.anno.retry();
+  assert.notEqual(h.sent.at(-1)?.brief, true);
+  h.done();
+});
+
+test('升級過的圖重試要留在 l1 —— 不可以偷偷退回免費檔', async () => {
+  /*
+   * 使用者花了錢點升級,失敗之後重試回免費檔的話,他拿到的是**比較差的
+   * 東西而且不會知道**。
+   */
+  const h = harness();
+  await armed(h);
+  h.anno.upgrade(h.img);
+  h.anno.onError('https://example.com/a.png', 'timeout 100000ms');
+  h.anno.retry();
+  assert.equal(h.sent.at(-1)?.lane, 'l1');
+  h.done();
+});
+
+test('同一張圖還在飛的時候,重試不重複送', async () => {
+  const h = harness();
+  await armed(h);
+  h.anno.onError('https://example.com/a.png', 'timeout 100000ms');
+  assert.equal(h.anno.retry(), true);
+  const n = h.sent.length;
+  assert.equal(h.anno.retry(), false, '第二次點下去又送了一份');
+  assert.equal(h.sent.length, n);
+  h.done();
+});
+
+test('免費檔還在跑的時候按升級,不可以被吞掉', async () => {
+  /*
+   * `upgrade()` 以前只問「這張圖有沒有請求在飛」,有就回 true 走人 ——
+   * 於是使用者在「辨識中…」的時候 Alt+click,那一下**連結也不會走、
+   * 請求也不會送**,兩頭落空。worker 那邊本來就允許 l1 蓋過 l0。
+   */
+  const h = harness();
+  await armed(h);
+  const n = h.sent.length;
+  assert.equal(h.anno.upgrade(h.img), true);
+  assert.equal(h.sent.length, n + 1, '升級被吞掉了');
+  assert.equal(h.sent.at(-1)?.lane, 'l1');
+  h.done();
+});
+
+test('已經在升級了就不重複送 —— 連按兩下只算一次', async () => {
+  const h = harness();
+  await armed(h);
+  h.anno.upgrade(h.img);
+  const n = h.sent.length;
+  assert.equal(h.anno.upgrade(h.img), true);
+  assert.equal(h.sent.length, n);
   h.done();
 });

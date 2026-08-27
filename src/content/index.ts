@@ -151,8 +151,8 @@ let layer: OverlayLayer | null = null;
  */
 const imageAnno = new ImageAnnotator(
   {
-    request(url, lane) {
-      send({ type: 'translate-image', pageKey, url, lane, tier: state.tier });
+    request(url, lane, brief) {
+      send({ type: 'translate-image', pageKey, url, lane, tier: state.tier, brief });
     },
     showImage(rect, placed) {
       layer?.showImage(rect, placed);
@@ -2237,6 +2237,8 @@ async function start(): Promise<void> {
   layer.setVeilStrength(settings.imageVeil);
   layer.onChipAction((action) => {
     if (action === 'zoom') imageAnno.openZoom();
+    // 失敗的 chip 說「點一下重試」,那句話要真的算數(§DS-1)
+    if (action === 'retry') imageAnno.retry();
   });
   layer.onZoomDismiss(() => imageAnno.closeZoom());
   await checkModelId();

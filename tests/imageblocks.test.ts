@@ -572,3 +572,20 @@ test('正常的橫排 CJK 不會被誤判成直排', () => {
   assert.notEqual(blocks[0]!.v, true);
   assert.equal(blocks[0]!.c, 1);
 });
+
+/* ── 只翻大字的問法(§DS-2) ─────────────────────────────────── */
+
+test('brief 的 prompt 要說得出上限與挑法 —— 逾時的唯一出路', async () => {
+  /*
+   * 逾時是輸出太長造成的(實測 ~2.3 秒一塊,100 秒 = 43 塊),
+   * 所以重試必須**問得比較少**才回得來。挑「最大的」不是「前 N 個」:
+   * 字級就是版面自己標好的重要性。
+   */
+  const { visionPrompt, BRIEF_BLOCKS } = await import('../src/worker/visionprompt.ts');
+  const full = visionPrompt('zh-TW');
+  const brief = visionPrompt('zh-TW', [], true);
+  assert.equal(full.includes(String(BRIEF_BLOCKS)), false, '完整版不該有上限');
+  assert.ok(brief.includes(String(BRIEF_BLOCKS)), 'brief 沒說上限是多少');
+  assert.ok(/字級/.test(brief), 'brief 沒說用什麼挑');
+  assert.ok(brief.length > full.length);
+});
