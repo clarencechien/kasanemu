@@ -151,7 +151,7 @@ node scripts/audit-coverage.mjs <url>     # 單頁詳細
 
 ```bash
 npm run typecheck
-npm test          # 334 個測試(node:test + jsdom)
+npm test          # 336 個測試(node:test + jsdom)
 npm run build     # 也會回報 dist 體積對 §10.2 的 1.5 MB 預算
 npm run check     # typecheck + 文件稽核 + test + build + 六支 probe ← 提交前跑這個
 npm run zip       # dist/ → release/kasanemu-<version>.zip(自己寫的 zip,無外部依賴)
@@ -172,6 +172,9 @@ npm run audit:occlusion <url>  # 這一頁的疊層被誰藏了、差多少
 npm run render:veil out.png [--sweep]   # 玻璃的目視稿與配方掃描(眼睛選的那一格)
 npm run audit:docs       # 文件和 repo 對不對得起來(§ 編號、npm run、檔案路徑)
 npm run measure:vocab    # 出貨中的加註規則在四份真實回應 × 五個寬度上放得下幾塊
+npm run harvest:images > corpus.json          # 從真站的內文裡撈圖(和線上同一組門檻)
+gemini_key=... npm run corpus:vision corpus.json   # 整條路跑一次真圖,回應存檔
+npm run corpus:sheet corpus-result.json out.html   # 每張圖照實際顯示寬度畫一次
 npm run audit:tree <url> # 爬一個站的子路徑,對每一頁跑偵測稽核
 GEMINI_API_KEY=... npm run probe:gemma       # 模型行為:thinking、schema、echo 對位
 GEMINI_API_KEY=... node scripts/probe-glossary.mjs   # 詞表遵循率 + 速度品質對打
@@ -205,9 +208,10 @@ src/
   popup/    啟用、管線、檔位、L0 語言包、本頁階層統計、花費、匯出 log / 頁面 / 快取
 scripts/    audit-{sites,tree,coverage,docs}(廣度 / 深度 / 覆蓋 / 文件對齊)
             probe-{detect,colors,snapshot,image,veil,gemma,vision,glossary}
-            render-veil(玻璃的目視稿:量測選不出來的那一格)· measure-vision
+            render-veil(玻璃的目視稿)· measure-vision
+            harvest-images / corpus-vision / corpus-sheet(真圖跑一輪 + 總覽)
             fetch-fonts(subset 打包)· zip · sites.txt · fixtures/
-tests/      334 個 node:test;fixtures/vision/ 是真實 API 回應(地面實況)
+tests/      336 個 node:test;fixtures/vision/ 是真實 API 回應(地面實況)
 docs/       lessons(通則)· deviations(逐件記錄)· acceptance(人工驗收)
             fonts(subset 實測)· plan-annotation(加翻層規格)
             plan-glossary(詞表規格 + 模型實測)· plan-images(圖片翻譯規格)

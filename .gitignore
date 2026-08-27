@@ -8,3 +8,6 @@ dist/
 assets/fonts/*.woff2
 assets/fonts/.src/
 release/
+.viscache/
+corpus*.json
+corpus-sheet.html

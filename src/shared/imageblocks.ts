@@ -90,17 +90,34 @@ const fold = (s: string): string => s.replace(/\s+/gu, ' ').trim().toLowerCase()
  * 超過這個長度就是句子而不是標籤了,折行反而正常。
  */
 /**
- * 譯文貼片可以佔掉畫面的多少 —— **加註的總預算**。
+ * 一張圖最多疊幾塊譯文。
  *
- * 這是 §DW 之後整張圖唯一的取捨:依框的大小由大到小加進來,加到撞上
- * 這個數字為止。它同時回答了兩個以前分開問的問題:「翻多少」和
- * 「這張圖適不適合疊字」。
+ * 使用者的話是「只要標題就好」,而**「標題」是個數量不是比例** ——
+ * 一張圖上重要的東西就是那麼幾個,和圖多大沒有關係。
  *
- * 5.5% 是量出來又用眼睛定的(`docs/plan-images.md` §13-9):
- * 圖表家族三塊標籤全部進得來(實際只用 2.1–3%),密集截圖進來 2–13 塊,
- * 剛好是標題與大標。使用者的話是「預算拉到 5 6% 只要標題就好」。
+ * 一開始只用面積預算,而面積**隨圖的大小反著跑**(§DX):
+ * 1102px 的產品截圖上 21 塊只佔 13%,340px 的小圖表上 2 塊就佔 10%。
+ * 結果是大圖放縱、小圖苛刻 —— 兩邊都錯。真圖實測那張 ClickHouse 截圖
+ * 疊了 **21 塊**,白光暈糊掉半個介面。
+ *
+ * 六是從真實素材看出來的:圖表與示意圖的候選塊數本來就是 1–4,
+ * 產品截圖是 8–22 而讀得下去的只有最上面那幾塊。
  */
-export const PLATE_BUDGET = 0.055;
+export const MAX_PLATES = 6;
+
+/**
+ * 譯文佔掉畫面的比例上限 —— **小圖的保險絲**。
+ *
+ * 塊數上限管的是「別太多」,這一條管的是「別在一張小圖上放六塊」:
+ * 340px 的縮圖放三塊就滿了。18% 是量出來的:真實素材上讀得下去的
+ * 落在 2–17%,而 21 塊那張災難是 13% —— 所以**它單獨擋不住東西**,
+ * 只在塊數上限之外兜底。
+ *
+ * 這個比例**含白貼片糊出去的那一圈**(`PLATE_GLOW_PX`)。
+ * 第一版沒算,於是帳面 2.7% 的圖實際佔了 13.4%,差五倍(§DX)——
+ * 名字說它量什麼,它就要量什麼。
+ */
+export const PLATE_BUDGET = 0.18;
 
 /**
  * 扣掉「譯完等於沒譯」之後**還有這麼多塊**,這張圖就不是圖,是文件。
@@ -254,12 +271,37 @@ export function fontSizeFor(
  * 真正畫出來的尺寸由 `overlay.paintPlates()` 量,那時候才知道字型的實際寬度。
  */
 export const PLATE_PAD_EM = 0.62;
+
+/**
+ * 白貼片糊出去的那一圈,單位 px。
+ *
+ * `overlay.ts` 的 `.iplate` 是 `filter: blur(11px)` —— 高斯糊到大約
+ * **1.5 倍半徑**還看得見,而那一圈是畫面上**最顯眼的部分**
+ * (深色圖上一團白)。
+ *
+ * 第一版的預算沒有算它,於是「譯文佔版」量的是一個看不見的矩形:
+ * 真圖實測**帳面 2.7% 而實際 13.4%**,差了五倍(§DX)。
+ * 名字說它量什麼,它就要量什麼。
+ */
+export const PLATE_GLOW_PX = 16;
+
 const WIDE = /[\u3000-\u9fff\uff00-\uffef]/u;
 
-export function plateSize(label: string, fontPx: number): { w: number; h: number; fs: number } {
+/**
+ * 譯文貼片**畫出來會佔掉多大** —— 連糊出去的那一圈一起算。
+ *
+ * `box` 是不含光暈的那一塊(拿來判斷兩片會不會壓到:光暈互相疊是可以的,
+ * 字疊在一起才不行),`w` / `h` 是含光暈的,預算算的是這個。
+ */
+export function plateSize(
+  label: string,
+  fontPx: number,
+): { w: number; h: number; fs: number; boxW: number; boxH: number } {
   const fs = Math.max(fontPx, MIN_PATCH_FONT_PX);
   const cols = [...label].reduce((n, c) => n + (WIDE.test(c) ? 1 : 0.55), 0);
-  return { w: cols * fs + fs * PLATE_PAD_EM * 2, h: fs * 1.24, fs };
+  const boxW = cols * fs + fs * PLATE_PAD_EM * 2;
+  const boxH = fs * 1.24;
+  return { w: boxW + PLATE_GLOW_PX * 2, h: boxH + PLATE_GLOW_PX * 2, fs, boxW, boxH };
 }
 
 /** 兩片貼片有沒有壓到 */

@@ -10,6 +10,8 @@ import {
   looksConcatenated,
   looksVertical,
   normalizeBoxes,
+  MAX_PLATES,
+  PLATE_GLOW_PX,
   PLATE_BUDGET,
   TEXT_HEAVY_BLOCKS,
   platesOverlap,
@@ -358,6 +360,7 @@ test('placeBlocks:預算是硬的 —— 貼片總面積不會超過 PLATE_BUDGE
     return n + (pl.w * pl.h) / (600 * 600);
   }, 0);
   assert.ok(used <= PLATE_BUDGET + 1e-9, `超出預算:${(used * 100).toFixed(1)}%`);
+  assert.ok(out.placed.length <= MAX_PLATES, `超出塊數上限:${out.placed.length}`);
   assert.ok(out.left > 0, '二十塊長標題不可能全部進得來');
 });
 
@@ -380,11 +383,15 @@ test('placeBlocks:選上的貼片彼此不重疊 —— 面積便宜不代表畫
       const b = out.placed[j]!;
       const pa = plateSize(a.zh, a.fontPx);
       const pb = plateSize(b.zh, b.fontPx);
+      /*
+       * 用**不含光暈的**框比 —— 實作就是這樣判的:
+       * 兩團光暈互相疊沒關係,字疊在一起才不行(§DX)。
+       */
       const box = (p: typeof a, s: typeof pa) => ({
-        x: p.x + p.w / 2 - s.w / 2,
-        y: p.y + p.h / 2 - s.h / 2,
-        w: s.w,
-        h: s.h,
+        x: p.x + p.w / 2 - s.boxW / 2,
+        y: p.y + p.h / 2 - s.boxH / 2,
+        w: s.boxW,
+        h: s.boxH,
       });
       assert.equal(platesOverlap(box(a, pa), box(b, pb)), false, '選上的兩片貼片壓在一起');
     }
@@ -637,4 +644,34 @@ test('brief 的 prompt 要說得出上限與挑法 —— 逾時的唯一出路'
   assert.ok(brief.includes(String(BRIEF_BLOCKS)), 'brief 沒說上限是多少');
   assert.ok(/字級/.test(brief), 'brief 沒說用什麼挑');
   assert.ok(brief.length > full.length);
+});
+
+test('塊數上限是硬的 —— 「只翻標題」是個數量,不是比例(§DX)', () => {
+  /*
+   * 只有面積預算的那一版,在 1102px 的產品截圖上疊了 **21 塊**,
+   * 而帳面才 13% —— 面積隨圖的大小反著跑:大圖放縱、小圖苛刻。
+   * 塊數上限不看圖多大,所以兩邊都管得住。
+   */
+  const drawn = drawnRect({ w: 2000, h: 1200 }, { w: 1200, h: 720 }, 'contain', parsePosition('50% 50%'));
+  const many = Array.from({ length: 20 }, (_, i) => ({
+    box: [i * 45, 0, i * 45 + 36, 260] as [number, number, number, number],
+    text: `heading ${i}`,
+    zh: `標題${i}`,
+    c: 1,
+  }));
+  const out = placeBlocks(many, drawn, { w: 1200, h: 720 });
+  assert.equal(out.placed.length, MAX_PLATES, '大圖上塊數上限沒生效');
+  assert.equal(out.left, 20 - MAX_PLATES);
+});
+
+test('白貼片的預算要算糊出去的那一圈 —— 那是畫面上最顯眼的部分', () => {
+  /*
+   * `.iplate` 是 `filter: blur(11px)`,糊出去的那一圈在深色圖上就是一團白。
+   * 第一版的 plateSize 只回那個看不見的矩形,於是「譯文佔版」量錯了東西:
+   * 真圖實測帳面 2.7% 而實際 13.4%。
+   */
+  const pl = plateSize('標題', 20);
+  assert.ok(pl.w > pl.boxW, '含光暈的寬度沒有比較大');
+  assert.ok(pl.h > pl.boxH);
+  assert.equal(pl.w - pl.boxW, PLATE_GLOW_PX * 2);
 });

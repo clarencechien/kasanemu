@@ -14,6 +14,7 @@
 import {
   BOX_SCALE,
   LOW_CONFIDENCE,
+  MAX_PLATES,
   PLATE_BUDGET,
   TEXT_HEAVY_BLOCKS,
   fontSizeFor,
@@ -199,12 +200,15 @@ export interface Placement {
  * 像 sukemu 的題目」:錨點解的是「字太小疊不下」,而那在**拍照翻譯**
  * 才是主場;網頁上的圖是別人排好版的,字小的那些多半也不重要。
  *
- * 取捨只剩一個數字:**譯文貼片可以佔掉畫面的多少**(`PLATE_BUDGET`)。
- * 依框的大小由大到小加進來,加到撞上預算、或會壓到已經選上的貼片為止。
+ * 取捨是「**只翻標題**」,而它有三道閘門,依框的大小由大到小加進來:
  *
- * 兩個條件不是一個(§13-9-ter):面積管「總量會不會太吵」,重疊管
- * 「會不會互相壓到」。長標籤在字級地板上又寬又薄 —— 面積很便宜,
- * 畫出來卻橫著壓過旁邊兩塊。
+ * 1. `MAX_PLATES` —— 最多幾塊。「標題」是個數量不是比例,和圖多大無關。
+ * 2. `PLATE_BUDGET` —— 譯文佔畫面的比例,**小圖的保險絲**。
+ * 3. 不與已選上的貼片重疊 —— 長標籤在字級地板上又寬又薄,
+ *    面積很便宜卻橫著壓過旁邊兩塊(§13-9-ter)。
+ *
+ * 三道都是量出來的,而且**互相補位**:只有面積的那一版在 1102px 的
+ * 產品截圖上疊了 21 塊(帳面才 13%),在 340px 的小圖表上一塊都放不下(§DX)。
  *
  * **同一份資料在不同顯示尺寸下會放下不同的塊數**,而這是設計的一部分:
  * 繞圖的縮圖只放得下標題,點開放大檢視就多出十幾塊 —— 不必重問模型。
@@ -246,8 +250,19 @@ export function placeBlocks(
   const placed: PlacedBlock[] = [];
   let used = 0;
   for (const c of order) {
+    // 「只要標題」是個數量,不是比例 —— 圖多大都一樣(§DX)
+    if (placed.length >= MAX_PLATES) break;
     const pl = plateSize(c.label, c.fontPx);
-    const box = { x: c.r.x + c.r.w / 2 - pl.w / 2, y: c.r.y + c.r.h / 2 - pl.h / 2, w: pl.w, h: pl.h };
+    /*
+     * 預算算**含光暈的**(那是畫面上最顯眼的部分),
+     * 重疊判斷算**不含光暈的** —— 兩團光暈互相疊沒關係,字疊在一起才不行。
+     */
+    const box = {
+      x: c.r.x + c.r.w / 2 - pl.boxW / 2,
+      y: c.r.y + c.r.h / 2 - pl.boxH / 2,
+      w: pl.boxW,
+      h: pl.boxH,
+    };
     // 跳過而不是中斷:放不下的是**這一塊**,後面比較小的還有機會
     if (used + (pl.w * pl.h) / area > PLATE_BUDGET) continue;
     if (taken.some((t) => platesOverlap(t, box))) continue;
