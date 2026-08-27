@@ -1,0 +1,293 @@
+<title>真圖上的加註</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@400;600;700&display=swap">
+<style>
+:root {
+  --bg: #F6F3F0; --surface: #FFFDFB; --sunk: #EEE8E3; --line: #E2DAD3;
+  --fg: #241B16; --muted: #7C6C63; --ink: #8E2605;
+  --ok: #2F6B4F; --warn: #A8601C; --bad: #A03225;
+  --shadow: 0 1px 2px rgba(36,27,22,.06), 0 8px 22px rgba(36,27,22,.07);
+  --ui: "IBM Plex Sans Condensed", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+  --data: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #14100E; --surface: #1E1815; --sunk: #191411; --line: #332B26;
+    --fg: #EEE7E1; --muted: #9C8B81; --ink: #E8845C;
+    --ok: #6FBF95; --warn: #D9A05B; --bad: #E0705E;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 22px rgba(0,0,0,.35);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #14100E; --surface: #1E1815; --sunk: #191411; --line: #332B26;
+  --fg: #EEE7E1; --muted: #9C8B81; --ink: #E8845C;
+  --ok: #6FBF95; --warn: #D9A05B; --bad: #E0705E;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 22px rgba(0,0,0,.35);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--ui); font-size: 15px; line-height: 1.55; }
+.wrap { max-width: 1320px; margin: 0 auto; padding: 34px 22px 70px; }
+.eyebrow { font-family: var(--data); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; }
+h1 { font-size: clamp(30px, 4.2vw, 44px); font-weight: 700; letter-spacing: -.015em; line-height: 1.08; margin: 0 0 12px; text-wrap: balance; }
+.lede { max-width: 64ch; color: var(--muted); margin: 0 0 8px; }
+.lede strong { color: var(--fg); font-weight: 600; }
+
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 1px; background: var(--line);
+  border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin: 24px 0 8px; }
+.cell { background: var(--surface); padding: 13px 15px; }
+.cell dt { font-family: var(--data); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.cell dd { margin: 2px 0 0; font-family: var(--data); font-size: 24px; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.cell dd small { font-size: 12px; color: var(--muted); }
+
+.filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 26px; }
+.filters button { font: inherit; font-size: 13px; padding: 5px 12px; border: 1px solid var(--line); border-radius: 999px;
+  background: transparent; color: var(--muted); cursor: pointer; }
+.filters button:hover { background: var(--sunk); color: var(--fg); }
+.filters button[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: #fff; }
+:root[data-theme="dark"] .filters button[aria-pressed="true"] { color: #17110E; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .filters button[aria-pressed="true"] { color: #17110E; } }
+.filters button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow);
+  margin-bottom: 18px; overflow: hidden; }
+.card header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; padding: 12px 16px 10px; border-bottom: 1px solid var(--line); }
+.card h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.card .from { font-family: var(--data); font-size: 11.5px; color: var(--muted); word-break: break-all; }
+.tag { font-family: var(--data); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase;
+  padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+.tag.ok { color: var(--ok); } .tag.dense { color: var(--warn); } .tag.none { color: var(--muted); } .tag.fail { color: var(--bad); }
+.shot { padding: 16px; background: var(--sunk); overflow-x: auto; }
+.stage { position: relative; overflow: hidden; border-radius: 4px; }
+.stage img { display: block; width: 100%; height: 100%; }
+.stage .imgwrap { left: 0; top: 0; }
+.nums { display: flex; flex-wrap: wrap; gap: 2px 24px; padding: 11px 16px 13px; }
+.num { display: flex; flex-direction: column; }
+.num dt { font-family: var(--data); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.num dd { margin: 0; font-family: var(--data); font-size: 17px; font-variant-numeric: tabular-nums; }
+.fail-note { padding: 16px; font-family: var(--data); font-size: 13px; color: var(--bad); }
+.note { margin-top: 30px; padding: 18px 20px; background: var(--surface); border: 1px solid var(--line);
+  border-left: 3px solid var(--ink); border-radius: 8px; max-width: 76ch; }
+.note h3 { margin: 0 0 8px; font-size: 15px; font-weight: 600; }
+.note p { margin: 0 0 9px; font-size: 14px; color: var(--muted); }
+.note p:last-child { margin-bottom: 0; }
+.note strong { color: var(--fg); font-weight: 600; }
+.note code { font-family: var(--data); font-size: 12.5px; background: var(--sunk); padding: 1px 5px; border-radius: 4px; color: var(--fg); }
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">Kasanemu · gemma-4-31b-it</p>
+  <h1>真圖上的加註</h1>
+  <p class="lede">
+    從 <strong>clickhouse.com</strong>、<strong>thenewstack.io</strong>、
+    <strong>claude.com</strong>、<strong>academy.claude.com</strong> 的內文裡撈出來的圖,
+    每一張都走完整條線上的路:縮圖 → gemma 視覺辨識 → 出貨中的加註規則。
+  </p>
+  <p class="lede">
+    畫的大小就是它<strong>在原頁面上的實際顯示寬度</strong> —— 放幾塊正是尺寸的函數,
+    換個尺寸看等於在看另一件事。
+  </p>
+
+  <dl class="summary" id="summary"></dl>
+  <div class="filters" id="filters"></div>
+  <div id="cards"></div>
+
+  <aside class="note" id="note"></aside>
+</div>
+
+<script>
+const BUNDLE = /*__BUNDLE__*/;
+const ROWS = /*__ROWS__*/;
+(0, eval)(BUNDLE);
+const st = document.createElement('style');
+st.textContent = globalThis.KS.LAYER_CSS;
+document.head.append(st);
+const { VEIL_PAD, paintPlates } = globalThis.KS;
+
+const WHY = {
+  ok: ['畫', 'ok'],
+  'text-heavy': ['太密,行內不畫', 'dense'],
+  nothing: ['沒有需要翻的字', 'none'],
+};
+
+function stageFor(r) {
+  const stage = document.createElement('div');
+  stage.className = 'stage';
+  stage.style.width = r.dw + 'px';
+  stage.style.height = r.dh + 'px';
+  const img = document.createElement('img');
+  img.src = 'data:image/webp;base64,' + r.thumb;
+  img.alt = '';
+  stage.append(img);
+  if (r.inline.length === 0) return stage;
+  const wrap = document.createElement('div');
+  wrap.className = 'imgwrap show';
+  wrap.style.setProperty('--ksnm-iw', r.dw + 'px');
+  wrap.style.setProperty('--ksnm-ih', r.dh + 'px');
+  stage.append(wrap);
+  for (const b of r.inline) {
+    const v = document.createElement('span');
+    v.className = 'iveil' + (b.low ? ' low' : '');
+    v.style.left = (b.x - VEIL_PAD) + 'px';
+    v.style.top = (b.y - VEIL_PAD) + 'px';
+    v.style.width = (b.w + VEIL_PAD * 2) + 'px';
+    v.style.height = (b.h + VEIL_PAD * 2) + 'px';
+    wrap.append(v);
+  }
+  for (const b of r.inline) {
+    const box = document.createElement('div');
+    box.className = 'iblk' + (b.low ? ' low' : '') + (b.vertical ? ' vert' : '');
+    box.style.left = b.x + 'px';
+    box.style.top = b.y + 'px';
+    box.style.width = b.w + 'px';
+    box.style.height = b.h + 'px';
+    box.style.fontSize = b.fontPx + 'px';
+    const tx = document.createElement('span');
+    tx.className = 'itx' + ([...b.zh].length > 10 ? ' wrap' : '');
+    tx.textContent = b.zh;
+    box.append(tx);
+    wrap.append(box);
+  }
+  /*
+   * **不在這裡畫白貼片。**
+   *
+   * `paintPlates()` 靠量 `.itx` 的實際寬度決定貼片多大(§DT),
+   * 而還沒插進文件的元素**每一個矩形都是零** —— 量出來全部跳過,
+   * 一片貼片都不會畫。所以要等整批插進 DOM 之後再補。
+   */
+  return stage;
+}
+
+const num = (label, value, sub) => {
+  const d = document.createElement('div');
+  d.className = 'num';
+  const dt = document.createElement('dt');
+  dt.textContent = label;
+  const dd = document.createElement('dd');
+  dd.textContent = value;
+  if (sub) { const s = document.createElement('small'); s.textContent = ' ' + sub; dd.append(s); }
+  d.append(dt, dd);
+  return d;
+};
+
+let filter = 'all';
+function render() {
+  const shown = ROWS.filter((r) => filter === 'all' || r.site === filter);
+  const host = document.getElementById('cards');
+  host.replaceChildren(...shown.map((r) => {
+    const card = document.createElement('div');
+    card.className = 'card';
+    const head = document.createElement('header');
+    const h2 = document.createElement('h2');
+    h2.textContent = r.src.split('/').pop().split('?')[0].slice(0, 40);
+    const from = document.createElement('span');
+    from.className = 'from';
+    from.textContent = r.page;
+    const tag = document.createElement('span');
+    const [text, cls] = r.fail ? ['翻不了', 'fail'] : (WHY[r.why] ?? ['?', 'none']);
+    tag.className = 'tag ' + cls;
+    tag.textContent = text;
+    head.append(h2, tag, from);
+    card.append(head);
+
+    if (r.fail) {
+      const p = document.createElement('div');
+      p.className = 'fail-note';
+      p.textContent = r.reason;
+      card.append(p);
+      return card;
+    }
+    const shot = document.createElement('div');
+    shot.className = 'shot';
+    shot.append(stageFor(r));
+    card.append(shot);
+    const nums = document.createElement('dl');
+    nums.className = 'nums';
+    nums.append(
+      num('顯示寬度', r.dw + 'px'),
+      num('模型回', String(r.returned), '塊'),
+      num('值得翻', String(r.worth), '塊'),
+      num('行內畫', String(r.inline.length), '塊'),
+      num('還剩', String(r.left), '塊'),
+      num('放大檢視', String(r.zoom), '塊'),
+      num('模型花了', r.ms ? (r.ms / 1000).toFixed(1) + 's' : '快取'),
+    );
+    card.append(nums);
+    return card;
+  }));
+  // 插進文件了才量得到字 —— 貼片是第三層,由實作那支函式補上
+  for (const wrap of host.querySelectorAll('.imgwrap')) paintPlates(wrap);
+}
+
+const sites = [...new Set(ROWS.map((r) => r.site))];
+document.getElementById('filters').replaceChildren(
+  ...[['all', `全部 ${ROWS.length}`], ...sites.map((s) => [s, `${s} ${ROWS.filter((r) => r.site === s).length}`])]
+    .map(([id, label]) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.setAttribute('aria-pressed', String(filter === id));
+      b.onclick = () => {
+        filter = id;
+        for (const other of b.parentElement.children) other.setAttribute('aria-pressed', String(other === b));
+        render();
+      };
+      return b;
+    }),
+);
+
+const ok = ROWS.filter((r) => !r.fail);
+const drew = ok.filter((r) => r.why === 'ok' && r.inline.length > 0);
+const counts = drew.map((r) => r.inline.length).sort((a, b) => a - b);
+document.getElementById('summary').replaceChildren(
+  ...[
+    ['撈到', String(ROWS.length), '張'],
+    ['翻得出東西', String(drew.length), '張'],
+    ['沒有需要翻的', String(ok.filter((r) => r.why === 'nothing').length), '張'],
+    ['太密不畫', String(ok.filter((r) => r.why === 'text-heavy').length), '張'],
+    ['翻不了', String(ROWS.length - ok.length), '張'],
+    ['每張畫幾塊', counts.length ? `${counts[0]}–${counts.at(-1)}` : '—', counts.length ? `中位 ${counts[Math.floor(counts.length / 2)]}` : ''],
+  ].map(([label, v, sub]) => {
+    const d = document.createElement('div');
+    d.className = 'cell';
+    const dt = document.createElement('dt');
+    dt.textContent = label;
+    const dd = document.createElement('dd');
+    dd.textContent = v;
+    if (sub) { const s = document.createElement('small'); s.textContent = ' ' + sub; dd.append(s); }
+    d.append(dt, dd);
+    return d;
+  }),
+);
+
+const worths = ok.map((r) => r.worth).sort((a, b) => a - b);
+document.getElementById('note').innerHTML = `
+  <h3>這一輪撈真圖撈出來的四件事</h3>
+  <p>
+    <strong>1. 預算量錯了東西,差五倍。</strong>
+    白貼片是 <code>filter: blur(11px)</code>,糊出去那一圈在深色圖上就是一團白 ——
+    而「譯文佔版」只算了裡面那個看不見的矩形。上面第一張 ClickHouse 截圖
+    <strong>帳面 2.7%、實際 13.4%</strong>,於是規則放了 <strong>21 塊</strong>進去,
+    白光暈糊掉半個介面。現在光暈算進去了。
+  </p>
+  <p>
+    <strong>2. 面積隨圖的大小反著跑。</strong>
+    1102px 的截圖上 21 塊只佔 13%,340px 的小圖表上 2 塊就佔 10% ——
+    大圖放縱、小圖苛刻。所以加了一道<strong>塊數上限(6 塊)</strong>:
+    「只翻標題」是個數量,和圖多大無關。面積退成小圖的保險絲。
+  </p>
+  <p>
+    <strong>3. 密集門檻一次都沒觸發。</strong>
+    「扣掉不需要翻的還剩幾塊」在這批真圖上是 <code>${worths.join(' · ')}</code> ——
+    最高 ${worths.at(-1)} 塊,而門檻是 24。當初定門檻用的是一張<strong>整頁截圖</strong>,
+    那是使用者自己開的檔案,不是網頁內文裡的圖。真正的頁內圖沒有那麼密,
+    所以那道閘門在實際使用上幾乎是空的 —— 現在擋住 21 塊那張的是塊數上限,不是它。
+  </p>
+  <p>
+    <strong>4. <code>&lt;img src="*.svg"&gt;</code> 整條路走不通。</strong>
+    ClickHouse 的架構圖全是 SVG,而 worker 裡的 <code>createImageBitmap</code>
+    解不了 SVG;那幾張的文字又已經轉成路徑,連讀 <code>&lt;text&gt;</code> 的舊路
+    也走不了。8 張裡有 5 張卡在這裡 —— 這次撈出來最大的洞。
+  </p>
+`;
+
+render();
+</script>

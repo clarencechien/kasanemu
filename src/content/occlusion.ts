@@ -43,6 +43,23 @@ export function overflowGoesToViewport(el: Element): boolean {
  * 可捲動的容器**照樣算**:現在看不見就是看不見,使用者把它捲進來之後
  * 下一輪稽核會再把疊層放出來。
  */
+/**
+ * 這一層祖先**真的會裁切內容**嗎。
+ *
+ * 「overflow 不是 visible」只是必要條件 —— 把 overflow 傳播給視窗的那一層
+ * (`overflowGoesToViewport`)自己一格都不裁。**這條判斷在這個檔案之外
+ * 不可以再寫第二份**:§DV 修了 `clipReason()` 的那一份,而 `index.ts` 的
+ * `clippers()` 裡還有一份沒跟著修 —— 於是同一個站、同一個症狀第三次回來
+ * (§DZ):body 只有一個視窗高,捲過第一屏之後它的矩形整個在視窗上面,
+ * 每一塊譯文都被「裁到 body 的範圍內」裁成零。
+ * `tests/style.test.ts` 有一條 grep 守著這件事。
+ */
+export function clipsContent(el: Element): boolean {
+  if (overflowGoesToViewport(el)) return false;
+  const cs = getComputedStyle(el);
+  return cs.overflowX !== 'visible' || cs.overflowY !== 'visible';
+}
+
 /** 被誰裁掉的 —— `null` 代表沒有 */
 export interface ClipReason {
   /** 裁掉它的那一層 */
@@ -62,10 +79,7 @@ export function clipReason(el: Element): ClipReason | null {
   const r = el.getBoundingClientRect();
   if (r.width < 1 || r.height < 1) return { by: el, kind: 'self-zero' };
   for (let p = el.parentElement; p && p !== document.documentElement; p = p.parentElement) {
-    // 傳播到視窗去的那一層自己不裁(§DV)
-    if (overflowGoesToViewport(p)) continue;
-    const cs = getComputedStyle(p);
-    if (cs.overflowX === 'visible' && cs.overflowY === 'visible') continue;
+    if (!clipsContent(p)) continue;
     const pr = p.getBoundingClientRect();
     if (pr.width < 1 || pr.height < 1) return { by: p, kind: 'parent-zero' };
     const outside =
@@ -77,4 +91,79 @@ export function clipReason(el: Element): ClipReason | null {
 
 export function clippedAway(el: Element): boolean {
   return clipReason(el) !== null;
+}
+
+/**
+ * 找出視窗上下緣被 position: fixed / sticky 的頁面元素佔掉多少。
+ *
+ * 為什麼需要:原文捲到固定頁首**底下**會被蓋住,而我們的疊層 z-index 是
+ * 2147483000,畫在頁首**上面** —— 位置完全正確,卻浮在頁首上。
+ * 使用者一路回報的「跑到 header」就是這個,不是幾何錯位
+ * (診斷 log 裡 position-drift 是零筆,座標一直都對)。
+ *
+ * 疊層的 pointer-events: none 在這裡第二次派上用場:
+ * elementFromPoint 打不到我們自己,回來的一定是頁面的東西。
+ */
+export function chromeBand(y: number, top: boolean): number {
+  return chromeBandDetail(y, top).band;
+}
+
+/**
+ * 要算「門面」,至少要橫跨畫面的這個比例。
+ *
+ * **黏著的側欄不是門面**(§DY)。thenewstack.io 的 `div.sidebar-column`
+ * 是 `position: sticky`、486px 高、只佔畫面寬的 **25%** ——
+ * 而我們在畫面寬 25% / 50% / 75% 三點取樣、取最大的帶,
+ * 75% 那一點正好落在它身上,於是**半個視窗被當成頁尾裁掉**。
+ *
+ * 三點取樣本身是對的:Gmail 的 Reply / Forward 列只佔左半邊,
+ * 只在正中央取一次會漏掉。少的是「它有多寬」——
+ * 門面橫跨畫面(Gmail 那條約半個畫面),側欄只佔一條(四分之一到三分之一)。
+ * 0.45 取在中間,兩邊都留了餘裕。
+ *
+ * `pinnedBottom()` 早就有同一個判斷(`r.width >= 框寬的一半`),
+ * 只是當時只用在容器底邊,沒有用在視窗門面上。
+ */
+export const CHROME_MIN_SPAN = 0.45;
+
+/** 一組門面資訊 —— 稽核要問「是哪一個元素」,執行時只要數字 */
+export interface BandDetail {
+  band: number;
+  /** 咬到上限了嗎 —— 上限是視窗的一半 */
+  clamped: boolean;
+  by: Element | null;
+  raw: number;
+}
+
+export function chromeBandDetail(y: number, top: boolean): BandDetail {
+  /*
+   * 取樣三個 x,取最大的帶。
+   *
+   * 原本只在正中央取一次 —— 而 Gmail 的 Reply / Forward 列只佔左半邊,
+   * 正中央那一點打到的是它右邊的空白。回報的「下面超出的部分」
+   * 就是這樣漏掉的:整條列明明釘在那裡,我們卻量到 0。
+   */
+  let band = 0;
+  let by: Element | null = null;
+  for (const ratio of [0.25, 0.5, 0.75]) {
+    const x = Math.round(window.innerWidth * ratio);
+    const hit = document.elementFromPoint(x, y);
+    for (let el: Element | null = hit; el && el !== document.body; el = el.parentElement) {
+      const cs = getComputedStyle(el);
+      if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
+      // 透明的覆蓋層不會擋住文字,不要當成頁首
+      if (Number(cs.opacity) === 0 || cs.visibility === 'hidden') continue;
+      const r = el.getBoundingClientRect();
+      // 黏著的欄不是門面(§DY)—— 門面橫跨畫面,側欄只佔一條
+      if (r.width < window.innerWidth * CHROME_MIN_SPAN) break;
+      const b = top ? r.bottom : window.innerHeight - r.top;
+      if (b > band) {
+        band = b;
+        by = el;
+      }
+      break;
+    }
+  }
+  const cap = window.innerHeight / 2;
+  return { band: Math.max(0, Math.min(band, cap)), clamped: band > cap, by, raw: band };
 }

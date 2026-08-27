@@ -134,14 +134,15 @@ const got = await p.evaluate((fx) => {
       cs.objectFit || 'fill',
       IG.parsePosition(cs.objectPosition || '50% 50%'),
     );
-    const placed = IG.placeBlocks(blocks, drawn, clip);
+    const out = IG.placeBlocks(blocks, drawn, clip);
+    const placed = out.placed;
     report[id] = {
       display: `${Math.round(r.width)}x${Math.round(r.height)}`,
       fit: cs.objectFit,
       drawn: `${Math.round(drawn.w)}x${Math.round(drawn.h)} @${Math.round(drawn.x)},${Math.round(drawn.y)}`,
       total: placed.length,
-      veil: placed.filter((b) => b.kind === 'veil').length,
-      pin: placed.filter((b) => b.kind === 'pin').length,
+      left: out.left,
+      why: out.why,
       // 每一塊都要落在圖的範圍內 —— 超出去就是加註畫到圖外面
       outside: placed.filter(
         (b) => b.x < -0.5 || b.y < -0.5 || b.x + b.w > clip.w + 0.5 || b.y + b.h > clip.h + 0.5,
@@ -170,24 +171,24 @@ for (const id of ['zoom-btn', 'zoom-link', 'zoom-rmiz', 'zoom-self']) {
 if (zoom['zoom-none']) problems.push('zoom-none:誤判成站方有 lightbox → 我們的入口不會出現');
 
 for (const [id, r] of Object.entries(got)) {
-  if (r.total === 0) problems.push(`${id}:一塊都沒放上去`);
   if (r.outside > 0) problems.push(`${id}:${r.outside} 塊畫到圖外面`);
   if (r.maxFont > 40) problems.push(`${id}:字級 ${r.maxFont} 超過上限`);
+  // 每一塊都要不是畫出來就是算在「還剩幾塊」裡 —— 不可以無聲消失
+  if (r.total === 0 && r.left === 0) problems.push(`${id}:一塊都沒放上去,也沒說還剩幾塊`);
 }
 /*
- * **一張圖只能有一種語彙**(使用者原話:「一下有疊字 一下註解 不太統一」)。
- * 逐塊判斷每一塊單看都對,合起來卻是兩套視覺語言插在同一張圖上。
+ * **密集截圖行內不畫**(§DW)。lite-shot 扣掉「譯完等於沒譯」還有 47 塊 ——
+ * 那是文件不是圖,蓋上十幾片玻璃只會更難讀。而且要說得出還剩幾塊,
+ * 不然放大檢視的入口沒有理由出現。
  */
-for (const [id, r] of Object.entries(got)) {
-  if (r.veil > 0 && r.pin > 0) {
-    problems.push(`${id}:同一張圖上疊字 ${r.veil} 塊、錨點 ${r.pin} 塊 —— 兩種語彙混用`);
-  }
+if (got.plain.why !== 'text-heavy') {
+  problems.push(`plain:密集截圖沒被認出來(why=${got.plain.why})`);
 }
-// lite-shot 是密集截圖:53 塊小字,任何行內尺寸都該整張走錨點
-if (got.plain.veil > 0) problems.push('plain:密集截圖被硬塞成疊字了');
-// cover 會裁掉兩側,所以放上去的塊**必然比 contain 少**
-if (got.cover.total >= got.contain.total) {
-  problems.push(`cover 沒有裁掉任何東西(${got.cover.total} vs contain ${got.contain.total})`);
+if (got.plain.left < 24) problems.push(`plain:說剩 ${got.plain.left} 塊,和素材對不上`);
+// cover 會裁掉兩側,所以候選的塊**必然比 contain 少**
+const all = (r) => r.total + r.left;
+if (all(got.cover) >= all(got.contain)) {
+  problems.push(`cover 沒有裁掉任何東西(${all(got.cover)} vs contain ${all(got.contain)})`);
 }
 
 // 捲動之後文件座標不變 —— 疊層跟著瀏覽器捲,不是 JS 追
@@ -225,7 +226,7 @@ const render = await p.evaluate(async ([fx, cx]) => {
   const img = document.getElementById('plain');
   const g = IG.geometryOf(img);
   const placed = IG.placeBlocks(blocks, g.drawn, g.clip);
-  layer.showImage(g.rect, placed);
+  layer.showImage(g.rect, placed.placed);
 
   /*
    * 滑鼠穿透是硬規則,而它有**兩半**,兩半都要驗:
@@ -244,7 +245,7 @@ const render = await p.evaluate(async ([fx, cx]) => {
   const zdrawn = IG.drawnRect({ w: fx.nw, h: fx.nh }, { w: zr.width, h: zr.height },
     'contain', { x: { pct: 0.5 }, y: { pct: 0.5 } });
   const zplaced = IG.placeBlocks(blocks, zdrawn, { w: zr.width, h: zr.height });
-  layer.setZoomBlocks(zplaced);
+  layer.setZoomBlocks(zplaced.placed);
 
   /*
    * 翻面用圖表那份量:密集截圖在放大檢視裡**仍然**該是錨點
@@ -262,18 +263,6 @@ const render = await p.evaluate(async ([fx, cx]) => {
       'contain', { x: { pct: 0.5 }, y: { pct: 0.5 } }),
     { w: zr.width, h: (zr.width * cx.nh) / cx.nw },
   );
-
-  /*
-   * 錨點貼片:規格 §2.3 的「hover pin 出貼片」。
-   * 這一段以前根本不存在,而**沒有任何測試會發現** —— 圓點畫得好好的,
-   * 只是點下去什麼都沒有。所以這裡直接問 DOM 有沒有那片貼片、上面有沒有字。
-   */
-  const firstPin = zplaced.find((b) => b.kind === 'pin') ?? placed.find((b) => b.kind === 'pin');
-  layer.setActivePin(firstPin ? firstPin.n : 0, firstPin);
-  const popEl = shadow?.querySelector('.ipop');
-  const popText = popEl?.textContent ?? '';
-  layer.setActivePin(0);
-  const popGone = shadow?.querySelector('.ipop') === null;
 
   /*
    * **三層,而且是整層對整層(§DR-1、§DT)。**
@@ -304,10 +293,6 @@ const render = await p.evaluate(async ([fx, cx]) => {
     };
   };
 
-  // 註解清單:錨點標位置,清單給字。少了它,放大檢視還是 53 個圓點
-  const rows = shadow?.querySelectorAll('.zrow').length ?? 0;
-  const hasList = shadow?.querySelector('.zoom')?.classList.contains('haslist') ?? false;
-
   /*
    * **按住 Alt 在放大檢視裡有用嗎。**
    *
@@ -325,7 +310,7 @@ const render = await p.evaluate(async ([fx, cx]) => {
    */
   const settle = () => new Promise((r) => setTimeout(r, 320));
   const annoIn = () => {
-    const el = shadow?.querySelector('.zoom .iblk, .zoom .ipin');
+    const el = shadow?.querySelector('.zoom .iblk');
     if (!el) return false;
     const cs = getComputedStyle(el);
     return cs.display !== 'none' && cs.visibility !== 'hidden' && Number(cs.opacity) > 0.05;
@@ -343,7 +328,7 @@ const render = await p.evaluate(async ([fx, cx]) => {
    * 一片玻璃都沒有,問了永遠是對的(第一版就是這樣寫的,assert 形同虛設)。
    * 圖表那份放大之後才是整張疊字,所以換它畫進去再問。
    */
-  layer.setZoomBlocks(cBig);
+  layer.setZoomBlocks(cBig.placed);
   const zoomOrder = layerOrder(shadow?.querySelector('.zoom .zimg'));
 
   Element.prototype.attachShadow = real;
@@ -352,20 +337,15 @@ const render = await p.evaluate(async ([fx, cx]) => {
     zoomAnnoBefore,
     zoomAnnoWhileAlt,
     zoomAnnoAfterAlt,
-    popText,
-    popHasZh: firstPin ? popText.includes(firstPin.zh) : false,
-    popGone,
-    rows,
-    hasList,
-    pinCount: zplaced.filter((b) => b.kind === 'pin').length,
-    inlineVeil: placed.filter((b) => b.kind === 'veil').length,
-    inlinePin: placed.filter((b) => b.kind === 'pin').length,
-    zoomVeil: zplaced.filter((b) => b.kind === 'veil').length,
-    zoomPin: zplaced.filter((b) => b.kind === 'pin').length,
-    chartSmallVeil: cSmall.filter((b) => b.kind === 'veil').length,
-    chartSmallPin: cSmall.filter((b) => b.kind === 'pin').length,
-    chartBigVeil: cBig.filter((b) => b.kind === 'veil').length,
-    chartBigPin: cBig.filter((b) => b.kind === 'pin').length,
+    inlineDrawn: placed.placed.length,
+    inlineWhy: placed.why,
+    inlineLeft: placed.left,
+    zoomDrawn: zplaced.placed.length,
+    zoomWhy: zplaced.why,
+    chartSmallDrawn: cSmall.placed.length,
+    chartSmallLeft: cSmall.left,
+    chartBigDrawn: cBig.placed.length,
+    chartBigLeft: cBig.left,
     veilLayerOrdered: zoomOrder.ordered,
     veilNestedInBlock: zoomOrder.nested,
     veilLayerCount: zoomOrder.veils,
@@ -385,15 +365,29 @@ if (!render.zoomVisible) problems.push('showZoom 之後放大檢視沒顯示');
 if (!render.throughWithAnno) problems.push('加註擋住了滑鼠 —— 圖上點不到底下的頁面');
 if (!render.blockedWhileZoom) problems.push('放大檢視開著卻沒擋住點擊 —— 會點到底下的頁面');
 if (!render.throughAfterClose) problems.push('關掉放大檢視之後滑鼠還是穿不過去');
-// §2.3「hover pin 出貼片」—— 這一段以前沒實作,而圓點照樣畫得好好的
-if (!render.popHasZh) {
-  problems.push(`錨點沒有出貼片,或貼片上沒有譯文:「${render.popText}」`);
+/*
+ * **密集截圖:行內不畫,放大檢視畫得出來**(§DW)。
+ *
+ * 錨點退場之後,放大檢視接手了它原本的工作 ——「行內放不下的字去哪裡讀」。
+ * 所以這兩條要一起驗:少了前半是「什麼都不畫」,少了後半是「永遠讀不到」。
+ */
+if (render.inlineWhy !== 'text-heavy') {
+  problems.push(`密集截圖行內沒被擋下(why=${render.inlineWhy}、畫了 ${render.inlineDrawn} 塊)`);
 }
-if (!render.popGone) problems.push('滑開之後貼片沒有收掉');
-// 錨點標位置,清單給字 —— 少了清單,放大檢視還是一堆讀不到的圓點
-if (!render.hasList) problems.push('錨點模式的放大檢視沒有掛註解清單');
-if (render.rows !== render.pinCount) {
-  problems.push(`清單列數對不上錨點數:${render.rows} vs ${render.pinCount}`);
+if (render.zoomDrawn === 0) {
+  problems.push('放大檢視也不畫 —— 那些字就永遠讀不到了');
+}
+/*
+ * **圖表:同一份資料兩個尺寸,語彙不翻面,只是放得下的變多**。
+ * 舊規則在這裡整張翻面(340px 全錨點、放大全疊字),那正是使用者回報的
+ * 「兩張很像的圖 一個是疊字 一個是標註」。
+ */
+if (render.chartSmallDrawn === 0) problems.push('圖表縮圖上一塊都畫不出來');
+if (render.chartBigDrawn < render.chartSmallDrawn) {
+  problems.push(`放大之後畫得比縮圖少:${render.chartBigDrawn} < ${render.chartSmallDrawn}`);
+}
+if (render.chartSmallDrawn + render.chartSmallLeft !== render.chartBigDrawn + render.chartBigLeft) {
+  problems.push('兩個尺寸的候選總數對不上 —— 不該重問模型也不該掉塊');
 }
 /*
  * 黑窗自己印著「按住 Alt 看原圖」—— UI 印出來的承諾要兌現。
@@ -411,17 +405,9 @@ if (render.veilNestedInBlock > 0)
 if (render.veilLayerCount > 0 && !render.veilLayerOrdered)
   problems.push('三層的順序不對 —— 字要在最上面,只能被字蓋到(§DT)');
 if (render.veilLayerCount > 0 && render.plateLayerCount === 0)
-  problems.push('疊字模式卻一片白貼片都沒有 —— 深色圖上的譯文會讀不到');
+  problems.push('畫了玻璃卻一片白貼片都沒有 —— 深色圖上的譯文會讀不到');
 if (render.zoomAnnoWhileAlt) problems.push('按住 Alt 在放大檢視裡看不到原圖 —— 加註沒有掀開');
 if (!render.zoomAnnoAfterAlt) problems.push('放開 Alt 之後加註沒有回來');
-if (render.zoomVeil > 0 && render.zoomPin > 0) {
-  problems.push('放大檢視裡混用了兩種語彙');
-}
-// 圖表:縮圖上整張錨點,放大之後整張翻成疊字(§2.3 的分流,作用域是整張圖)
-if (render.chartSmallVeil > 0) problems.push('圖表縮圖上就疊字了 —— 340px 上放不下');
-if (render.chartBigPin > 0) {
-  problems.push(`放大之後圖表沒有整張翻成疊字(還剩 ${render.chartBigPin} 個錨點)`);
-}
 
 /*
  * 同 src 認親(§2.4):站方 lightbox 開出來的是**新元素、同一個 src**。
@@ -435,7 +421,6 @@ const adopt = await p.evaluate((fx) => {
       request() {},
       showImage() { calls.show++; },
       hideImage() {},
-      setActivePin() {},
       cue() { calls.cue++; },
       openZoom() { return null; },
       setZoomBlocks() {},

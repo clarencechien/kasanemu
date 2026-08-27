@@ -9,14 +9,13 @@
  */
 
 import { diag } from '../shared/diag.ts';
-import type { ImageBlock } from '../shared/imageblocks';
+import { MAX_PLATES, type ImageBlock } from '../shared/imageblocks.ts';
 // 時限彼此有順序,所以住在同一個檔案裡(`shared/imagetiming.ts` 的開頭有那張圖)
 import { IMAGE_WATCHDOG_MS } from '../shared/imagetiming.ts';
 import {
   drawnRect,
   parsePosition,
   placeBlocks,
-  pinAt,
   worthTranslating,
   type ObjectFit,
   type PlacedBlock,
@@ -25,8 +24,6 @@ import {
 /** 滑上圖片停多久才送 L0。和 UI 標籤的 180ms 不同 —— 這個要花配額 */
 export const IMAGE_HOVER_MS = 500;
 
-/** 放大檢視右邊留給註解清單的寬度(和 overlay 的 `.zlist` 對齊) */
-export const ZOOM_LIST_W = 356;
 
 /**
  * 滑鼠離開圖片之後多久才真的收起來。
@@ -61,8 +58,6 @@ export interface ImageHost {
     placed: readonly PlacedBlock[],
   ): void;
   hideImage(): void;
-  /** 錨點的 hover 態。帶著那一塊的位置與文字 —— 貼片要畫得出東西來 */
-  setActivePin(n: number, block?: PlacedBlock): void;
   /**
    * 這個事件目標是**我們自己的疊層**嗎(chip、放大檢視)。
    *
@@ -212,11 +207,12 @@ export class ImageAnnotator {
   private watchdogs = new Map<string, number>();
   private current: HTMLImageElement | null = null;
   private placed: PlacedBlock[] = [];
-  private activePin = 0;
 
   private host: ImageHost;
   private enabled: () => boolean;
   private alwaysOn: () => boolean;
+  /** 行內最多疊幾塊(settings.imageMaxPlates)。放大檢視在 placeBlocks 裡自動 ×2 */
+  private maxPlates: () => number;
 
   /*
    * 刻意不用建構子參數屬性(`private host: ImageHost`)。
@@ -226,10 +222,16 @@ export class ImageAnnotator {
    * 也就是「chip 還沒被碰到就被自己刪掉」那一類 bug 的家(§DK)。
    * 少寫三行換到整條路可測,划算。
    */
-  constructor(host: ImageHost, enabled: () => boolean, alwaysOn: () => boolean) {
+  constructor(
+    host: ImageHost,
+    enabled: () => boolean,
+    alwaysOn: () => boolean,
+    maxPlates: () => number = () => MAX_PLATES,
+  ) {
     this.host = host;
     this.enabled = enabled;
     this.alwaysOn = alwaysOn;
+    this.maxPlates = maxPlates;
   }
 
   reset(): void {
@@ -320,16 +322,6 @@ export class ImageAnnotator {
       this.current = img;
       this.arm(img);
     }
-    // 已經有加註 → 更新錨點的 hover 態(疊層收不到事件,命中要自己算)
-    if (this.placed.length > 0) {
-      const r = img.getBoundingClientRect();
-      const hit = pinAt(this.placed, clientX - r.left, clientY - r.top);
-      const n = hit?.n ?? 0;
-      if (n !== this.activePin) {
-        this.activePin = n;
-        this.host.setActivePin(n, hit ?? undefined);
-      }
-    }
   }
 
   /** 進入一張圖:已翻過就直接畫,沒翻過就起 500ms 的計時 */
@@ -390,7 +382,7 @@ export class ImageAnnotator {
     if (this.current) this.host.cue(this.current, null, 'idle');
     this.current = null;
     this.placed = [];
-    this.activePin = 0;
+
     // 對稱律:移開就還原圖(除非使用者選了常駐)
     if (!this.alwaysOn()) this.host.hideImage();
   }
@@ -509,40 +501,66 @@ export class ImageAnnotator {
 
   private render(img: HTMLImageElement, entry: ImageEntry): void {
     const { drawn, clip, rect } = geometryOf(img);
-    this.placed = placeBlocks(entry.blocks, drawn, clip);
+    const out = placeBlocks(entry.blocks, drawn, clip, this.maxPlates());
+    this.placed = out.placed;
     /*
-     * 模型認出字了,但**沒有一塊需要翻**(整張都是數值、產品名、代碼)。
-     * 這和「沒偵測到文字」是兩件事,而使用者要知道的是同一件:
-     * 不用再滑上來了。畫一個空的加註層只會讓人以為壞掉。
+     * **不畫的三種情況,說的話不一樣。**
+     *
+     * 沒偵測到字 / 有字但沒有一塊需要翻(整張都是數值、產品名、代碼)/
+     * 扣完還一大堆(這是文件不是圖,§DW)。前兩種是「不用再滑上來了」,
+     * 第三種是「行內不畫,但放大讀得到」—— 三句話不能共用一句。
      */
-    if (this.placed.length === 0) {
+    if (out.placed.length === 0) {
       this.host.hideImage();
-      this.host.cue(img, entry.blocks.length > 0 ? '這張圖沒有需要翻的字' : '沒有偵測到文字', 'idle');
-      diag('info', 'image-render', { tier: entry.tier, veil: 0, pin: 0, skipped: entry.blocks.length });
+      if (out.why === 'text-heavy' && !hasNativeZoom(img)) {
+        this.host.cue(img, `字太多,像文件不像圖 · ⤢ 點這裡放大讀 ${out.left} 塊`, 'idle', 'zoom');
+      } else if (out.why === 'text-heavy') {
+        this.host.cue(img, `字太多,像文件不像圖 · 點開大圖才畫(${out.left} 塊)`, 'idle');
+      } else {
+        this.host.cue(img, entry.blocks.length > 0 ? '這張圖沒有需要翻的字' : '沒有偵測到文字', 'idle');
+      }
+      diag('info', 'image-render', {
+        tier: entry.tier,
+        veil: 0,
+        left: out.left,
+        why: out.why,
+        skipped: entry.blocks.length,
+      });
       return;
     }
     this.host.showImage(rect, this.placed);
-    const pins = this.placed.filter((p) => p.kind === 'pin').length;
     /*
-     * **有錨點才給放大檢視的入口。**
+     * **翻好的圖統一有放大檢視的入口**(§EA)。
      *
-     * 錨點的存在就是「這張圖上有字小到疊不下」的信號,而放大檢視正是
-     * 為那件事做的。全部都疊得下的圖出這顆按鈕只是多一個沒用的東西。
+     * 以前只有「有塊沒放下」才出 —— 使用者的疑問是「原本沒有點開的
+     * windows 決定要翻了就可以點 tip 開視窗?」:入口有時在有時不在,
+     * 看起來像亂數。改成:行內畫了東西就能放大讀,畫布大、上限自動 ×2,
+     * 行內被擋在門外的塊在裡面攤得開 —— 這正是「圖放大了預算就多」的
+     * 具體形狀。
      *
-     * 站方自己有 lightbox 就不出(§2.4)—— 跟著站方走,加註靠同 src 認親。
+     * 站方自己有 lightbox 就不出(§2.4)—— 跟著站方走,加註靠同 src
+     * 認親跟過去;站方的大圖畫布 ≥900px 時 placeBlocks 的尺寸閘門
+     * 一樣會放兩倍,不用另外接線。
      */
-    const canZoom = pins > 0 && !hasNativeZoom(img);
+    const canZoom = !hasNativeZoom(img);
     /*
      * 文案要說得出**動作**,不是狀態。
      *
-     * 使用者的原話是「放大檢視要怎麼放大」—— 舊文案「⤢ 放大檢視(15 處小字)」
-     * 看起來像一個標籤,而它其實是一顆按鈕。可按的 cue 全世界只有這一個
-     * (§3.3 的窄例外),所以它必須自己講出來。
+     * 使用者的原話是「放大檢視要怎麼放大」—— 舊文案看起來像一個標籤,
+     * 而它其實是一顆按鈕。可按的 cue 全世界只有這一個(§3.3 的窄例外),
+     * 所以它必須自己講出來。還有塊沒放下就把數字說出來 —— 「還有 N 塊」
+     * 是點進去的理由,全放下的圖則只是「換個大畫布讀」。
      */
     this.host.cue(
       img,
       canZoom
-        ? `⤢ 點這裡放大讀 · ${pins} 條註解`
+        ? `⤢ 點這裡放大讀${
+            out.left > 0
+              ? ` · 還有 ${out.left} 塊`
+              : entry.tier === 'l0'
+                ? ' · Alt+click 升級'
+                : ''
+          }`
         : entry.tier === 'l0'
           ? '↑ Alt+click 升級'
           : `L1 · ${this.placed.length} 塊`,
@@ -551,12 +569,14 @@ export class ImageAnnotator {
     );
     diag('info', 'image-render', {
       tier: entry.tier,
-      veil: this.placed.length - pins,
-      pin: pins,
+      veil: this.placed.length,
+      left: out.left,
+      why: out.why,
       // 譯完等於沒譯的塊被略過了 —— 看得見才知道規則有沒有吃太多
-      skipped: entry.blocks.length - this.placed.length,
+      skipped: entry.blocks.length - this.placed.length - out.left,
     });
   }
+
 
   /**
    * 放大檢視(§3.3)。
@@ -585,7 +605,7 @@ export class ImageAnnotator {
   private place(size: { w: number; h: number }, entry: ImageEntry, natural: { w: number; h: number }) {
     // 放大檢視一律 contain 置中,所以 drawn 就是整個 size
     const drawn = drawnRect(natural, size, 'contain', { x: { pct: 0.5 }, y: { pct: 0.5 } });
-    return placeBlocks(entry.blocks, drawn, size);
+    return placeBlocks(entry.blocks, drawn, size, this.maxPlates());
   }
 
   /**
@@ -599,16 +619,9 @@ export class ImageAnnotator {
     size: { w: number; h: number },
     entry: ImageEntry,
     natural: { w: number; h: number },
-    url: string,
+    _url: string,
   ): void {
-    const first = this.place(size, entry, natural);
-    const needsList = first.some((p) => p.kind === 'pin');
-    if (!needsList) {
-      this.host.setZoomBlocks(first);
-      return;
-    }
-    const shrunk = this.host.openZoom(url, natural, ZOOM_LIST_W);
-    this.host.setZoomBlocks(this.place(shrunk ?? size, entry, natural));
+    this.host.setZoomBlocks(this.place(size, entry, natural).placed);
   }
 
   /** 視窗改變大小時重畫(放大檢視是 fit 到視窗的) */

@@ -10,15 +10,18 @@ import {
   looksConcatenated,
   looksVertical,
   normalizeBoxes,
-  patchable,
+  MAX_PLATES,
+  PLATE_GLOW_PX,
+  PLATE_BUDGET,
+  TEXT_HEAVY_BLOCKS,
+  platesOverlap,
+  plateSize,
   sanitizeBlocks,
 } from '../src/shared/imageblocks.ts';
 import {
   drawnRect,
-  imageMode,
   mapBox,
   parsePosition,
-  pinAt,
   placeBlocks,
   worthTranslating,
 } from '../src/content/imagegeo.ts';
@@ -91,13 +94,19 @@ test('字級不能只看框高 —— 多行合併的高瘦框不可以爆出巨
   assert.ok(line > 30, `單行短句被面積項誤殺:${line}`);
 });
 
-test('同一份資料兩個檢視尺寸 —— 縮圖落錨點,放大變疊字', () => {
-  // 行內 340px 的截圖 vs 放大檢視 1200px,同一塊 tab 標籤
+test('字級有地板 —— 框縮小的時候字不跟著縮,貼片因此長出框外', () => {
+  /*
+   * 這是預算規則會動的原因(§13-9):圖縮小的時候框跟著縮、字不跟著縮,
+   * 所以同一塊在縮圖上佔掉的畫面比例**比放大檢視大**。
+   * 貼片的尺寸要用**渲染時**的字級算,不是「塞得進框裡的」那個。
+   */
   const chars = 2;
   const small = fontSizeFor(340 * 0.03, 340 * 0.018, chars);
   const large = fontSizeFor(1200 * 0.03, 1200 * 0.018, chars);
-  assert.ok(!patchable(small), '縮圖上該落錨點');
-  assert.ok(patchable(large), '放大後該變疊字');
+  assert.ok(small < MIN_PATCH_FONT_PX, '縮圖上塞不進去,會被地板頂起來');
+  assert.ok(large > small);
+  assert.equal(plateSize('小字', small).fs, MIN_PATCH_FONT_PX, '地板沒生效');
+  assert.ok(plateSize('小字', large).fs > MIN_PATCH_FONT_PX);
 });
 
 test('字級不超過上限 —— 加註不該比原圖的字還醒目', () => {
@@ -228,26 +237,22 @@ function loadVision(name: string): {
 }
 
 /** 一張圖在某個顯示寬度下的分流結果 */
-function split(name: string, displayW: number): { veil: number; pin: number; maxFs: number } {
+/** 一份真實回應在某個顯示寬度下:畫幾塊、還剩幾塊、最大的字級 */
+function split(name: string, displayW: number): { drawn: number; left: number; maxFs: number } {
   const fx = loadVision(name);
   const { blocks } = sanitizeBlocks(fx.blocks, fx.nw, fx.nh);
   const H = (displayW * fx.nh) / fx.nw;
-  let veil = 0;
-  let pin = 0;
+  const rect = drawnRect({ w: fx.nw, h: fx.nh }, { w: displayW, h: H }, 'contain', parsePosition('50% 50%'));
+  const out = placeBlocks(blocks, rect, { w: displayW, h: H });
   let maxFs = 0;
   for (const b of blocks) {
     const [y0, x0, y1, x1] = b.box;
-    const fs = fontSizeFor(
-      ((x1 - x0) / 1000) * displayW,
-      ((y1 - y0) / 1000) * H,
-      [...(b.zh || b.text)].length,
-      b.v,
+    maxFs = Math.max(
+      maxFs,
+      fontSizeFor(((x1 - x0) / 1000) * displayW, ((y1 - y0) / 1000) * H, [...(b.zh || b.text)].length, b.v),
     );
-    maxFs = Math.max(maxFs, fs);
-    if (patchable(fs)) veil++;
-    else pin++;
   }
-  return { veil, pin, maxFs };
+  return { drawn: out.placed.length, left: out.left, maxFs };
 }
 
 test('真實輸出:四份都通得過 sanitize,座標全部合規', () => {
@@ -264,22 +269,26 @@ test('真實輸出:四份都通得過 sanitize,座標全部合規', () => {
   }
 });
 
-test('真實輸出:繞圖的小圖全部落錨點,放大檢視才鋪開成疊字', () => {
-  // 部落格情境:2042px 的截圖縮在 340px 的繞圖欄位裡
+test('真實輸出:密集截圖行內不畫,放大檢視才畫', () => {
+  /*
+   * 使用者的話:「前幾輪有些不需要翻的都扣掉了 還一堆量的話
+   * 這張圖應該算是不要翻才是」。lite-shot 扣完還有 47 塊 —— 那是文件不是圖。
+   */
   const small = split('lite-shot', 340);
-  assert.equal(small.veil, 0, `340px 下不該有疊字(最大字級 ${small.maxFs.toFixed(1)}px)`);
-  assert.ok(small.maxFs < 11, '連最大的一塊都讀不動');
+  assert.equal(small.drawn, 0, '行內不該畫');
+  assert.ok(small.left >= TEXT_HEAVY_BLOCKS, `扣完剩 ${small.left} 塊,沒有到「文件」的量`);
 
-  // 放大檢視:同一份資料,不重問模型
+  // 放大檢視:同一份資料,不重問模型,預算換算出來放得下十幾塊
   const big = split('lite-shot', 1200);
-  assert.ok(big.veil > 10, `放大後要鋪開成疊字,實際只有 ${big.veil} 塊`);
-  assert.ok(big.pin > 0, '最小的那些字放大了還是該留錨點');
+  assert.ok(big.drawn > 5, `放大後要畫得出東西,實際只有 ${big.drawn} 塊`);
+  assert.ok(big.left > 0, '密集素材放大之後也不該整張塞滿');
 });
 
-test('真實輸出:字大的圖表在行內就疊得起來', () => {
+test('真實輸出:字大的圖表在行內就畫得完', () => {
   const chart = split('lite-chart', 1020);
-  assert.ok(chart.veil > 0, '圖表的標題該疊字');
-  assert.ok(chart.maxFs > 11, '字大的圖不該整張落錨點');
+  assert.ok(chart.drawn > 0, '圖表的標題該畫');
+  assert.equal(chart.left, 0, '稀疏的圖表不該有塊放不下');
+  assert.ok(chart.maxFs > 11, '字大的圖不該被當成密集素材');
 });
 
 test('真實輸出:面積項吸收兩個檔位的框粒度差異', () => {
@@ -296,56 +305,119 @@ test('真實輸出:面積項吸收兩個檔位的框粒度差異', () => {
 
 /* ------------------------------------------------- 區塊 → 畫得出來的東西 */
 
-test('placeBlocks:同一份資料兩個尺寸,整張圖的形式自動翻面', () => {
+test('placeBlocks:同一份資料兩個尺寸,語彙**不會**翻面 —— 只是放得下的變多', () => {
+  /*
+   * 舊規則(多數決)在這裡整張翻面:340px 全錨點、1200px 全疊字。
+   * 使用者的回報是「兩張很像的圖 一個是疊字 一個是標註」——
+   * 而錨點退場之後(§DW),尺寸只影響**放得下幾塊**,不影響語彙。
+   */
   const fx = loadVision('gemma-chart');
   const { blocks } = sanitizeBlocks(fx.blocks, fx.nw, fx.nh);
-
-  const at = (W: number): { veil: number; pin: number } => {
+  const at = (W: number) => {
     const H = (W * fx.nh) / fx.nw;
     const drawn = drawnRect({ w: fx.nw, h: fx.nh }, { w: W, h: H }, 'contain', parsePosition('50% 50%'));
-    const placed = placeBlocks(blocks, drawn, { w: W, h: H });
-    return {
-      veil: placed.filter((p) => p.kind === 'veil').length,
-      pin: placed.filter((p) => p.kind === 'pin').length,
-    };
+    return placeBlocks(blocks, drawn, { w: W, h: H });
   };
   const small = at(340);
   const big = at(1200);
-  assert.equal(small.veil, 0, '繞圖的縮圖上全是錨點');
-  assert.equal(big.pin, 0, '放大檢視要整張鋪成疊字');
-  // 不必重問模型 —— 換個尺寸再算一次就好
-  assert.equal(small.veil + small.pin, big.veil + big.pin, '兩邊的總塊數要一樣');
+  assert.equal(small.why, 'ok');
+  assert.equal(big.why, 'ok');
+  assert.ok(small.placed.length > 0, '縮圖上也該畫得出最大的那一塊');
+  assert.ok(big.placed.length >= small.placed.length, '放大之後放得下的只會變多');
+  assert.equal(small.placed.length + small.left, big.placed.length + big.left, '兩邊的候選總數要一樣');
 });
 
-test('placeBlocks:一張圖只有一種語彙 —— 疊字與錨點不會混在同一張圖上', () => {
+test('placeBlocks:大的先進來 —— 框的大小就是版面標好的重要性', () => {
   /*
-   * **使用者回報的原話:「一下有疊字 一下註解 不太統一」。**
-   *
-   * 逐塊判斷在單看一塊時每次都是對的,合起來卻是兩套視覺語言插在同一張
-   * 圖上。門檻沒錯,錯的是它的**作用域**。這一條把「作用域是整張圖」
-   * 釘死,免得日後有人為了「這一塊明明放得下」再改回逐塊。
+   * 預算裝不下全部的時候,要留下的是**大的那一塊**。
+   * 字級是版面自己標好的重要性,而使用者說過「像這張圖 可能只有標題需要翻」。
    */
   const drawn = drawnRect({ w: 1000, h: 1000 }, { w: 400, h: 400 }, 'contain', parsePosition('50% 50%'));
-  const mixed = placeBlocks(
+  const out = placeBlocks(
     [
-      { box: [0, 0, 200, 500], text: 'big', zh: '大字', c: 1 },
       { box: [300, 0, 310, 60], text: 'tiny a', zh: '小甲', c: 1 },
+      { box: [0, 0, 200, 500], text: 'big', zh: '大字', c: 1 },
       { box: [400, 0, 410, 60], text: 'tiny b', zh: '小乙', c: 1 },
     ],
     drawn,
     { w: 400, h: 400 },
   );
-  assert.equal(new Set(mixed.map((p) => p.kind)).size, 1, '同一張圖冒出兩種語彙');
-  // 三塊裡只有一塊放得下 → 少數服從多數,整張走錨點
-  assert.deepEqual(mixed.map((p) => p.kind), ['pin', 'pin', 'pin']);
-  assert.deepEqual(mixed.map((p) => p.n), [1, 2, 3], '錨點編號連號');
+  assert.equal(out.placed[0]!.zh, '大字', '最大的那一塊沒有排在最前面');
+  assert.equal(out.placed.length + out.left, 3, '塊數要守恆');
 });
 
-test('imageMode:多數決,不是「有一塊放不下就全部退回錨點」', () => {
-  assert.equal(imageMode([true, true, true, true, false]), 'veil', '八成放得下 → 疊字,那一塊撐大就好');
-  assert.equal(imageMode([true, false, false]), 'pin', '小字為主的截圖硬疊只會糊成一片');
-  assert.equal(imageMode([]), 'veil');
+test('placeBlocks:預算是硬的 —— 貼片總面積不會超過 PLATE_BUDGET', () => {
+  const drawn = drawnRect({ w: 1000, h: 1000 }, { w: 600, h: 600 }, 'contain', parsePosition('50% 50%'));
+  const many = Array.from({ length: 20 }, (_, i) => ({
+    box: [i * 45, 0, i * 45 + 40, 900] as [number, number, number, number],
+    text: `heading ${i}`,
+    zh: `第 ${i} 個很長的標題文字`,
+    c: 1,
+  }));
+  const out = placeBlocks(many, drawn, { w: 600, h: 600 });
+  const used = out.placed.reduce((n, p) => {
+    const pl = plateSize(p.zh, p.fontPx);
+    return n + (pl.w * pl.h) / (600 * 600);
+  }, 0);
+  assert.ok(used <= PLATE_BUDGET + 1e-9, `超出預算:${(used * 100).toFixed(1)}%`);
+  assert.ok(out.placed.length <= MAX_PLATES, `超出塊數上限:${out.placed.length}`);
+  assert.ok(out.left > 0, '二十塊長標題不可能全部進得來');
 });
+
+test('placeBlocks:選上的貼片彼此不重疊 —— 面積便宜不代表畫得下', () => {
+  /*
+   * 比較稿一畫出來就看到:長標籤在字級地板上又寬又薄,面積很便宜,
+   * 卻橫著壓過旁邊兩塊(§13-9-ter)。面積管總量,重疊管互壓,兩個都要。
+   */
+  const drawn = drawnRect({ w: 1000, h: 1000 }, { w: 800, h: 800 }, 'contain', parsePosition('50% 50%'));
+  const stacked = Array.from({ length: 6 }, (_, i) => ({
+    box: [400 + i * 6, 100, 406 + i * 6, 900] as [number, number, number, number],
+    text: `row ${i}`,
+    zh: `這是一行相當長的說明文字第 ${i} 行`,
+    c: 1,
+  }));
+  const out = placeBlocks(stacked, drawn, { w: 800, h: 800 });
+  for (let i = 0; i < out.placed.length; i++) {
+    for (let j = i + 1; j < out.placed.length; j++) {
+      const a = out.placed[i]!;
+      const b = out.placed[j]!;
+      const pa = plateSize(a.zh, a.fontPx);
+      const pb = plateSize(b.zh, b.fontPx);
+      /*
+       * 用**不含光暈的**框比 —— 實作就是這樣判的:
+       * 兩團光暈互相疊沒關係,字疊在一起才不行(§DX)。
+       */
+      const box = (p: typeof a, s: typeof pa) => ({
+        x: p.x + p.w / 2 - s.boxW / 2,
+        y: p.y + p.h / 2 - s.boxH / 2,
+        w: s.boxW,
+        h: s.boxH,
+      });
+      assert.equal(platesOverlap(box(a, pa), box(b, pb)), false, '選上的兩片貼片壓在一起');
+    }
+  }
+});
+
+test('placeBlocks:扣完還一大堆 = 這是文件不是圖,行內不畫', () => {
+  const drawn = drawnRect({ w: 1000, h: 1000 }, { w: 600, h: 600 }, 'contain', parsePosition('50% 50%'));
+  const doc = Array.from({ length: TEXT_HEAVY_BLOCKS + 3 }, (_, i) => ({
+    box: [i * 20, 0, i * 20 + 15, 300] as [number, number, number, number],
+    text: `line ${i}`,
+    zh: `第 ${i} 行`,
+    c: 1,
+  }));
+  const inline = placeBlocks(doc, drawn, { w: 600, h: 600 });
+  assert.equal(inline.why, 'text-heavy');
+  assert.equal(inline.placed.length, 0, '行內不該畫');
+  assert.equal(inline.left, TEXT_HEAVY_BLOCKS + 3, '要說得出還有幾塊');
+
+  // 放大檢視畫得下,而且是使用者自己點開的
+  const wide = drawnRect({ w: 1000, h: 1000 }, { w: 1200, h: 1200 }, 'contain', parsePosition('50% 50%'));
+  const zoom = placeBlocks(doc, wide, { w: 1200, h: 1200 });
+  assert.equal(zoom.why, 'ok');
+  assert.ok(zoom.placed.length > 0, '放大檢視也不畫的話,那些字就永遠讀不到了');
+});
+
 
 test('疊字模式下塞不下的那幾塊把字級拉到下限,框不動', () => {
   /*
@@ -362,9 +434,8 @@ test('疊字模式下塞不下的那幾塊把字級拉到下限,框不動', () =
     // 這一塊自己算是塞不下的
     { box: [900, 0, 906, 40], text: 'N/A', zh: '不適用', c: 1 },
   ];
-  const placed = placeBlocks(blocks, drawn, { w: 600, h: 600 });
-  assert.equal(placed.every((p) => p.kind === 'veil'), true, '多數放得下 → 整張疊字');
-  const small = placed[4]!;
+  const placed = placeBlocks(blocks, drawn, { w: 600, h: 600 }).placed;
+  const small = placed.find((p) => p.zh === '不適用')!;
   assert.equal(small.fontPx, MIN_PATCH_FONT_PX, '字級要拉到下限');
   assert.ok(small.h < 10, `框被撐大了:${small.h}`);
   assert.ok(small.w < 30, `框被撐寬了:${small.w}`);
@@ -447,7 +518,7 @@ test('placeBlocks 會把不用翻的塊整個略過', () => {
     ],
     drawn,
     { w: 800, h: 800 },
-  );
+  ).placed;
   assert.deepEqual(placed.map((p) => p.zh), ['儲存空間大小']);
 });
 
@@ -471,9 +542,8 @@ test('不用翻的塊也不參與「整張圖用哪種語彙」的投票', () =>
     ],
     drawn,
     { w: 800, h: 800 },
-  );
+  ).placed;
   assert.equal(placed.length, 2, '略過的塊不該出現');
-  assert.equal(placed.every((p) => p.kind === 'veil'), true, '六個小數值把整張圖投成錨點了');
 });
 
 test('短標籤走單行 —— 「不適用」不可以被折成兩行', () => {
@@ -495,7 +565,7 @@ test('code 樣式的字不加註 —— 程式碼原樣留著才有用', () => {
     ],
     drawn,
     { w: 800, h: 800 },
-  );
+  ).placed;
   assert.equal(placed.length, 1);
   assert.equal(placed[0]!.zh, '安裝它');
 });
@@ -506,7 +576,7 @@ test('低信心標記傳到畫面上 —— 使用者要知道哪一塊該自己
     [{ box: [0, 0, 100, 400], text: 'x', zh: '疑問', c: 0.4 }],
     drawn,
     { w: 800, h: 800 },
-  );
+  ).placed;
   assert.equal(placed[0]!.low, true);
 });
 
@@ -519,25 +589,11 @@ test('被 cover 裁掉的區塊不畫 —— 使用者看不到的地方不該�
     ],
     drawn,
     { w: 400, h: 400 },
-  );
+  ).placed;
   assert.equal(placed.length, 1);
   assert.equal(placed[0]!.zh, '中間');
 });
 
-test('錨點命中測試:疊層收不到滑鼠事件,所以要自己算', () => {
-  const drawn = drawnRect({ w: 1000, h: 1000 }, { w: 400, h: 400 }, 'contain', parsePosition('50% 50%'));
-  const placed = placeBlocks(
-    [{ box: [300, 300, 312, 360], text: 'tiny', zh: '小', c: 1 }],
-    drawn,
-    { w: 400, h: 400 },
-  );
-  const pin = placed.find((p) => p.kind === 'pin')!;
-  const cx = pin.x + pin.w / 2;
-  const cy = pin.y + pin.h / 2;
-  assert.ok(pinAt(placed, cx, cy), '正中央要命中');
-  assert.ok(pinAt(placed, cx + 10, cy), '半徑內要命中(錨點只有 14px,要求精準太苛)');
-  assert.equal(pinAt(placed, cx + 60, cy), null, '離太遠不該命中');
-});
 
 /* --------------------------------------------------------------- 直排偵測 */
 
@@ -588,4 +644,48 @@ test('brief 的 prompt 要說得出上限與挑法 —— 逾時的唯一出路'
   assert.ok(brief.includes(String(BRIEF_BLOCKS)), 'brief 沒說上限是多少');
   assert.ok(/字級/.test(brief), 'brief 沒說用什麼挑');
   assert.ok(brief.length > full.length);
+});
+
+test('塊數上限是硬的,而且跟著畫布走 —— 小圖 6、大畫布 ×2(§DX、§EA)', () => {
+  /*
+   * 只有面積預算的那一版,在 1102px 的產品截圖上疊了 **21 塊**,
+   * 而帳面才 13% —— 面積隨圖的大小反著跑:大圖放縱、小圖苛刻。
+   * 塊數上限不看比例,所以兩邊都管得住。
+   *
+   * §EA 補上另一半:「圖放大了預算就多」。畫布 ≥ BIG_CANVAS_W 時
+   * 上限放兩倍 —— 放大檢視與站方 lightbox 的大圖走同一個尺寸閘門。
+   */
+  const many = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      box: [i * 45, 0, i * 45 + 36, 260] as [number, number, number, number],
+      text: `heading ${i}`,
+      zh: `標題${i}`,
+      c: 1,
+    }));
+  // 行內小圖(< BIG_CANVAS_W):上限就是 MAX_PLATES
+  const smallDrawn = drawnRect({ w: 2000, h: 1200 }, { w: 800, h: 480 }, 'contain', parsePosition('50% 50%'));
+  const small = placeBlocks(many(20), smallDrawn, { w: 800, h: 480 });
+  assert.equal(small.placed.length, MAX_PLATES, '小圖上塊數上限沒生效');
+  assert.equal(small.left, 20 - MAX_PLATES);
+  // 大畫布(≥ BIG_CANVAS_W):同一份資料放兩倍
+  const bigDrawn = drawnRect({ w: 2000, h: 1200 }, { w: 1200, h: 720 }, 'contain', parsePosition('50% 50%'));
+  const big = placeBlocks(many(20), bigDrawn, { w: 1200, h: 720 });
+  assert.equal(big.placed.length, MAX_PLATES * 2, '大畫布沒有放兩倍');
+  // 上限可調(settings.imageMaxPlates):傳進來的數字才是主閘
+  const custom = placeBlocks(many(20), smallDrawn, { w: 800, h: 480 }, 2);
+  assert.equal(custom.placed.length, 2, '自訂上限沒生效');
+  const customBig = placeBlocks(many(20), bigDrawn, { w: 1200, h: 720 }, 2);
+  assert.equal(customBig.placed.length, 4, '自訂上限在大畫布沒有放兩倍');
+});
+
+test('白貼片的預算要算糊出去的那一圈 —— 那是畫面上最顯眼的部分', () => {
+  /*
+   * `.iplate` 是 `filter: blur(11px)`,糊出去的那一圈在深色圖上就是一團白。
+   * 第一版的 plateSize 只回那個看不見的矩形,於是「譯文佔版」量錯了東西:
+   * 真圖實測帳面 2.7% 而實際 13.4%。
+   */
+  const pl = plateSize('標題', 20);
+  assert.ok(pl.w > pl.boxW, '含光暈的寬度沒有比較大');
+  assert.ok(pl.h > pl.boxH);
+  assert.equal(pl.w - pl.boxW, PLATE_GLOW_PX * 2);
 });

@@ -12,11 +12,15 @@
 // 副檔名是刻意的:node --experimental-strip-types 解不了無副檔名的**值**匯入,
 // 而這個檔要被 node:test 直接載入(queuelogic.ts 因為同一個理由這樣寫)
 import {
+  BIG_CANVAS_W,
   BOX_SCALE,
   LOW_CONFIDENCE,
-  MIN_PATCH_FONT_PX,
+  MAX_PLATES,
+  PLATE_BUDGET,
+  TEXT_HEAVY_BLOCKS,
   fontSizeFor,
-  patchable,
+  plateSize,
+  platesOverlap,
   worthAnnotating,
 } from '../shared/imageblocks.ts';
 
@@ -166,40 +170,59 @@ export interface PlacedBlock {
   y: number;
   w: number;
   h: number;
-  /** 疊字才有意義的字級 */
+  /** 譯文實際會用的字級(有 MIN_PATCH_FONT_PX 的地板) */
   fontPx: number;
   text: string;
   zh: string;
-  /** 版面信心低於門檻:框線換警示色,提醒使用者自己看原圖 */
+  /** 版面信心低於門檻:毛玻璃染成警示色,提醒使用者自己看原圖 */
   low: boolean;
   vertical: boolean;
-  /** 疊字(veil)還是編號錨點(pin)—— 唯一的量尺是字級 */
-  kind: 'veil' | 'pin';
-  /** pin 的編號,從 1 開始;veil 是 0 */
-  n: number;
+}
+
+/** `placeBlocks` 的完整結果 —— 畫什麼,以及沒畫的有幾塊、為什麼 */
+export interface Placement {
+  placed: PlacedBlock[];
+  /** 值得翻、但這個尺寸放不下的塊數。> 0 就值得給放大檢視的入口 */
+  left: number;
+  /**
+   * 為什麼是這個結果:
+   * - `'ok'` 正常,預算內能放多少放多少
+   * - `'text-heavy'` 扣掉沒必要翻的還有一大堆 —— 這是文件不是圖,行內不畫
+   * - `'nothing'` 沒有一塊需要翻
+   */
+  why: 'ok' | 'text-heavy' | 'nothing';
 }
 
 /**
  * 一組區塊 → 一組畫得出來的東西。
  *
- * **同一份資料在不同顯示尺寸下會得到不同結果**,而這正是設計的一部分
- * (`docs/plan-images.md` §2.3):繞圖的 340px 縮圖上全是錨點,
- * 點開放大檢視就自動鋪成疊字 —— 不必重問模型,只是換個 `box` 再算一次。
+ * **一張圖只有一種語彙,而且就是疊字**(§DW)。編號錨點退場了 ——
+ * 使用者的話是「這樣標註幾乎是退場了 需要標註的 應該是另一個題目
+ * 像 sukemu 的題目」:錨點解的是「字太小疊不下」,而那在**拍照翻譯**
+ * 才是主場;網頁上的圖是別人排好版的,字小的那些多半也不重要。
+ *
+ * 取捨是「**只翻標題**」,而它有三道閘門,依框的大小由大到小加進來:
+ *
+ * 1. `MAX_PLATES` —— 最多幾塊。「標題」是個數量不是比例,和圖多大無關。
+ * 2. `PLATE_BUDGET` —— 譯文佔畫面的比例,**小圖的保險絲**。
+ * 3. 不與已選上的貼片重疊 —— 長標籤在字級地板上又寬又薄,
+ *    面積很便宜卻橫著壓過旁邊兩塊(§13-9-ter)。
+ *
+ * 三道都是量出來的,而且**互相補位**:只有面積的那一版在 1102px 的
+ * 產品截圖上疊了 21 塊(帳面才 13%),在 340px 的小圖表上一塊都放不下(§DX)。
+ *
+ * **同一份資料在不同顯示尺寸下會放下不同的塊數**,而這是設計的一部分:
+ * 繞圖的縮圖只放得下標題,點開放大檢視就多出十幾塊 —— 不必重問模型。
+ * 而語彙**永遠不會翻面**,這正是舊的多數決做不到的事。
  */
 export function placeBlocks(
   blocks: readonly ImageBlockLike[],
   drawn: Rect,
   clip: { w: number; h: number },
-): PlacedBlock[] {
-  // 第一輪:只算幾何。**這時候還不決定形式** —— 形式是整張圖的性質。
-  const cand: {
-    b: ImageBlockLike;
-    r: Rect;
-    label: string;
-    chars: number;
-    fontPx: number;
-    fits: boolean;
-  }[] = [];
+  /** 行內的塊數上限(settings.imageMaxPlates)。大畫布自動放兩倍(§EA) */
+  maxPlates: number = MAX_PLATES,
+): Placement {
+  const cand: { r: Rect; label: string; fontPx: number; b: ImageBlockLike }[] = [];
   for (const b of blocks) {
     // code 樣式的字不加註:程式碼原樣留著才有用(§3.2)
     if (b.kind === 'code') continue;
@@ -209,69 +232,69 @@ export function placeBlocks(
     if (label.length === 0) continue;
     // 譯完等於沒譯、或原文本來就是數字符號 —— 蓋上去只是遮住原圖
     if (!worthAnnotating(b.text, label)) continue;
-    const chars = [...label].length;
-    const fontPx = fontSizeFor(r.w, r.h, chars, b.v === true);
-    cand.push({ b, r, label, chars, fontPx, fits: patchable(fontPx) });
+    cand.push({ r, label, fontPx: fontSizeFor(r.w, r.h, [...label].length, b.v === true), b });
   }
-  if (cand.length === 0) return [];
+  if (cand.length === 0) return { placed: [], left: 0, why: 'nothing' };
 
-  const mode = imageMode(cand.map((c) => c.fits));
-  const out: PlacedBlock[] = [];
-  let pin = 0;
-  for (const c of cand) {
-    const common = {
+  /*
+   * **扣完還一堆 = 這是文件不是圖。**
+   *
+   * 行內不畫任何東西:網頁截圖、手機截圖蓋上十幾片玻璃只是把它變得更難讀。
+   * 不是死路 —— 放大檢視照畫,那裡畫得下,而且是使用者自己點開的。
+   */
+  if (cand.length >= TEXT_HEAVY_BLOCKS && clip.w < DENSE_ZOOM_W) {
+    return { placed: [], left: cand.length, why: 'text-heavy' };
+  }
+
+  const area = clip.w * clip.h;
+  // 大的先進來:框的大小就是版面自己標好的重要性
+  const order = [...cand].sort((a, b) => b.r.w * b.r.h - a.r.w * a.r.h);
+  const taken: { x: number; y: number; w: number; h: number }[] = [];
+  const placed: PlacedBlock[] = [];
+  let used = 0;
+  // 大畫布(放大檢視、站方 lightbox)是使用者自己點開的「我要讀」—— 放兩倍
+  const cap = clip.w >= BIG_CANVAS_W ? maxPlates * 2 : maxPlates;
+  for (const c of order) {
+    // 「只要標題」是個數量,不是比例 —— 圖多大都一樣(§DX)
+    if (placed.length >= cap) break;
+    const pl = plateSize(c.label, c.fontPx);
+    /*
+     * 預算算**含光暈的**(那是畫面上最顯眼的部分),
+     * 重疊判斷算**不含光暈的** —— 兩團光暈互相疊沒關係,字疊在一起才不行。
+     */
+    const box = {
+      x: c.r.x + c.r.w / 2 - pl.boxW / 2,
+      y: c.r.y + c.r.h / 2 - pl.boxH / 2,
+      w: pl.boxW,
+      h: pl.boxH,
+    };
+    // 跳過而不是中斷:放不下的是**這一塊**,後面比較小的還有機會
+    if (used + (pl.w * pl.h) / area > PLATE_BUDGET) continue;
+    if (taken.some((t) => platesOverlap(t, box))) continue;
+    taken.push(box);
+    used += (pl.w * pl.h) / area;
+    placed.push({
+      x: c.r.x,
+      y: c.r.y,
+      w: c.r.w,
+      h: c.r.h,
+      fontPx: pl.fs,
       text: c.b.text,
       zh: c.label,
       low: c.b.c < LOW_CONFIDENCE,
       vertical: c.b.v === true,
-    };
-    if (mode === 'pin') {
-      pin++;
-      out.push({ ...c.r, fontPx: c.fontPx, ...common, kind: 'pin', n: pin });
-      continue;
-    }
-    /*
-     * 疊字模式:少數塞不下的**把字級拉到下限,框不動**。
-     *
-     * 早一版是把框撐大到放得下 —— 那是「譯文站在玻璃上」時的做法。
-     * 現在譯文有自己的貼片(overlay 的 `.itx`),貼片的寬度由字決定、
-     * 而且允許長出框外(§3.2),所以撐大玻璃反而會蓋掉旁邊本來看得到的
-     * 圖 —— 玻璃該蓋的只有原文那一塊。
-     */
-    out.push({
-      ...c.r,
-      fontPx: Math.max(c.fontPx, MIN_PATCH_FONT_PX),
-      ...common,
-      kind: 'veil',
-      n: 0,
     });
   }
-  return out;
+  return { placed, left: cand.length - placed.length, why: 'ok' };
 }
 
 /**
- * 疊字要佔多少比例,整張圖才走疊字。
+ * 密集的圖在**多寬以上**就照畫。
  *
- * 不是調出來的數字,是「例外」的定義:七成以上塞得下,剩下的就是例外,
- * 把它們的框撐大比換一種語彙便宜。低於七成就反過來 —— 那張圖本來就是
- * 小字為主(截圖、密集表格),硬疊只會糊成一片。
+ * 「這是文件不是圖」那條只擋行內。放大檢視把圖攤到視窗大小,
+ * 預算換算出來放得下十幾塊,而且是使用者自己點開的 —— 他要讀。
  */
-export const VEIL_MAJORITY = 0.7;
-
-/**
- * 一張圖只能有一種加註語彙。
- *
- * 使用者回報的原話是「一下有疊字 一下註解 不太統一」。逐塊判斷在單看
- * 一塊時每次都是對的,合起來看卻是兩套視覺語言插在同一張圖上 ——
- * 讀圖的人得同時維持兩種閱讀模式。門檻本身沒錯,錯在**它的作用域**:
- * 量尺是字級(§2.3),但決定要落在整張圖上。
- */
-export function imageMode(fits: readonly boolean[]): 'veil' | 'pin' {
-  if (fits.length === 0) return 'veil';
-  const ok = fits.filter(Boolean).length;
-  return ok / fits.length >= VEIL_MAJORITY ? 'veil' : 'pin';
-}
-
+export const DENSE_ZOOM_W = 900;
 
 /** `placeBlocks` 只讀這幾個欄位,不必綁死整個 ImageBlock */
 export interface ImageBlockLike {
@@ -281,35 +304,4 @@ export interface ImageBlockLike {
   c: number;
   v?: boolean;
   kind?: 'text' | 'code';
-}
-
-/**
- * 游標落在哪個錨點上。
- *
- * 疊層是 `pointer-events: none`,所以**錨點自己收不到滑鼠事件** ——
- * 命中測試只能由 content script 拿座標算。這不是繞路,是那條硬規則
- * 的必然結果:頁面永遠比疊層先拿到事件。
- *
- * 半徑放寬到 14px:錨點畫出來只有 14px 寬,要求精準命中太苛。
- */
-export const PIN_HIT_RADIUS = 14;
-
-export function pinAt(
-  placed: readonly PlacedBlock[],
-  localX: number,
-  localY: number,
-): PlacedBlock | null {
-  let best: PlacedBlock | null = null;
-  let bestD = PIN_HIT_RADIUS * PIN_HIT_RADIUS;
-  for (const p of placed) {
-    if (p.kind !== 'pin') continue;
-    const cx = p.x + p.w / 2;
-    const cy = p.y + p.h / 2;
-    const d = (localX - cx) ** 2 + (localY - cy) ** 2;
-    if (d <= bestD) {
-      bestD = d;
-      best = p;
-    }
-  }
-  return best;
 }

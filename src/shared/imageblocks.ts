@@ -89,6 +89,58 @@ const fold = (s: string): string => s.replace(/\s+/gu, ' ').trim().toLowerCase()
  *
  * 超過這個長度就是句子而不是標籤了,折行反而正常。
  */
+/**
+ * 一張圖最多疊幾塊譯文 —— **預設值,設定頁可調**(`settings.imageMaxPlates`)。
+ *
+ * 使用者的話是「只要標題就好」,而**「標題」是個數量不是比例** ——
+ * 一張圖上重要的東西就是那麼幾個,和圖多大沒有關係。
+ *
+ * 一開始只用面積預算,而面積**隨圖的大小反著跑**(§DX):
+ * 1102px 的產品截圖上 21 塊只佔 13%,340px 的小圖表上 2 塊就佔 10%。
+ * 結果是大圖放縱、小圖苛刻 —— 兩邊都錯。
+ *
+ * **大畫布放兩倍**(§EA):放大檢視與站方 lightbox 把圖攤開到
+ * `BIG_CANVAS_W` 以上,那是使用者自己點開的「我要讀」——
+ * 行內的圖相對小,少放一點;點開之後多放一點。同一份譯文,不再花錢。
+ */
+export const MAX_PLATES = 6;
+
+/**
+ * 畫布多寬算「大」。放大檢視(視窗寬)與站方 lightbox 都在這條線上面,
+ * 行內的圖幾乎都在下面。和 `DENSE_ZOOM_W`(密集門檻只擋行內)是同一個
+ * 直覺,值也一樣 —— 分成兩個名字是因為它們回答的問題不同,
+ * 未來可以分開調。
+ */
+export const BIG_CANVAS_W = 900;
+
+/**
+ * 譯文佔掉畫面的比例上限 —— **小圖的保險絲**。
+ *
+ * 塊數上限管的是「別太多」,這一條管的是「別在一張小圖上放六塊」:
+ * 340px 的縮圖放三塊就滿了。18% 是量出來的:真實素材上讀得下去的
+ * 落在 2–17%,而 21 塊那張災難是 13% —— 所以**它單獨擋不住東西**,
+ * 只在塊數上限之外兜底。
+ *
+ * 這個比例**含白貼片糊出去的那一圈**(`PLATE_GLOW_PX`)。
+ * 第一版沒算,於是帳面 2.7% 的圖實際佔了 13.4%,差五倍(§DX)——
+ * 名字說它量什麼,它就要量什麼。
+ */
+export const PLATE_BUDGET = 0.18;
+
+/**
+ * 扣掉「譯完等於沒譯」之後**還有這麼多塊**,這張圖就不是圖,是文件。
+ *
+ * 使用者的原話:「前幾輪有些不需要翻的都扣掉了 還一堆量的話
+ * 這張圖應該算是不要翻才是」——網頁截圖、手機截圖那一類。
+ *
+ * 量到的落差很大:圖表家族扣完是 3 塊,截圖家族是 31 與 47
+ * (`docs/plan-images.md` §13-10)。24 取在中間偏上,而且**它不是死路** ——
+ * 行內不畫,放大檢視照畫(那裡畫得下,而且是使用者自己點開的)。
+ *
+ * 只有四份素材,所以這是**第一版的門檻**,不是定論。
+ */
+export const TEXT_HEAVY_BLOCKS = 24;
+
 export const SINGLE_LINE_CHARS = 10;
 
 /** 加註字級的上限:再大就比原圖的字還醒目,喧賓奪主 */
@@ -215,13 +267,57 @@ export function fontSizeFor(
 }
 
 /**
- * 這一塊要疊字,還是落到編號錨點?
+ * 譯文貼片畫出來會多大 —— **預算算的就是這個**。
  *
- * 唯一的量尺是**這個字在螢幕上有幾個像素高**(`docs/plan-images.md` §2.3)——
- * 所以同一份快取資料在行內縮圖走錨點、在放大檢視走疊字,不必重問模型。
+ * 字級用**渲染時的**那個(有 `MIN_PATCH_FONT_PX` 的地板),不是「塞得進框
+ * 裡的」那個:框小的塊字級不跟著縮,貼片因此長出框外,而那正是密集素材
+ * 「糊成一片」的來源。用塞得進去的字級算,每個顯示尺寸會量出一樣的結果 ——
+ * 那量的是原文的框,不是譯文(`docs/plan-images.md` §13-9)。
+ *
+ * 中文大致全形、拉丁字母大致半形,左右各留 `PLATE_PAD_EM` 的白羽。
+ * 這是估值不是量測:要判斷的是擠不擠,排得出大小順序就夠。
+ * 真正畫出來的尺寸由 `overlay.paintPlates()` 量,那時候才知道字型的實際寬度。
  */
-export function patchable(fontPx: number): boolean {
-  return fontPx >= MIN_PATCH_FONT_PX;
+export const PLATE_PAD_EM = 0.62;
+
+/**
+ * 白貼片糊出去的那一圈,單位 px。
+ *
+ * `overlay.ts` 的 `.iplate` 是 `filter: blur(11px)` —— 高斯糊到大約
+ * **1.5 倍半徑**還看得見,而那一圈是畫面上**最顯眼的部分**
+ * (深色圖上一團白)。
+ *
+ * 第一版的預算沒有算它,於是「譯文佔版」量的是一個看不見的矩形:
+ * 真圖實測**帳面 2.7% 而實際 13.4%**,差了五倍(§DX)。
+ * 名字說它量什麼,它就要量什麼。
+ */
+export const PLATE_GLOW_PX = 16;
+
+const WIDE = /[\u3000-\u9fff\uff00-\uffef]/u;
+
+/**
+ * 譯文貼片**畫出來會佔掉多大** —— 連糊出去的那一圈一起算。
+ *
+ * `box` 是不含光暈的那一塊(拿來判斷兩片會不會壓到:光暈互相疊是可以的,
+ * 字疊在一起才不行),`w` / `h` 是含光暈的,預算算的是這個。
+ */
+export function plateSize(
+  label: string,
+  fontPx: number,
+): { w: number; h: number; fs: number; boxW: number; boxH: number } {
+  const fs = Math.max(fontPx, MIN_PATCH_FONT_PX);
+  const cols = [...label].reduce((n, c) => n + (WIDE.test(c) ? 1 : 0.55), 0);
+  const boxW = cols * fs + fs * PLATE_PAD_EM * 2;
+  const boxH = fs * 1.24;
+  return { w: boxW + PLATE_GLOW_PX * 2, h: boxH + PLATE_GLOW_PX * 2, fs, boxW, boxH };
+}
+
+/** 兩片貼片有沒有壓到 */
+export function platesOverlap(
+  a: { x: number; y: number; w: number; h: number },
+  b: { x: number; y: number; w: number; h: number },
+): boolean {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }
 
 /**

@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { JSDOM } from 'jsdom';
 import { bleedFor, inkOverflow } from '../src/content/bleed.ts';
 import {
@@ -210,4 +212,29 @@ test('LAYER_CSS 的註解裡不可以有反引號', () => {
     [],
     `CSS 裡有反引號會把 template literal 提前關掉,改用「」或直接寫:\n  ${bad.join('\n  ')}`,
   );
+});
+
+test('「祖先會不會裁切」只能有一份定義 —— 第三份就是 §DZ 的事故', () => {
+  /*
+   * 同一條規則(overflow ≠ visible 的祖先會裁掉內容,但傳播給視窗的那層
+   * 不算)已經出過兩次事:§DV 修了 clippedAway 的那份,§DZ 發現 clippers()
+   * 還有一份沒跟著修 —— 同一個站、同一個症狀第三次回來。
+   *
+   * 這裡用 grep 把它變成機械的:src/content 裡凡是問「overflow 是不是
+   * visible」的地方,只允許 occlusion.ts(定義的家)和 cover.ts 的 spills
+   * (那是在問**元素自己**會不會把內容溢出去,不是祖先裁不裁 ——
+   * 另一個問題,合法)。新的呼叫者請 import clipsContent。
+   */
+  const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const allowed = new Set(['occlusion.ts', 'cover.ts']);
+  const dir = path.join(root, 'src', 'content');
+  for (const f of readdirSync(dir).filter((n) => n.endsWith('.ts'))) {
+    if (allowed.has(f)) continue;
+    const src = readFileSync(path.join(dir, f), 'utf8');
+    assert.equal(
+      /overflow[XY]\s*[!=]==?\s*'visible'/.test(src),
+      false,
+      `${f} 自己另寫了一份「overflow 裁不裁」的判斷 —— 用 occlusion.ts 的 clipsContent`,
+    );
+  }
 });

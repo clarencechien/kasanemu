@@ -175,6 +175,14 @@ export interface Settings {
   imageAlwaysOn: boolean;
   /** 疊膜強度 0–0.6。0 = 不壓暗原文,只放譯文 */
   imageVeil: number;
+  /**
+   * 一張圖行內最多疊幾塊(§EA)。
+   *
+   * 這是「圖上放多少中文才不吵」的品味閘門 —— 面積預算(18%)與不重疊
+   * 是保險絲,這個數字才是日常主閘。放大檢視畫布 ≥900px 時自動放兩倍:
+   * 圖大,同樣的塊數就顯得稀疏,多放才對得起放大的理由。
+   */
+  imageMaxPlates: number;
   /** 強制全站使用標註樣式 (§4.6) */
   forceAnnotation: boolean;
   cacheMode: CacheMode;
@@ -235,6 +243,7 @@ export const DEFAULT_SETTINGS: Settings = {
   imageMode: 'hover',
   imageAlwaysOn: false,
   imageVeil: 0.3,
+  imageMaxPlates: 6,
   forceAnnotation: false,
   /*
    * **預設 persistent。**

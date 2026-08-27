@@ -1,30 +1,19 @@
 /*
- * **加註語彙的量測**:一張圖該疊字還是標號,能不能用一個數字決定。
+ * **出貨中那條規則,在真實素材上放得下幾塊。**
  *
- *   node --experimental-strip-types scripts/measure-vocab.mjs
- *   node --experimental-strip-types scripts/measure-vocab.mjs --width 800
+ *   npm run measure:vocab
+ *   npm run measure:vocab -- --width 800
  *
- * 使用者的話:「兩張很像的圖 一個是疊字 一個是標註 …
- * 先看能不能量測 再來看要翻多少 再來決定是要標註還是疊字 一次解決」。
+ * 語彙的取捨已經定了(§DW):錨點退場,整張圖只有疊字,
+ * 而放幾塊由一個數字決定 —— `PLATE_BUDGET`(譯文貼片可以佔掉畫面的多少),
+ * 加上「不與已選的貼片重疊」。
  *
- * 現在的規則是**多數決**:七成以上的塊「字級放得下」就整張疊字
- * (`imagegeo.imageMode`)。它有兩個毛病:
+ * 這一支留著是為了**下次要動那兩個常數時有東西可以看**:
+ * 換 `PLATE_BUDGET`、換 `TEXT_HEAVY_BLOCKS`,四份真實回應 × 五個寬度
+ * 當場告訴你每張圖會變成什麼樣。
  *
- * 1. **是個懸崖。** 69% 和 71% 的圖看起來一模一樣,語彙卻整個翻面。
- * 2. **量的是單塊放不放得下,不是整張看不看得下去。** 每一塊都「放得下」
- *    的圖照樣可以糊成一片 —— 只要那些塊彼此挨得夠近。
- *
- * 所以這裡多量兩個**整張圖**的數字,都從模型已經回來的東西算得出來
- * (不必再問一次模型,也不必先畫出來):
- *
- * - **遮蔽率** `ink`:所有毛玻璃的聯集面積 ÷ 圖的面積。加註蓋掉多少原圖。
- * - **擠壓率** `clash`:譯文貼片兩兩重疊的面積 ÷ 貼片總面積。
- *   貼片的寬度由字決定(這正是「不折字」的前提),所以它算得出來。
- *
- * 為什麼是這兩個而不是別的:mockup 那一輪量過「遮蔽面積」與「互動次數」,
- * 兩個單獨看都會騙人 —— 密集素材上強制疊字是「遮蔽 17.2% · 0 次互動」,
- * 兩欄都漂亮而畫面完全不能看。**分得出好壞的是標籤有沒有互相壓到**
- * (`TODO.md` 的比較台結論)。`clash` 就是那件事的數字化。
+ * 當初比較三個候選量尺的那一版留在 `docs/plan-images.md` §13-9:
+ * 遮蔽率分不開、擠壓抓不到「壓不到但滿滿都是」,只有譯文佔版兩件事都抓得到。
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
@@ -97,7 +86,7 @@ function measure(fx, dispW) {
     if (!IB.worthAnnotating(b.text, label)) continue;
     const chars = [...label].length;
     const fontPx = IB.fontSizeFor(r.w, r.h, chars, b.v === true);
-    kept.push({ r, label, fontPx, fits: IB.patchable(fontPx), plate: plateOf(r, label, fontPx) });
+    kept.push({ r, label, fontPx, plate: plateOf(r, label, fontPx) });
   }
   const area = dispW * dispH;
   /*
@@ -170,83 +159,20 @@ function propose(kept, area, budget) {
   return { take, used, mode: take.length === 0 ? 'pin' : 'veil' };
 }
 
-console.log('\n== 一張圖的三個數字(每個顯示寬度各一列)==\n');
-console.log('| 素材 | 寬 | 塊 | 略過 | 放得下 | 現行 | 原文遮蔽 | 譯文佔版 | 擠壓 | 中位字級 |');
-console.log('|---|---|---|---|---|---|---|---|---|---|');
-const rows = [];
+console.log('\n== 出貨中的規則在真實素材上放得下幾塊 ==\n');
+console.log(`預算 ${(IB.PLATE_BUDGET * 100).toFixed(1)}% · 密集門檻 ${IB.TEXT_HEAVY_BLOCKS} 塊\n`);
+console.log('| 素材 | 寬 | 模型回 | 值得翻 | 畫幾塊 | 還剩 | 判定 |');
+console.log('|---|---|---|---|---|---|---|');
 for (const fx of fixtures) {
   for (const w of WIDTHS) {
-    const m = measure(fx, w);
-    rows.push({ id: fx.id, w, ...m });
+    const H = Math.round((w * fx.nh) / fx.nw);
+    const drawn = IG.drawnRect({ w: fx.nw, h: fx.nh }, { w, h: H }, 'contain',
+      { x: { pct: 0.5 }, y: { pct: 0.5 } });
+    const out = IG.placeBlocks(fx.blocks, drawn, { w, h: H });
+    const why = { ok: '畫', 'text-heavy': '太密,行內不畫', nothing: '沒有需要翻的' }[out.why];
     console.log(
-      `| ${fx.id} | ${w} | ${m.n} | ${m.skipped} | ${(m.fitRatio * 100).toFixed(0)}% | ` +
-        `${m.mode === 'veil' ? '疊字' : '錨點'} | ${(m.ink * 100).toFixed(1)}% | ` +
-        `${(m.plateInk * 100).toFixed(1)}% | ` +
-        `${(m.clash * 100).toFixed(1)}% | ${m.medFont.toFixed(1)}px |`,
+      `| ${fx.id} | ${w} | ${fx.blocks.length} | ${out.placed.length + out.left} | ` +
+        `${out.placed.length} | ${out.left} | ${why} |`,
     );
   }
-}
-
-/*
- * 同一張圖在相鄰兩個寬度之間**翻面**的地方,就是懸崖。
- * 懸崖本身不是壞事(總得有個界線),值得看的是**翻面的時候另外兩個
- * 數字動了多少** —— 動很少的話,那條界線畫錯了地方。
- */
-console.log('\n== 語彙翻面的地方 ==\n');
-for (const fx of fixtures) {
-  const mine = rows.filter((r) => r.id === fx.id);
-  for (let i = 1; i < mine.length; i++) {
-    if (mine[i].mode === mine[i - 1].mode) continue;
-    const a = mine[i - 1];
-    const b = mine[i];
-    console.log(
-      `  ${fx.id}:${a.w}px ${a.mode === 'veil' ? '疊字' : '錨點'} → ${b.w}px ${b.mode === 'veil' ? '疊字' : '錨點'}` +
-        `   放得下 ${(a.fitRatio * 100).toFixed(0)}%→${(b.fitRatio * 100).toFixed(0)}%` +
-        `   擠壓 ${(a.clash * 100).toFixed(1)}%→${(b.clash * 100).toFixed(1)}%`,
-    );
-  }
-}
-
-/*
- * 同一張圖、同一個寬度,兩個模型的答案不一樣的地方。
- * 使用者看到的「兩張很像的圖一個疊字一個標註」有一半是這個:
- * L0 與 L1 對同一張圖回的塊數不同,而多數決對塊數很敏感。
- */
-console.log('\n== 同一張圖、不同模型 ==\n');
-const pairs = [['gemma-chart', 'lite-chart'], ['gemma-shot', 'lite-shot']];
-for (const [a, b] of pairs) {
-  for (const w of WIDTHS) {
-    const ra = rows.find((r) => r.id === a && r.w === w);
-    const rb = rows.find((r) => r.id === b && r.w === w);
-    if (!ra || !rb || ra.mode === rb.mode) continue;
-    console.log(
-      `  ${w}px:${a} ${ra.mode === 'veil' ? '疊字' : '錨點'}(${ra.n} 塊 / 放得下 ${(ra.fitRatio * 100).toFixed(0)}%)` +
-        ` vs ${b} ${rb.mode === 'veil' ? '疊字' : '錨點'}(${rb.n} 塊 / 放得下 ${(rb.fitRatio * 100).toFixed(0)}%)` +
-        `   擠壓 ${(ra.clash * 100).toFixed(1)}% vs ${(rb.clash * 100).toFixed(1)}%`,
-    );
-  }
-}
-
-/*
- * 提案掃門檻。要看的是**它會不會把已經好好的圖弄壞** ——
- * chart 那兩張現在是疊字而且看起來沒問題,提案不該把它們變成錨點或砍掉東西。
- */
-console.log('\n== 提案:加到佔版撞到預算為止(門檻掃描)==\n');
-for (const budget of [0.08, 0.12, 0.16]) {
-  console.log(`  預算 ${(budget * 100).toFixed(0)}%`);
-  console.log('  | 素材 | 寬 | 現行 | 提案 | 翻幾塊 / 共 | 用掉的佔版 |');
-  console.log('  |---|---|---|---|---|---|');
-  for (const fx of fixtures) {
-    for (const w of WIDTHS) {
-      const m = measure(fx, w);
-      const p = propose(m.kept, m.area, budget);
-      const same = (m.mode === 'veil') === (p.mode === 'veil') ? '' : '  ←變';
-      console.log(
-        `  | ${fx.id} | ${w} | ${m.mode === 'veil' ? '疊字' : '錨點'} | ` +
-          `${p.mode === 'veil' ? '疊字' : '錨點'}${same} | ${p.take.length} / ${m.n} | ` +
-          `${(p.used * 100).toFixed(1)}% |`,
-      );
-    }
-  }
-  console.log('');
 }

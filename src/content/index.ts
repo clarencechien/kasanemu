@@ -39,7 +39,7 @@ import {
   unlockScales,
 } from './geometry';
 import { clipInsets, scrolls, type Box } from './cover';
-import { clippedAway } from './occlusion';
+import { chromeBand, clippedAway, clipsContent } from './occlusion';
 import { hidePinnedWhileScrolling, motionGuard } from './motion';
 import { deviceProfile, type DeviceProfile } from './device';
 import { probePackagedFonts } from './fonts';
@@ -161,9 +161,6 @@ const imageAnno = new ImageAnnotator(
     hideImage() {
       layer?.hideImage();
     },
-    setActivePin(n, block) {
-      layer?.setActivePin(n, block);
-    },
     /*
      * closed shadow root 把事件目標重定向成 host,所以「滑鼠在我們的 chip 上」
      * 從外面看就是「目標 === 那個 host」。整層只有 chip 與放大檢視吃滑鼠事件,
@@ -191,6 +188,7 @@ const imageAnno = new ImageAnnotator(
   },
   () => settings.imageMode !== 'off' && running,
   () => settings.imageAlwaysOn,
+  () => settings.imageMaxPlates,
 );
 
 /** 圖片 chip 的內容。和 UI 標籤貼片共用同一條渲染路 */
@@ -1847,8 +1845,13 @@ function onKeyDown(e: KeyboardEvent): void {
    * 掃視哪些區塊被翻了是偶爾除錯才做的。常用的動作該配最好按的鍵。
    *
    * 而且「按住看原文、放開回來」本來就該是 hold,不是 toggle。
+   *
+   * `AltGraph`:Windows 上的右 Alt 送來的 `key` 不是 `'Alt'` 而是
+   * `'AltGraph'`(歐洲鍵盤佈局的組字鍵)。使用者從 ChromeOS 換到
+   * Windows 之後回報「按了 alt 也不會消失」—— 按的是右 Alt。
+   * 兩顆都收:hold 的意圖一樣,不該分左右。
    */
-  if (e.key === 'Alt' && !e.shiftKey && !hiddenAll) {
+  if (isAltKey(e.key) && !e.shiftKey && !hiddenAll) {
     hiddenAll = true;
     layer?.setHiddenAll(true);
     // 對稱律的另一半(§2.5):文字掀開看原文,圖片就是收掉加註看原圖
@@ -1863,7 +1866,7 @@ function onKeyDown(e: KeyboardEvent): void {
    * Alt 會先單獨到達,整層收起來閃一下,直到放開 Alt 才回來。
    * 收到第二個鍵就把它放回去 —— hold 的意圖只有在 Alt 單獨按住時才成立。
    */
-  if (hiddenAll && e.key !== 'Alt') restoreLayer();
+  if (hiddenAll && !isAltKey(e.key)) restoreLayer();
   if (e.altKey && e.shiftKey && (e.key === 'D' || e.key === 'd')) {
     e.preventDefault();
     toggleDebugPanel();
@@ -1886,7 +1889,12 @@ function toggleAltScan(): void {
 }
 
 function onKeyUp(e: KeyboardEvent): void {
-  if (e.key === 'Alt' && hiddenAll) restoreLayer();
+  if (isAltKey(e.key) && hiddenAll) restoreLayer();
+}
+
+/** 左 Alt 是 `'Alt'`,Windows 的右 Alt 是 `'AltGraph'` —— 對我們是同一顆鍵 */
+function isAltKey(key: string): boolean {
+  return key === 'Alt' || key === 'AltGraph';
 }
 
 /**
@@ -2296,7 +2304,6 @@ async function start(): Promise<void> {
   /*
    * 錨點的命中測試要**連續的座標** —— `mouseover` 只在跨元素邊界時觸發,
    * 而錨點是畫在疊層上的,滑鼠在同一張圖裡移動不會產生新的 mouseover。
-   * 疊層是 pointer-events: none,所以命中只能自己算(imagegeo.pinAt)。
    */
   document.addEventListener('mousemove', onImageMove, { passive: true, capture: true });
   document.addEventListener('click', onImageClick, true);
@@ -2393,42 +2400,6 @@ function onDocLeave(): void {
  *  2. 一個可見單元當哨兵(內容自己在動的話,整批座標都要重算)
  * 兩個都對得上就什麼都不做。
  */
-/**
- * 找出視窗上下緣被 position: fixed / sticky 的頁面元素佔掉多少。
- *
- * 為什麼需要:原文捲到固定頁首**底下**會被蓋住,而我們的疊層 z-index 是
- * 2147483000,畫在頁首**上面** —— 位置完全正確,卻浮在頁首上。
- * 使用者一路回報的「跑到 header」就是這個,不是幾何錯位
- * (診斷 log 裡 position-drift 是零筆,座標一直都對)。
- *
- * 疊層的 pointer-events: none 在這裡第二次派上用場:
- * elementFromPoint 打不到我們自己,回來的一定是頁面的東西。
- */
-function chromeBand(y: number, top: boolean): number {
-  /*
-   * 取樣三個 x,取最大的帶。
-   *
-   * 原本只在正中央取一次 —— 而 Gmail 的 Reply / Forward 列只佔左半邊,
-   * 正中央那一點打到的是它右邊的空白。回報的「下面超出的部分」
-   * 就是這樣漏掉的:整條列明明釘在那裡,我們卻量到 0。
-   */
-  let band = 0;
-  for (const ratio of [0.25, 0.5, 0.75]) {
-    const x = Math.round(window.innerWidth * ratio);
-    const hit = document.elementFromPoint(x, y);
-    for (let el: Element | null = hit; el && el !== document.body; el = el.parentElement) {
-      const cs = getComputedStyle(el);
-      if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
-      // 透明的覆蓋層不會擋住文字,不要當成頁首
-      if (Number(cs.opacity) === 0 || cs.visibility === 'hidden') continue;
-      const r = el.getBoundingClientRect();
-      const b = top ? r.bottom : window.innerHeight - r.top;
-      if (b > band) band = b;
-      break;
-    }
-  }
-  return Math.max(0, Math.min(band, window.innerHeight / 2));
-}
 
 /**
  * 會裁切這個單元的祖先(`overflow` 不是 visible 的那些)。
@@ -2443,8 +2414,8 @@ function clippers(u: Unit): Element[] {
   if (hit) return hit;
   const out: Element[] = [];
   for (let p = u.el.parentElement; p && p !== document.documentElement; p = p.parentElement) {
-    const cs = getComputedStyle(p);
-    if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') out.push(p);
+    // 「真的會裁」只有一份定義(occlusion.ts)—— 第三份就是 §DZ 的事故
+    if (clipsContent(p)) out.push(p);
   }
   clippersOf.set(u, out);
   return out;
