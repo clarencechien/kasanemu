@@ -172,6 +172,7 @@ npm run audit:occlusion <url>  # 這一頁的疊層被誰藏了、差多少
 npm run render:veil out.png [--sweep]   # 玻璃的目視稿與配方掃描(眼睛選的那一格)
 npm run audit:docs       # 文件和 repo 對不對得起來(§ 編號、npm run、檔案路徑)
 npm run measure:vocab    # 加註語彙的量尺:譯文佔版 / 擠壓 / 遮蔽,四份真實回應 × 五個寬度
+npm run mockup:vocab out.png [--width 620]   # 同一張圖:全錨點 vs 預算內的疊字,並排
 npm run audit:tree <url> # 爬一個站的子路徑,對每一頁跑偵測稽核
 GEMINI_API_KEY=... npm run probe:gemma       # 模型行為:thinking、schema、echo 對位
 GEMINI_API_KEY=... node scripts/probe-glossary.mjs   # 詞表遵循率 + 速度品質對打
