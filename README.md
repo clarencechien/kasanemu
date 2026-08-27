@@ -151,7 +151,7 @@ node scripts/audit-coverage.mjs <url>     # 單頁詳細
 
 ```bash
 npm run typecheck
-npm test          # 329 個測試(node:test + jsdom)
+npm test          # 333 個測試(node:test + jsdom)
 npm run build     # 也會回報 dist 體積對 §10.2 的 1.5 MB 預算
 npm run check     # typecheck + 文件稽核 + test + build + 五支 probe ← 提交前跑這個
 npm run zip       # dist/ → release/kasanemu-<version>.zip(自己寫的 zip,無外部依賴)
@@ -203,7 +203,7 @@ scripts/    audit-{sites,tree,coverage,docs}(廣度 / 深度 / 覆蓋 / 文件�
             probe-{detect,colors,snapshot,image,veil,gemma,vision,glossary}
             render-veil(玻璃的目視稿:量測選不出來的那一格)· measure-vision
             fetch-fonts(subset 打包)· zip · sites.txt · fixtures/ · bench-vocab/
-tests/      329 個 node:test;fixtures/vision/ 是真實 API 回應(地面實況)
+tests/      333 個 node:test;fixtures/vision/ 是真實 API 回應(地面實況)
 docs/       lessons(通則)· deviations(逐件記錄)· acceptance(人工驗收)
             fonts(subset 實測)· plan-annotation(加翻層規格)
             plan-glossary(詞表規格 + 模型實測)· plan-images(圖片翻譯規格)

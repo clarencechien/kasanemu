@@ -24,6 +24,7 @@ import {
 } from './queuelogic';
 import {
   IMAGE_MAX_ATTEMPTS,
+  PENDING_L0_MAX,
   addJob,
   dropPageJobs,
   jobKey,
@@ -609,9 +610,31 @@ export async function translateImage(
   tier: Tier,
   brief = false,
 ): Promise<void> {
-  await mutateImageQueue((q) =>
-    addJob(q, { url, pageKey, tabId, lane, tier, at: Date.now(), attempts: 0, brief }),
-  );
+  /*
+   * `addJob` 會為了張數上限擠掉最舊的待處理工作(§DU)——
+   * **擠掉要告訴 content**,理由和下面 drainImages 那段一樣:
+   * 少了這一步,content 的 in-flight 集合永遠不會清,那張圖的圖角
+   * 停在「辨識中」,而且因為集合擋著,再滑上去也不會重送。
+   */
+  let before: readonly ImageJob[] = [];
+  const after = await mutateImageQueue((q) => {
+    before = q;
+    return addJob(q, { url, pageKey, tabId, lane, tier, at: Date.now(), attempts: 0, brief });
+  });
+  const kept = new Set(after.map(jobKey));
+  const evicted = before.filter((j) => !kept.has(jobKey(j)));
+  if (evicted.length > 0) {
+    diag('info', 'image-evicted', { n: evicted.length, cap: PENDING_L0_MAX });
+    for (const j of evicted) {
+      post(j.tabId, {
+        type: 'image-error',
+        pageKey: j.pageKey,
+        url: j.url,
+        reason: 'queue-full',
+        retriable: true,
+      });
+    }
+  }
   void drainImages();
 }
 
@@ -644,7 +667,7 @@ export async function drainImages(): Promise<void> {
     run = picked.run;
     const { drop } = picked;
     if (drop.length > 0) {
-      // 掃過就走的 hover、以及 worker 被回收留下的孤兒
+      // 活過看門狗、以及 worker 被回收留下的孤兒
       diag('info', 'image-stale', {
         n: drop.length,
         ageMs: Date.now() - drop[0]!.at,
@@ -664,7 +687,7 @@ export async function drainImages(): Promise<void> {
           type: 'image-error',
           pageKey: j.pageKey,
           url: j.url,
-          // 派出去過卻收在這裡 = 重派過還是沒回來,不是「你捲走了」
+          // 派出去過卻收在這裡 = 重派過還是沒回來;沒派出去過 = 排到看門狗都響了
           reason: j.startedAt === undefined ? 'stale' : 'gave-up',
           retriable: true,
         });
