@@ -4833,3 +4833,66 @@ fixture 加兩個形狀:黏著側欄(**不可以**算門面)與橫跨畫面的�
 x 760..1000,而取樣點在 750 —— 差 10px 滑掉了,於是「拿掉寬度判斷」
 照樣是綠的。改成 32%(x 680..1000)才穩穩蓋住那一點。
 **確認測試會紅的時候,也要確認它紅的理由是對的。**
+
+## DZ. 同一條規則的第三份,同一個站第三次回來
+
+> 這個 100% 沒看到任何東西 但縮小到 33% 翻好的中文就出現了
+
+thenewstack.io,第三次。§DV 修了「藏不藏」(`clippedAway`),
+§DY 修了「門面帶」(`chromeBand`),而**「裁到哪裡」(`clippers()` →
+`visibleBox()`)裡還有第三份同樣的祖先 overflow 判斷,沒跟著修**。
+
+### 為什麼 100% 什麼都沒有、33% 就出現
+
+這個站的 `<body>` 是 `overflow-x: hidden` 而且**只有一個視窗高**
+(overflow 傳播給了視窗,body 自己不捲、也不裁 —— §DV 量過的同一件事)。
+
+`clippers()` 把 body 收進「會裁切的祖先」,`visibleBox()` 拿它的矩形
+當疊層的可見範圍。捲到 scrollY 1407 時 body 的矩形是 **−1407..−776** ——
+整個在視窗上面。於是**第一屏以後的每一塊譯文都被 `clip-path` 裁成零**。
+
+用真擴充(假 Translator 代替 L0)在 Playwright 裡逐格對出來:
+
+```
+scrollY 1407,視窗附近的每一個盒子:
+  y 1443 h 177   clip-path: inset(176.484px 0 0)   ← 裁光
+  y 1646 h 152   clip-path: inset(152px 0 0)       ← 裁光
+```
+
+兩個 zoom 的差別只是 body 蓋住的範圍:
+
+| | 視窗高(CSS px) | body 蓋住 | 看得到譯文的範圍 |
+|---|---|---|---|
+| 100% | 631 | 文件的前 631px | 只有標題那一屏 |
+| 33% | 1912 | 前 1912px | 上半篇 |
+
+使用者兩張截圖與此逐字吻合 —— 33% 不是「修好了」,是**視窗高到把
+沒被裁的那一段裝進來**而已。
+
+### 修法:定義只留一份
+
+`occlusion.ts` 新增 `clipsContent(el)`:「overflow ≠ visible **而且**
+不是把 overflow 傳播給視窗的那一層」。`clippedAway` / `clipReason` /
+`clippers()` 全部改吃它。
+
+**第四份用 grep 擋**(`tests/style.test.ts`):`src/content` 裡凡是問
+「overflow 是不是 visible」的,只允許 occlusion.ts(定義的家)和
+cover.ts 的 `spills`(那是在問**元素自己**會不會把內容溢出去 ——
+另一個問題)。把舊寫法塞回 `clippers()`,這條測試會紅。
+
+### 教訓照著 §36 走了一半
+
+§DY 之後 lessons §36 寫著「修好一個地方之後問一句:還有誰在問同一個問題」。
+我問了 `chromeBand` 那一次,**沒有問第三次** —— `clippers()` 就是漏掉的
+那一個。這次不再靠「記得去問」:問題的答案(clipsContent)只存在一個地方,
+另寫一份會被測試擋下。
+
+### 重現的鷹架留下來了
+
+`Playwright + launchPersistentContext + --load-extension` 載真的 dist、
+content bundle 開頭塞一個假的 `Translator`(content script 在 isolated
+world,`addInitScript` 塞的到不了)、CDP `DOMSnapshot.captureSnapshot`
+穿透 closed shadow root 讀每個盒子的 clip-path。這一套是第一次把
+「使用者看到的畫面」直接接進除錯迴圈 —— 前兩輪(§DV、§DY)都是從 log
+反推的,這一輪 log 已經不夠了(clipped-overlays 說 0、chrome-band 說 0,
+而畫面上就是沒有)。

@@ -39,7 +39,7 @@ import {
   unlockScales,
 } from './geometry';
 import { clipInsets, scrolls, type Box } from './cover';
-import { chromeBand, clippedAway } from './occlusion';
+import { chromeBand, clippedAway, clipsContent } from './occlusion';
 import { hidePinnedWhileScrolling, motionGuard } from './motion';
 import { deviceProfile, type DeviceProfile } from './device';
 import { probePackagedFonts } from './fonts';
@@ -2403,8 +2403,8 @@ function clippers(u: Unit): Element[] {
   if (hit) return hit;
   const out: Element[] = [];
   for (let p = u.el.parentElement; p && p !== document.documentElement; p = p.parentElement) {
-    const cs = getComputedStyle(p);
-    if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') out.push(p);
+    // 「真的會裁」只有一份定義(occlusion.ts)—— 第三份就是 §DZ 的事故
+    if (clipsContent(p)) out.push(p);
   }
   clippersOf.set(u, out);
   return out;

@@ -43,6 +43,23 @@ export function overflowGoesToViewport(el: Element): boolean {
  * 可捲動的容器**照樣算**:現在看不見就是看不見,使用者把它捲進來之後
  * 下一輪稽核會再把疊層放出來。
  */
+/**
+ * 這一層祖先**真的會裁切內容**嗎。
+ *
+ * 「overflow 不是 visible」只是必要條件 —— 把 overflow 傳播給視窗的那一層
+ * (`overflowGoesToViewport`)自己一格都不裁。**這條判斷在這個檔案之外
+ * 不可以再寫第二份**:§DV 修了 `clipReason()` 的那一份,而 `index.ts` 的
+ * `clippers()` 裡還有一份沒跟著修 —— 於是同一個站、同一個症狀第三次回來
+ * (§DZ):body 只有一個視窗高,捲過第一屏之後它的矩形整個在視窗上面,
+ * 每一塊譯文都被「裁到 body 的範圍內」裁成零。
+ * `tests/style.test.ts` 有一條 grep 守著這件事。
+ */
+export function clipsContent(el: Element): boolean {
+  if (overflowGoesToViewport(el)) return false;
+  const cs = getComputedStyle(el);
+  return cs.overflowX !== 'visible' || cs.overflowY !== 'visible';
+}
+
 /** 被誰裁掉的 —— `null` 代表沒有 */
 export interface ClipReason {
   /** 裁掉它的那一層 */
@@ -62,10 +79,7 @@ export function clipReason(el: Element): ClipReason | null {
   const r = el.getBoundingClientRect();
   if (r.width < 1 || r.height < 1) return { by: el, kind: 'self-zero' };
   for (let p = el.parentElement; p && p !== document.documentElement; p = p.parentElement) {
-    // 傳播到視窗去的那一層自己不裁(§DV)
-    if (overflowGoesToViewport(p)) continue;
-    const cs = getComputedStyle(p);
-    if (cs.overflowX === 'visible' && cs.overflowY === 'visible') continue;
+    if (!clipsContent(p)) continue;
     const pr = p.getBoundingClientRect();
     if (pr.width < 1 || pr.height < 1) return { by: p, kind: 'parent-zero' };
     const outside =

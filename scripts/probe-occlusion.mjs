@@ -57,6 +57,15 @@ await page.waitForTimeout(120);
 
 const got = await page.evaluate(() => {
   const ask = (id) => globalThis.OCC.clippedAway(document.getElementById(id));
+  /*
+   * clipsContent 是「祖先會不會裁」唯一的一份定義(§DZ)——
+   * clippedAway 和 index.ts 的 clippers() 都吃它。body 把 overflow 傳播給
+   * 視窗,必須判「不裁」;真的內層捲動容器必須判「裁」。
+   */
+  const clips = {
+    body: globalThis.OCC.clipsContent(document.body),
+    inner: globalThis.OCC.clipsContent(document.getElementById('inner')),
+  };
   const band = () => {
     const d = globalThis.OCC.chromeBandDetail(window.innerHeight - 2, false);
     return { band: Math.round(d.band), by: d.by ? d.by.id || d.by.tagName : null };
@@ -81,6 +90,7 @@ const got = await page.evaluate(() => {
     afterScroll: { above: ask('above'), below: ask('below') },
     railOnly,
     withBar,
+    clips,
   };
 });
 await browser.close();
@@ -99,6 +109,12 @@ mustShow('捲動後', 'above', got.afterScroll.above);
 mustShow('捲動後', 'below', got.afterScroll.below);
 if (!got.before['scrolled-out']) {
   problems.push('scrolled-out:沒被藏 —— 內層捲動容器裁掉的東西,疊層會浮在無關的位置');
+}
+if (got.clips.body) {
+  problems.push('clipsContent 說 body 會裁 —— 捲過第一屏之後整頁的譯文會被裁光(§DZ)');
+}
+if (!got.clips.inner) {
+  problems.push('clipsContent 說內層捲動容器不裁 —— 捲出去的內容疊層會浮在外面');
 }
 /*
  * 門面帶的兩個方向(§DY)。
