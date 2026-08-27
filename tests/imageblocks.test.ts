@@ -5,6 +5,7 @@ import {
   BOX_SCALE,
   MIN_PATCH_FONT_PX,
   SINGLE_LINE_CHARS,
+  worthAnnotating,
   fontSizeFor,
   looksConcatenated,
   looksVertical,
@@ -367,6 +368,85 @@ test('疊字模式下塞不下的那幾塊把字級拉到下限,框不動', () =
   assert.equal(small.fontPx, MIN_PATCH_FONT_PX, '字級要拉到下限');
   assert.ok(small.h < 10, `框被撐大了:${small.h}`);
   assert.ok(small.w < 30, `框被撐寬了:${small.w}`);
+});
+
+test('譯完等於沒譯就不要蓋上去', () => {
+  /*
+   * **使用者原話**:「數字 跟確定不翻的英文 可以直接不疊上去了 ——
+   * 如果知道翻之前跟翻之後是一樣的,疊了沒意思」。
+   *
+   * blog.google 一張 bar chart 實測 18 個加註,只有標題、副標、
+   * 「越低越好」三塊真的翻了;其餘 15 塊譯文和原文一模一樣 ——
+   * 蓋住原圖,而且蓋得比原文糊。
+   */
+  assert.equal(worthAnnotating('469 GB', '469 GB'), false);
+  assert.equal(worthAnnotating('Elasticsearch', 'Elasticsearch'), false);
+  assert.equal(worthAnnotating('Deepgram Nova-3', 'Deepgram Nova-3'), false);
+  // 大小寫與空白的差別不算「翻了」
+  assert.equal(worthAnnotating('ClickHouse', 'clickhouse'), false);
+  assert.equal(worthAnnotating('Storage  size', 'Storage size'), false);
+  // 全形空白也要壓掉 —— 模型很愛加
+  assert.equal(worthAnnotating('469 GB', '469\u3000GB'), false);
+});
+
+test('純數字與符號本來就不用翻 —— 模型硬要加東西也不算', () => {
+  /*
+   * 這一條擋的不是「譯完一樣」,是「模型自己加了原文沒有的東西」:
+   * `2024` → `2024年` 是它在補上下文,而軸標籤上那個字是噪音。
+   */
+  assert.equal(worthAnnotating('15.77%', '15.77%'), false);
+  assert.equal(worthAnnotating('2024', '2024年'), false);
+  assert.equal(worthAnnotating('20%', '百分之二十'), false);
+  assert.equal(worthAnnotating('→', '箭頭'), false);
+  assert.equal(worthAnnotating('', ''), false);
+});
+
+test('真的翻了就要蓋 —— 這條規則不可以吃掉正常的譯文', () => {
+  assert.equal(worthAnnotating('Storage size', '儲存空間大小'), true);
+  assert.equal(worthAnnotating('Lower is better', '越低越好'), true);
+  // 帶數字的句子照翻:有字母而且譯文不同
+  assert.equal(worthAnnotating('19 times smaller', '縮小 19 倍'), true);
+  assert.equal(worthAnnotating('FLEURS (top region)*', 'FLEURS(頂端區域)*'), true);
+});
+
+test('placeBlocks 會把不用翻的塊整個略過', () => {
+  const drawn = drawnRect({ w: 1000, h: 1000 }, { w: 800, h: 800 }, 'contain', parsePosition('50% 50%'));
+  const placed = placeBlocks(
+    [
+      { box: [0, 0, 100, 400], text: 'Storage size', zh: '儲存空間大小', c: 1 },
+      { box: [200, 0, 300, 400], text: '469 GB', zh: '469 GB', c: 1 },
+      { box: [400, 0, 500, 400], text: 'Elasticsearch', zh: 'Elasticsearch', c: 1 },
+      { box: [600, 0, 700, 400], text: '15.77%', zh: '15.77%', c: 1 },
+    ],
+    drawn,
+    { w: 800, h: 800 },
+  );
+  assert.deepEqual(placed.map((p) => p.zh), ['儲存空間大小']);
+});
+
+test('不用翻的塊也不參與「整張圖用哪種語彙」的投票', () => {
+  /*
+   * 略過的塊沒有畫任何東西,讓它們影響形式的選擇沒有道理 ——
+   * 而且它們通常很小(數值標籤),會把整張圖投向錨點。
+   */
+  const drawn = drawnRect({ w: 1000, h: 1000 }, { w: 800, h: 800 }, 'contain', parsePosition('50% 50%'));
+  const tiny = Array.from({ length: 6 }, (_, i) => ({
+    box: [900 + i, 0, 903 + i, 20] as [number, number, number, number],
+    text: `${i}%`,
+    zh: `${i}%`,
+    c: 1,
+  }));
+  const placed = placeBlocks(
+    [
+      { box: [0, 0, 120, 500], text: 'Storage size', zh: '儲存空間大小', c: 1 },
+      { box: [200, 0, 320, 500], text: 'Lower is better', zh: '越低越好', c: 1 },
+      ...tiny,
+    ],
+    drawn,
+    { w: 800, h: 800 },
+  );
+  assert.equal(placed.length, 2, '略過的塊不該出現');
+  assert.equal(placed.every((p) => p.kind === 'veil'), true, '六個小數值把整張圖投成錨點了');
 });
 
 test('短標籤走單行 —— 「不適用」不可以被折成兩行', () => {

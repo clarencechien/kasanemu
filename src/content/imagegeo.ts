@@ -17,6 +17,7 @@ import {
   MIN_PATCH_FONT_PX,
   fontSizeFor,
   patchable,
+  worthAnnotating,
 } from '../shared/imageblocks.ts';
 
 export interface Rect {
@@ -206,6 +207,8 @@ export function placeBlocks(
     if (!r) continue;
     const label = b.zh || b.text;
     if (label.length === 0) continue;
+    // 譯完等於沒譯、或原文本來就是數字符號 —— 蓋上去只是遮住原圖
+    if (!worthAnnotating(b.text, label)) continue;
     const chars = [...label].length;
     const fontPx = fontSizeFor(r.w, r.h, chars, b.v === true);
     cand.push({ b, r, label, chars, fontPx, fits: patchable(fontPx) });

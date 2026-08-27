@@ -409,16 +409,36 @@ export const LAYER_CSS = `
  */
 .iblk .itx {
   position: relative;
+  isolation: isolate;
   max-width: none;
   line-height: 1.24;
   font-weight: 700;
   color: #8E2605;
-  background: rgba(255, 252, 247, .92);
-  padding: .04em .32em;
-  border-radius: 4px;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, .18);
   /* 短標籤一行到底;長句才折 —— 折行點由 .itx.wrap 打開 */
   white-space: nowrap;
+}
+/*
+ * 譯文底下的那片白 —— **羽化的,沒有硬邊**。
+ *
+ * 上一版是不透明的圓角貼片加陰影,使用者的原話是「這有點像 OK 繃」。
+ * 對:一個帶陰影的圓角矩形是**另一個物件**,而這裡要的是
+ * 「玻璃在這裡比較厚」。
+ *
+ * 但白色不能整個拿掉,那是量出來的(§13-7):玻璃保留明度,所以深色
+ * 圖表上的玻璃場還是深的,深墨橘站上去只有 **1.8:1**。把膜濃度整條
+ * 掃過也救不回來 —— 濃到 .72(那已經不像玻璃了)還是只有 4.3:1。
+ *
+ * 所以留下的是同一片白,只是**畫在偽元素上再模糊掉**:對比一模一樣
+ * (7.7:1),而邊界不見了。它不再是一個物件,是一團密度。
+ */
+.iblk .itx::before {
+  content: '';
+  position: absolute;
+  inset: -.16em -.3em;
+  border-radius: 6px;
+  background: rgba(255, 252, 247, .95);
+  filter: blur(4px);
+  z-index: -1;
 }
 .iblk .itx.wrap {
   white-space: normal;

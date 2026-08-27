@@ -452,6 +452,17 @@ export class ImageAnnotator {
   private render(img: HTMLImageElement, entry: ImageEntry): void {
     const { drawn, clip, rect } = geometryOf(img);
     this.placed = placeBlocks(entry.blocks, drawn, clip);
+    /*
+     * 模型認出字了,但**沒有一塊需要翻**(整張都是數值、產品名、代碼)。
+     * 這和「沒偵測到文字」是兩件事,而使用者要知道的是同一件:
+     * 不用再滑上來了。畫一個空的加註層只會讓人以為壞掉。
+     */
+    if (this.placed.length === 0) {
+      this.host.hideImage();
+      this.host.cue(img, entry.blocks.length > 0 ? '這張圖沒有需要翻的字' : '沒有偵測到文字', 'idle');
+      diag('info', 'image-render', { tier: entry.tier, veil: 0, pin: 0, skipped: entry.blocks.length });
+      return;
+    }
     this.host.showImage(rect, this.placed);
     const pins = this.placed.filter((p) => p.kind === 'pin').length;
     /*
@@ -484,6 +495,8 @@ export class ImageAnnotator {
       tier: entry.tier,
       veil: this.placed.length - pins,
       pin: pins,
+      // 譯完等於沒譯的塊被略過了 —— 看得見才知道規則有沒有吃太多
+      skipped: entry.blocks.length - this.placed.length,
     });
   }
 
