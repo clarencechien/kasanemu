@@ -174,8 +174,8 @@ const imageAnno = new ImageAnnotator(
       imageCue = text === null ? null : { el, text, tone, action };
       renderChips();
     },
-    openZoom(src, natural, reserve) {
-      const holder = layer?.showZoom(src, natural, reserve);
+    openZoom(src, natural) {
+      const holder = layer?.showZoom(src, natural);
       if (!holder) return null;
       const r = holder.getBoundingClientRect();
       return { w: r.width, h: r.height };

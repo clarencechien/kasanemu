@@ -4,7 +4,8 @@
 自己安裝、自己付 API 帳單。不上架、不做 onboarding、不服務任何非我的使用情境。
 
 Phase 1(`kasanemuphase1prd.md` v1.0)+ 漸進式翻譯(`feature.md` v1.0)+
-加翻層(`docs/plan-annotation.md`)。**0.1.0 文字階段收關。**
+加翻層(`docs/plan-annotation.md`)。**0.1.0 文字階段收關,0.2.0 圖片加註出貨**
+(`docs/plan-images.md`)。
 
 - 每一版做了什麼:[`CHANGELOG.md`](CHANGELOG.md)
 - 走過的每一個坑與它的理由:[`docs/deviations.md`](docs/deviations.md)(111 節)
@@ -21,9 +22,9 @@ npm run package      # build + release/kasanemu-<version>.zip
 `chrome://extensions` → 開開發人員模式 → 「載入未封裝項目」→ 選 `dist/`。
 在設定頁填 Gemini API key,然後在任一頁面按 popup 的「啟用」或 `Alt+T`。
 
-版本號會在 build 時蓋上 build number:`manifest.version` 是 `0.1.0.<commit 數>`,
-`version_name` 是 `0.1.0 build 64 · 07a0fc6 · 2026-08-25`,popup 右上角與診斷 log
-的第一行都看得到。每一包都叫 0.1.0 的話,回報問題時沒人知道手上那包含不含某個修正。
+版本號會在 build 時蓋上 build number:`manifest.version` 是 `0.2.0.<commit 數>`,
+`version_name` 是 `0.2.0 build 113 · 0e159f4 · 2026-08-27`,popup 右上角與診斷 log
+的第一行都看得到。每一包都叫 0.2.0 的話,回報問題時沒人知道手上那包含不含某個修正。
 
 不想自己 build:GitHub Actions 每次 push 都會跑 typecheck + test + 字型 subset +
 build,並把 `dist/` 與 zip 當 artifact 掛在該次 run 上;打 `v*` tag 會另外開 release。
@@ -36,7 +37,7 @@ build,並把 `dist/` 與 zip 當 artifact 掛在該次 run 上;打 `v*` tag 會�
 | `Alt+Shift+T` | 全開 ⇄ 點閱 |
 | `Alt+R` | 翻譯這一頁:重試失敗的、把停在 L0 的升上去(收折的內容也算) |
 | **按住 `Alt`** | 整層暫時收起,放開就回來 —— 想看原文時最順手的動作 |
-| `Alt+Shift+H` | 標註樣式掃視(所有疊層切成半透明,看得出哪些區塊被翻了) |
+| `Alt+Shift+H` | 標註樣式掃視(所有疊層切成標註配色,看得出哪些區塊被翻了) |
 | 滑過區塊 | 全開時淡出露出原文;點閱時顯示譯文 |
 | 滑過 / 選取沒被疊翻的東西 | 旁邊出現譯文貼片(加翻層) |
 | 滑過紅色的區塊 | 自動重排一次(失敗的區塊的重試入口) |
@@ -104,8 +105,8 @@ worker → 先吃快取 → 過保險絲與 token bucket → 呼叫 Gemini → i
 
 - **滑上去停 0.5 秒** → 免費檔辨識(零帳單,10–70 秒,背景填充)
 - **Alt+點圖** → 升級到你選的檔位(一張約 NT$0.2)
-- 算出來小於 11px 的字不硬塞,改成**編號圓點**,滑上去看譯文;
-  圖角的「⤢ 放大檢視」點開之後那些字夠大了,**編號自動變回疊字**
+- 預算裝不下的塊行內不畫(一張圖最多疊幾塊,設定可調);
+  點圖角的「⤢ 點這裡放大讀」在大畫布攤開,塊數上限自動放兩倍
   —— 同一份譯文,不會再花一次錢
 - 站方自己有放大功能就不出那顆按鈕,加註會**跟著同一張圖**過去
 - 直排日文目前**讀不對**(模型把直排當橫排讀),但認得出來 → 標警示色

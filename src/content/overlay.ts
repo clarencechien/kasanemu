@@ -102,7 +102,7 @@ export const LAYER_CSS = `
 }
 .layer.alt-scan .box { opacity: 1; }
 /*
- * 全部收起來(Alt+Shift+H)。
+ * 全部收起來(按住 Alt,hold 不是 toggle —— 見 keys.ts)。
  *
  * 和「點閱模式」不一樣:點閱是滑過才顯示,這個是**整層完全不在**,
  * 連提示線都收掉,像沒裝這個擴充一樣。用在「這一頁我想直接讀原文」。
@@ -1138,19 +1138,13 @@ export class OverlayLayer {
    * 重錨定跟過去。這裡是給**沒有 lightbox 的站**用的:claude.com 那篇的
    * 2042px 截圖行內只顯示 565px,連英文讀者都得另開分頁。
    */
-  showZoom(src: string, natural: { w: number; h: number }, reserve = 0): HTMLDivElement {
+  showZoom(src: string, natural: { w: number; h: number }): HTMLDivElement {
     const z = this.zoomBox ?? this.makeZoom();
     const holder = z.querySelector('.zimg') as HTMLDivElement;
     const img = holder.querySelector('img') as HTMLImageElement;
     if (img.src !== src) img.src = src;
-    /*
-     * 等比放大到視窗允許的最大尺寸;實際幾何等 img 載入後由呼叫端量。
-     *
-     * `reserve` 是**右邊要留給註解清單的寬度**。呼叫端先用 0 排一次、
-     * 看出是錨點模式,再帶著寬度回來排第二次 —— 因為「有沒有清單」
-     * 取決於排版結果,而排版又取決於畫布多大。這個循環只能靠排兩次打開。
-     */
-    const maxW = window.innerWidth - 60 - reserve;
+    // 等比放大到視窗允許的最大尺寸;實際幾何等 img 載入後由呼叫端量
+    const maxW = window.innerWidth - 60;
     const maxH = window.innerHeight - 60;
     const scale = Math.min(maxW / natural.w, maxH / natural.h);
     holder.style.width = `${Math.round(natural.w * scale)}px`;
@@ -1159,12 +1153,7 @@ export class OverlayLayer {
     return holder;
   }
 
-  /**
-   * 放大檢視裡的加註常駐(進黑窗就是「我要讀字」)。
-   *
-   * 錨點模式**同時**畫清單:圓點標位置,清單給字。少了清單,一張 15 個
-   * 錨點的截圖點開放大檢視還是 15 個圓點,什麼都讀不到。
-   */
+  /** 放大檢視裡的加註常駐(進黑窗就是「我要讀字」) */
   setZoomBlocks(placed: readonly PlacedBlock[]): void {
     const z = this.zoomBox;
     const holder = z?.querySelector('.zimg');
@@ -1174,25 +1163,8 @@ export class OverlayLayer {
     paintPlates(holder as HTMLElement);
   }
 
-  /**
-   * 放大檢視裡選中一條註解:圓點亮起來,對應的那一列移到最上面並釘住。
-   *
-   * **不用 `scrollIntoView`** —— 那會讓整個畫面跳(sukemu handoff §7
-   * 的陷阱清單原文)。`order: -1 + sticky` 達到同樣的效果而畫面不動。
-   */
-  private setZoomPin(n: number): void {
-    const z = this.zoomBox;
-    if (!z) return;
-    for (const el of z.querySelectorAll('.zimg .ipin')) {
-      el.classList.toggle('on', Number((el as HTMLElement).dataset['n']) === n);
-    }
-    for (const el of z.querySelectorAll('.zrow')) {
-      el.classList.toggle('on', Number((el as HTMLElement).dataset['n']) === n);
-    }
-  }
-
   hideZoom(): void {
-    this.zoomBox?.classList.remove('show', 'haslist', 'lift');
+    this.zoomBox?.classList.remove('show', 'lift');
   }
 
   /** 放大檢視裡的圖現在畫成多大(視窗變化後重算加註要用) */
@@ -1220,13 +1192,11 @@ export class OverlayLayer {
     const holder = document.createElement('div');
     holder.className = 'zimg';
     holder.appendChild(document.createElement('img'));
-    const list = document.createElement('div');
-    list.className = 'zlist';
     const hint = document.createElement('div');
     hint.className = 'zhint';
     // 編號退場了(§DW),文案跟著走;滑鼠是 Alt 的同義手勢(§EB)
     hint.textContent = 'Esc 或點黑處關閉 · 按住滑鼠或 Alt 看原圖';
-    z.append(holder, list, hint);
+    z.append(holder, hint);
     z.addEventListener('click', (e) => {
       // 只有點在圖以外的黑處才關;點到圖上是想看清楚,不是想離開
       if (e.target === z) this.zoomDismiss?.();

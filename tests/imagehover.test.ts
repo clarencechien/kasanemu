@@ -87,7 +87,6 @@ function harness() {
     hideImage: () => {
       hidden.push(1);
     },
-    setActivePin: () => undefined,
     ownsTarget: (t: unknown) => t instanceof FakeDiv && t.id === HOST_ID,
     openZoom: () => ({ w: 800, h: 600 }),
     setZoomBlocks: () => undefined,

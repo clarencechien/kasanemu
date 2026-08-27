@@ -37,7 +37,7 @@ const contexts = await Promise.all([
 
 /**
  * Chrome 的 manifest.version 只吃 1–4 段數字,所以 build number 當第四段:
- * 0.1.0.<commit 數>。version_name 可以是任意字串,放人看的資訊
+ * <版本>.<commit 數>。version_name 可以是任意字串,放人看的資訊
  * (short sha + 日期 + 工作區是否乾淨)。
  *
  * 為什麼要有:每一包都叫 0.1.0 的話,回報問題時沒人知道手上那包

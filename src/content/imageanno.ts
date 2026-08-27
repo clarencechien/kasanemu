@@ -69,7 +69,7 @@ export interface ImageHost {
   /** chip 文案。null 代表收起來;`action` 有值時貼片可以按 */
   cue(el: Element, text: string | null, tone: 'idle' | 'busy' | 'warn', action?: string): void;
   /** 開放大檢視,回傳圖片實際被畫成多大(等 img 載入後量的) */
-  openZoom(src: string, natural: { w: number; h: number }, reserve?: number): { w: number; h: number } | null;
+  openZoom(src: string, natural: { w: number; h: number }): { w: number; h: number } | null;
   setZoomBlocks(placed: readonly PlacedBlock[]): void;
   closeZoom(): void;
 }
@@ -616,13 +616,7 @@ export class ImageAnnotator {
     return placeBlocks(entry.blocks, drawn, size, this.maxPlates());
   }
 
-  /**
-   * 放大檢視的排版。
-   *
-   * **要排兩次**,而且這不是浪費:「右邊要不要留位置給註解清單」取決於
-   * 排出來是不是錨點模式,而排版又取決於畫布多寬 —— 循環只能靠排兩次
-   * 打開。第一次用整個視窗看模式,是錨點就縮回去再排一次。
-   */
+  /** 放大檢視的排版:同一份區塊換這個畫布尺寸重排(錨點退場後只剩一趟,§DW) */
   private paintZoom(
     size: { w: number; h: number },
     entry: ImageEntry,
