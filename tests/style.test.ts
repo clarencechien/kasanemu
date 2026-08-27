@@ -238,3 +238,26 @@ test('「祖先會不會裁切」只能有一份定義 —— 第三份就是 §
     );
   }
 });
+
+test('「這顆鍵是不是 Alt」只能有一份定義 —— keys.ts(§EB)', () => {
+  /*
+   * §EA 補右 Alt(AltGraph)時 isAltKey 住在 index.ts;§EB 把按鍵決策
+   * 抽成 keys.ts 之後它搬了家。散寫的 `key === 'Alt'` 就是下一個
+   * 「只認左邊那顆」—— 用 grep 擋住。
+   *
+   * snapshot.ts 合法:那是塞進除錯快照頁的獨立腳本,跑在另一個
+   * document 裡,import 不到這邊的模組。
+   */
+  const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const allowed = new Set(['keys.ts', 'snapshot.ts']);
+  const dir = path.join(root, 'src', 'content');
+  for (const f of readdirSync(dir).filter((n) => n.endsWith('.ts'))) {
+    if (allowed.has(f)) continue;
+    const src = readFileSync(path.join(dir, f), 'utf8');
+    assert.equal(
+      /key\s*[!=]==?\s*'Alt(Graph)?'/.test(src),
+      false,
+      `${f} 自己另寫了一份「是不是 Alt」的判斷 —— 用 keys.ts 的 isAltKey`,
+    );
+  }
+});

@@ -69,7 +69,7 @@ export interface ImageHost {
   /** chip 文案。null 代表收起來;`action` 有值時貼片可以按 */
   cue(el: Element, text: string | null, tone: 'idle' | 'busy' | 'warn', action?: string): void;
   /** 開放大檢視,回傳圖片實際被畫成多大(等 img 載入後量的) */
-  openZoom(src: string, natural: { w: number; h: number }, reserve?: number): { w: number; h: number } | null;
+  openZoom(src: string, natural: { w: number; h: number }): { w: number; h: number } | null;
   setZoomBlocks(placed: readonly PlacedBlock[]): void;
   closeZoom(): void;
 }
@@ -598,6 +598,14 @@ export class ImageAnnotator {
     if (!size) return false;
     this.zoomUrl = url;
     this.paintZoom(size, entry, natural, url);
+    /*
+     * **chip 的工作到這裡結束**(§EC)。
+     *
+     * 它是 fixed 定位、又只認滑鼠的 leave —— 黑窗開了它就浮在最上面,
+     * 像個忘了收的路牌,要等滑鼠動一下或視窗失焦才被別的路收走。
+     * 使用者的原話:「點了 3 秒內要消失」—— 不用等 3 秒,點開就收。
+     */
+    this.host.cue(img, null, 'idle');
     diag('info', 'image-zoom', { blocks: entry.blocks.length });
     return true;
   }
@@ -608,13 +616,7 @@ export class ImageAnnotator {
     return placeBlocks(entry.blocks, drawn, size, this.maxPlates());
   }
 
-  /**
-   * 放大檢視的排版。
-   *
-   * **要排兩次**,而且這不是浪費:「右邊要不要留位置給註解清單」取決於
-   * 排出來是不是錨點模式,而排版又取決於畫布多寬 —— 循環只能靠排兩次
-   * 打開。第一次用整個視窗看模式,是錨點就縮回去再排一次。
-   */
+  /** 放大檢視的排版:同一份區塊換這個畫布尺寸重排(錨點退場後只剩一趟,§DW) */
   private paintZoom(
     size: { w: number; h: number },
     entry: ImageEntry,
@@ -633,8 +635,18 @@ export class ImageAnnotator {
 
   closeZoom(): void {
     if (!this.zoomUrl) return;
+    const url = this.zoomUrl;
     this.zoomUrl = null;
     this.host.closeZoom();
+    /*
+     * 關窗後把 chip 畫回來:滑鼠多半還停在原圖上,而 `move()` 看到
+     * `img === this.current` 不會重畫(§DL 的同一個坑)—— 開窗時收掉的
+     * chip 沒有這一條就永遠回不來,要滑走再滑回來才有。
+     */
+    if (this.current && this.urlOf(this.current) === url) {
+      const entry = this.byUrl.get(url);
+      if (entry) this.render(this.current, entry);
+    }
   }
 
   zoomOpen(): boolean {

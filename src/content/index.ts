@@ -71,6 +71,7 @@ import { clearMeasureCache } from './measure';
 import { activeText, hasText, type Unit } from './unit';
 import { dedupeByText, labelBudget } from './annotate';
 import { ImageAnnotator, imageUnder } from './imageanno';
+import { keyDownAct, keyUpAct } from './keys';
 import { buildSnapshot } from './snapshot';
 
 setDiagScope('content');
@@ -173,8 +174,8 @@ const imageAnno = new ImageAnnotator(
       imageCue = text === null ? null : { el, text, tone, action };
       renderChips();
     },
-    openZoom(src, natural, reserve) {
-      const holder = layer?.showZoom(src, natural, reserve);
+    openZoom(src, natural) {
+      const holder = layer?.showZoom(src, natural);
       if (!holder) return null;
       const r = holder.getBoundingClientRect();
       return { w: r.width, h: r.height };
@@ -1823,50 +1824,51 @@ function onMouseOver(e: Event): void {
 
 function onKeyDown(e: KeyboardEvent): void {
   /*
-   * 放大檢視開著時,Esc 只做一件事:關掉它。
+   * **決策在 keys.ts,這裡只執行**(§EB)。
    *
-   * 放在最前面而且吃掉事件 —— 全螢幕的東西開著的時候,使用者按 Esc
-   * 的意圖百分之百是關它,不會是別的快捷鍵。
+   * 上一版在這裡自己判斷,而「放大檢視開著就提前 return」寫在 Alt 前面 ——
+   * 黑窗印著「按住 Alt 看原圖」,Alt 卻根本走不到收層的程式碼。
+   * probe 直接呼叫 layer 驗過機制,沒驗按鍵這條路;抽成純函式之後
+   * 這條路有單元測試看著。
+   *
+   * 按住 Alt = 暫時收起整層,放開就回來(hold,不是 toggle)。
+   * 想瞄一眼原文是每分鐘都會做的事,常用的動作配最好按的鍵。
    */
-  if (imageAnno.zoomOpen()) {
-    if (e.key === 'Escape') {
+  const act = keyDownAct(e.key, e.shiftKey, { zoomOpen: imageAnno.zoomOpen(), hiddenAll });
+  switch (act) {
+    case 'close-zoom':
+      // 全螢幕的東西開著的時候,Esc 的意圖百分之百是關它 —— 吃掉事件
       imageAnno.closeZoom();
       e.preventDefault();
       e.stopPropagation();
-    }
-    return;
+      return;
+    case 'hide':
+      hiddenAll = true;
+      layer?.setHiddenAll(true);
+      // 對稱律的另一半(§2.5):文字掀開看原文,圖片就是收掉加註看原圖
+      layer?.hideImage();
+      closeChip(true);
+      updateHud();
+      break;
+    case 'hide-keep-zoom':
+      // 黑窗開著:setHiddenAll 會替它掛 lift(掀起來),不收窗、不動行內
+      hiddenAll = true;
+      layer?.setHiddenAll(true);
+      updateHud();
+      break;
+    case 'restore':
+      /*
+       * Alt 加上別的鍵 = 那是一個和弦,不是「我想看原文」。
+       * 按 Alt+R 時 Alt 會先單獨到達,整層收起來閃一下 ——
+       * 收到第二個鍵就放回去,hold 的意圖只在 Alt 單獨按住時成立。
+       */
+      restoreLayer();
+      break;
+    case 'none':
+      break;
   }
-  /*
-   * **按住 Alt = 暫時收起整層**,放開就回來。
-   *
-   * 原本 Alt 是 §2.1 的標註樣式掃視,而「整層收起」掛在 Alt+Shift+H。
-   * 使用者的原話:「跟 Alt 互換一下,Alt 好按多了」—— 對,而且更重要的是
-   * 這兩件事的**使用頻率完全不同**:想瞄一眼原文是每分鐘都會做的事,
-   * 掃視哪些區塊被翻了是偶爾除錯才做的。常用的動作該配最好按的鍵。
-   *
-   * 而且「按住看原文、放開回來」本來就該是 hold,不是 toggle。
-   *
-   * `AltGraph`:Windows 上的右 Alt 送來的 `key` 不是 `'Alt'` 而是
-   * `'AltGraph'`(歐洲鍵盤佈局的組字鍵)。使用者從 ChromeOS 換到
-   * Windows 之後回報「按了 alt 也不會消失」—— 按的是右 Alt。
-   * 兩顆都收:hold 的意圖一樣,不該分左右。
-   */
-  if (isAltKey(e.key) && !e.shiftKey && !hiddenAll) {
-    hiddenAll = true;
-    layer?.setHiddenAll(true);
-    // 對稱律的另一半(§2.5):文字掀開看原文,圖片就是收掉加註看原圖
-    layer?.hideImage();
-    closeChip(true);
-    updateHud();
-  }
-  /*
-   * Alt 加上別的鍵 = 那是一個和弦,不是「我想看原文」。
-   *
-   * 「翻譯這一頁」改掛 Alt+R 之後這一條變成必要的:按 Alt+R 時
-   * Alt 會先單獨到達,整層收起來閃一下,直到放開 Alt 才回來。
-   * 收到第二個鍵就把它放回去 —— hold 的意圖只有在 Alt 單獨按住時才成立。
-   */
-  if (hiddenAll && !isAltKey(e.key)) restoreLayer();
+  // 和弦快捷鍵在黑窗裡不活(Esc 與 Alt 以外,黑窗把鍵盤讓給頁面)
+  if (imageAnno.zoomOpen()) return;
   if (e.altKey && e.shiftKey && (e.key === 'D' || e.key === 'd')) {
     e.preventDefault();
     toggleDebugPanel();
@@ -1889,12 +1891,7 @@ function toggleAltScan(): void {
 }
 
 function onKeyUp(e: KeyboardEvent): void {
-  if (isAltKey(e.key) && hiddenAll) restoreLayer();
-}
-
-/** 左 Alt 是 `'Alt'`,Windows 的右 Alt 是 `'AltGraph'` —— 對我們是同一顆鍵 */
-function isAltKey(key: string): boolean {
-  return key === 'Alt' || key === 'AltGraph';
+  if (keyUpAct(e.key, { zoomOpen: imageAnno.zoomOpen(), hiddenAll }) === 'restore') restoreLayer();
 }
 
 /**
@@ -1912,7 +1909,9 @@ function restoreLayer(): void {
   if (!hiddenAll) return;
   hiddenAll = false;
   layer?.setHiddenAll(false);
-  imageAnno.repaint();
+  // 黑窗開著時 Alt 只掀了加註(沒收行內)—— repaint 反而會把行內疊層
+  // 和 chip 畫到黑窗底下/上面
+  if (!imageAnno.zoomOpen()) imageAnno.repaint();
   updateHud();
 }
 
