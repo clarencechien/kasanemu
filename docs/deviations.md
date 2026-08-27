@@ -4499,3 +4499,86 @@ chip 的兩句話也跟著改成實情:
 |---|---|
 | 等太久已取消 · 滑開再滑回來重試 | 前面排太久,這張沒輪到 · 點一下重試 |
 | (沒有這種) | 一次排太多張,這張被讓位了 · 點一下重試 |
+
+## DV. 翻好了,然後被自己藏起來
+
+> 這次是內文都沒翻 只翻了 title
+
+而同一份診斷說:**總 63 · L0 3 · L1 60 · 待翻 0 · 失敗 0**。
+
+兩件事都是真的。翻譯完成了,疊層畫上去了,然後被 `clippedAway()` 藏掉。
+log 裡滿滿的證據,只是它看起來像正常運作:
+
+```
+clipped-overlays {"checked":19,"hidden":19}
+clipped-overlays {"checked":17,"hidden":17}
+```
+
+**檢查了幾塊就藏掉幾塊。**
+
+### 病根:`getComputedStyle` 給的是計算值,不是使用值
+
+`clippedAway()` 往上走每一層祖先,只要 overflow 不是 `visible`
+就檢查這個元素有沒有掉到那一層的矩形外面。規則本身沒問題
+(§CE 那次已經確定不能用 `elementFromPoint`,會被 stretched link 誤判)。
+
+錯的是**它把 `<body>` 也算進去了**。實測 thenewstack.io:
+
+```
+document.scrollingElement  html
+html   visible/visible  height 900px
+body   hidden/auto      height 900px
+body 的矩形  0..900,捲到 1500 之後變成 -1500..-600
+body.scrollTop 永遠是 0,body.scrollHeight 6117
+```
+
+`body { overflow-x: hidden }` 是**到處都在用**的擋橫向捲軸寫法,
+而 `overflow-x: hidden` + `overflow-y: visible` 的計算值是 `hidden/auto`。
+但 CSS 還有一條**傳播規則**:視窗的 overflow 取自 `<html>`,
+`<html>` 是 `visible` 的話改取自 `<body>` —— 而**被取走的那一個自己
+當作 `visible`**。所以 body 一格都沒裁,`body.scrollTop` 永遠是 0 就是證據。
+
+`getComputedStyle` 照實回報計算值 `hidden/auto`,而使用值是 `visible`。
+兩者不一樣,而我們讀的是前者。
+
+配上 body 的高度剛好一個視窗(`height: 900px`),結果是
+**首屏以下的每一段都「掉出 body 外面」** —— 標題在首屏所以看得到,
+內文全部藏起來。使用者的描述一字不差。
+
+### 修法
+
+```ts
+export function overflowGoesToViewport(el: Element): boolean {
+  if (el === document.documentElement) return true;
+  if (el !== document.body) return false;
+  const html = getComputedStyle(document.documentElement);
+  return html.overflowX === 'visible' && html.overflowY === 'visible';
+}
+```
+
+迴圈本來就跳過 `<html>`(`p !== document.documentElement`),
+少的是「`<html>` 讓賢的時候 `<body>` 也要跳過」。
+
+### 兩個相反的失敗方向都要驗
+
+這條規則藏太多和藏太少都會出事,而且**只有真的瀏覽器分得出來**。
+所以 `clippedAway` 搬到 `src/content/occlusion.ts`(整個 `index.ts`
+載進 probe 就會開始跑翻譯),配一個 fixture 裝兩種形狀:
+
+| | 形狀 | 該怎樣 |
+|---|---|---|
+| 藏太多 | `body { overflow-x: hidden; height: 100vh }`,段落在首屏以下 | **不藏** |
+| 藏太少 | 真的內層捲動容器,內容捲出去了 | **要藏** |
+
+`npm run probe:occlusion` 兩個方向都斷言過:拿掉傳播判斷 → 四條紅;
+整條 overflow 檢查拿掉 → `scrolled-out` 那條紅。
+
+### 稽核用實作那一份
+
+`scripts/audit-occlusion.mjs`(`npm run audit:occlusion <url>`)
+回答的是「**是哪一層、差多少**」——執行時只需要一個布林值,
+而查案要的是原因。所以 `occlusion.ts` 出兩個名字、一份實作:
+`clipReason()` 說得出是哪一層,`clippedAway()` 是它的布林包裝。
+抄成兩份的話,稽核會慢慢變成在回答另一個問題(lessons §22-bis)。
+
+實測那一頁:修之前 **73 個單元有 68 個會被藏起來**,修之後 **0 個**。

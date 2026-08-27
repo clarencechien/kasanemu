@@ -39,6 +39,7 @@ import {
   unlockScales,
 } from './geometry';
 import { clipInsets, scrolls, type Box } from './cover';
+import { clippedAway } from './occlusion';
 import { hidePinnedWhileScrolling, motionGuard } from './motion';
 import { deviceProfile, type DeviceProfile } from './device';
 import { probePackagedFonts } from './fonts';
@@ -2592,34 +2593,6 @@ function applyChromeClip(): void {
   }
 }
 
-/**
- * 元素是不是被某個祖先的 `overflow: hidden` 整個裁掉了。
- *
- * 這是「看不見的重複 DOM」的成因:輪播的另一份、隱藏的行動版選單。
- * 頁面把它裁掉了,而我們的疊層在最上層不受任何裁切,於是浮在無關的位置。
- *
- * build 15 用 `elementFromPoint` 做這件事,結果**把正確的疊層藏掉了** ——
- * 卡片常有一個絕對定位的 stretched link 蓋住整張卡,它既不是標題的祖先
- * 也不是子孫,命中測試就判成「被蓋住」。幾何判定沒有這個問題:
- * 只問「這個元素的矩形有沒有落在裁切框外面」,不管誰蓋在上面。
- *
- * 可捲動的容器**照樣算**:現在看不見就是看不見,使用者把它捲進來之後
- * 下一輪稽核會再把疊層放出來。
- */
-function clippedAway(u: Unit): boolean {
-  const r = u.el.getBoundingClientRect();
-  if (r.width < 1 || r.height < 1) return true;
-  for (let p = u.el.parentElement; p && p !== document.documentElement; p = p.parentElement) {
-    const cs = getComputedStyle(p);
-    if (cs.overflowX === 'visible' && cs.overflowY === 'visible') continue;
-    const pr = p.getBoundingClientRect();
-    if (pr.width < 1 || pr.height < 1) return true;
-    const outside =
-      r.right <= pr.left + 1 || r.left >= pr.right - 1 || r.bottom <= pr.top + 1 || r.top >= pr.bottom - 1;
-    if (outside) return true;
-  }
-  return false;
-}
 
 function checkOcclusion(): void {
   if (!layer || !running || !settings.occlusionCheck) return;
@@ -2630,13 +2603,23 @@ function checkOcclusion(): void {
     const vTop = u.rect.top - window.scrollY;
     if (vTop + u.rect.height < -200 || vTop > window.innerHeight + 200) continue;
     if (checked++ > 80) break;
-    const gone = clippedAway(u);
+    const gone = clippedAway(u.el);
     layer.setCovered(u, gone);
     if (gone) hidden++;
   }
   if (hidden !== lastCovered) {
     lastCovered = hidden;
-    diag('info', 'clipped-overlays', { hidden, checked });
+    /*
+     * **比例本身就是訊號**(lessons §35)。
+     *
+     * 「檢查 19 塊藏 19 塊」在上一份 log 裡出現了幾十次,而它安靜地待在
+     * info 那一堆裡 —— 因為這一則平常也長這樣(捲到一半、輪播的另一份)。
+     * 使用者看到的是一整頁原文,log 說一切正常,兩邊對不上號(§DV)。
+     *
+     * 幾乎全藏是**不正常的**:正常情況下視窗附近的單元大多看得見。
+     */
+    const all = checked >= 4 && hidden === checked;
+    diag(all ? 'warn' : 'info', 'clipped-overlays', { hidden, checked });
   }
 }
 

@@ -153,7 +153,7 @@ node scripts/audit-coverage.mjs <url>     # 單頁詳細
 npm run typecheck
 npm test          # 333 個測試(node:test + jsdom)
 npm run build     # 也會回報 dist 體積對 §10.2 的 1.5 MB 預算
-npm run check     # typecheck + 文件稽核 + test + build + 五支 probe ← 提交前跑這個
+npm run check     # typecheck + 文件稽核 + test + build + 六支 probe ← 提交前跑這個
 npm run zip       # dist/ → release/kasanemu-<version>.zip(自己寫的 zip,無外部依賴)
 npm run watch
 ```
@@ -167,6 +167,8 @@ npm run probe:colors     # 背景與前景色解析(lab / oklch / 半透明疊�
 npm run probe:snapshot   # 匯出的 HTML 快照能不能疊、能不能看原文
 npm run probe:image      # 圖片加註的幾何:object-fit 換算、字級分流、三層順序
 npm run probe:veil       # 毛玻璃的可讀性:原文殘留 < 4:1、譯文 >= 4.5:1
+npm run probe:occlusion  # 疊層該不該藏:body 傳播 overflow(不該藏)vs 內層捲動(該藏)
+npm run audit:occlusion <url>  # 這一頁的疊層被誰藏了、差多少
 npm run render:veil out.png [--sweep]   # 玻璃的目視稿與配方掃描(眼睛選的那一格)
 npm run audit:docs       # 文件和 repo 對不對得起來(§ 編號、npm run、檔案路徑)
 npm run measure:vocab    # 加註語彙的量尺:譯文佔版 / 擠壓 / 遮蔽,四份真實回應 × 五個寬度
@@ -191,6 +193,7 @@ src/
   content/  detect(選取規則)· cover/geometry/measure/bleed(幾何)· styleprobe(顏色)
             imagegeo(圖片座標:object-fit / position 換算 · 字級分流,純函式)
             imageanno(圖片加註的生命週期:hover → L0、Alt+click → L1)
+            occlusion(疊層該不該藏:祖先裁切 + overflow 傳播)
             overlay(closed shadow DOM)· annotate(加翻層)· snapshot(匯出)
             l0(Translator API)· queue(L0 併發池)· mask(佔位符)· lang · motion
             upgrade(升級管線的純判斷)· unit · device · fonts · index(協調)
