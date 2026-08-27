@@ -1224,12 +1224,32 @@ export class OverlayLayer {
     list.className = 'zlist';
     const hint = document.createElement('div');
     hint.className = 'zhint';
-    hint.textContent = 'Esc 或點黑處關閉 · 按住 Alt 看原圖 · 滑過編號看對應位置';
+    // 編號退場了(§DW),文案跟著走;滑鼠是 Alt 的同義手勢(§EB)
+    hint.textContent = 'Esc 或點黑處關閉 · 按住滑鼠或 Alt 看原圖';
     z.append(holder, list, hint);
     z.addEventListener('click', (e) => {
       // 只有點在圖以外的黑處才關;點到圖上是想看清楚,不是想離開
       if (e.target === z) this.zoomDismiss?.();
     });
+    /*
+     * **按住滑鼠左鍵 = 按住 Alt**(§EB)。
+     *
+     * 「看一眼原圖」是黑窗裡最常做的動作,而 Alt 在 ChromeOS 上是
+     * 系統鍵、在 Windows 上會去碰瀏覽器選單 —— 手邊本來就握著的滑鼠
+     * 更可靠。只掛在圖上:按住黑處再放開會觸發上面那條「點黑處關閉」,
+     * 兩個手勢不能疊在同一塊地方。
+     *
+     * `preventDefault` 擋的是瀏覽器自己的圖片拖曳 —— 按住不動想看原圖,
+     * 手抖一下就變成拖出一個半透明的殘影。
+     */
+    const liftOff = () => z.classList.remove('lift');
+    holder.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      z.classList.add('lift');
+    });
+    z.addEventListener('mouseup', liftOff);
+    z.addEventListener('mouseleave', liftOff);
     // .zoom 是 fixed,和 .chip 同理由:不能待在帶 clip-path 的 .layer 裡
     this.root.appendChild(z);
     this.zoomBox = z;

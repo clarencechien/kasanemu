@@ -4944,3 +4944,46 @@ world,`addInitScript` 塞的到不了)、CDP `DOMSnapshot.captureSnapshot`
 `isAltKey()` 兩顆都收。若之後回報左 Alt 也沒反應,再查焦點
 (疊層不吃事件,鍵盤事件在 `window` 上掛 capture —— 除非焦點在
 iframe 裡,那是另一個題目,記在 TODO)。
+
+## EB. 黑窗印著「按住 Alt 看原圖」,Alt 卻根本走不到
+
+> 其實我同時試了 windows跟chromebook 在黑底視窗時 alt都是沒用的
+> 是不是被外面的alt吃掉了
+
+兩台機器都一樣 —— 那就不是 §EA 猜的 AltGraph(右 Alt),是流程。
+使用者的方向完全正確,只差一個字:不是被外面的 Alt 吃掉,
+是被**放大檢視的守門**吃掉。
+
+### 為什麼 probe 一直是綠的
+
+`onKeyDown` 的第一個 if:「放大檢視開著時,除了 Esc 全部提前 return」。
+Alt 的處理寫在它**後面** —— 黑窗開著時永遠執行不到。
+
+而 probe 驗「黑窗裡按 Alt 會掀加註」是**直接呼叫 `layer.setHiddenAll(true)`**
+驗的:機制(setHiddenAll 會替黑窗掛 lift)完全正常,綠得理直氣壯。
+壞的是按鍵到機制之間的那條路,而那條路上沒有任何測試。
+§DF 說 probe 要用 production 的程式碼 —— 用了,但只用了下半段。
+
+### 修法:決策抽成純函式,wiring 只剩 switch
+
+`src/content/keys.ts`:`keyDownAct(key, shift, {zoomOpen, hiddenAll})`
+回傳該做什麼(`close-zoom` / `hide` / `hide-keep-zoom` / `restore` / `none`)。
+Alt 的判斷在 zoom 守門**前面**;黑窗開著時回 `hide-keep-zoom` ——
+只掀加註,不收黑窗、不動行內。`tests/keys.test.ts` 把整張決策表釘住,
+把順序改回舊寫法測試就紅。「是不是 Alt」也只剩這一份定義(grep 守著)。
+
+### 追加:按住滑鼠左鍵 = 按住 Alt(使用者的決定)
+
+「看一眼原圖」是黑窗裡最常做的動作,而 Alt 在 ChromeOS 上是系統鍵、
+在 Windows 上會去碰瀏覽器選單 —— 手邊本來就握著的滑鼠更可靠。
+按住圖不放 = 掀開,放開 = 回來;只掛在圖上,黑處留給「點一下關閉」。
+`preventDefault` 擋掉瀏覽器自己的圖片拖曳。
+
+這條 probe 走的是**真的事件**(mousedown/mouseup dispatch),
+不是直接呼叫 layer —— 就是為了不再犯上面那個錯。
+
+### 文案跟著修
+
+黑窗提示原本寫「Esc 或點黑處關閉 · 按住 Alt 看原圖 · 滑過編號看對應位置」
+—— 編號在 §DW 就退場了,句子一直沒跟上。
+改成「Esc 或點黑處關閉 · 按住滑鼠或 Alt 看原圖」。

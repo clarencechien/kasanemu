@@ -324,6 +324,22 @@ const render = await p.evaluate(async ([fx, cx]) => {
   const zoomAnnoAfterAlt = annoIn();
 
   /*
+   * **按住滑鼠左鍵 = 按住 Alt**(§EB)。
+   *
+   * 這一段走的是**真的事件**,不是直接呼叫 layer —— §EB 的教訓正是
+   * 「驗了機制,沒驗那條路」:Alt 的機制 probe 一直是綠的,而按鍵
+   * 到不了機制。滑鼠這條路整段活在 overlay 裡,事件打進去就是全程。
+   */
+  const zEl = shadow?.querySelector('.zoom');
+  const zHolder = shadow?.querySelector('.zoom .zimg');
+  zHolder?.dispatchEvent(new MouseEvent('mousedown', { button: 0, bubbles: true, cancelable: true }));
+  await settle();
+  const zoomAnnoWhileMouse = annoIn();
+  zEl?.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  await settle();
+  const zoomAnnoAfterMouse = annoIn();
+
+  /*
    * 順序要在**疊字模式**的 DOM 上問 —— 上面那份放大檢視是 47 個錨點,
    * 一片玻璃都沒有,問了永遠是對的(第一版就是這樣寫的,assert 形同虛設)。
    * 圖表那份放大之後才是整張疊字,所以換它畫進去再問。
@@ -337,6 +353,8 @@ const render = await p.evaluate(async ([fx, cx]) => {
     zoomAnnoBefore,
     zoomAnnoWhileAlt,
     zoomAnnoAfterAlt,
+    zoomAnnoWhileMouse,
+    zoomAnnoAfterMouse,
     inlineDrawn: placed.placed.length,
     inlineWhy: placed.why,
     inlineLeft: placed.left,
@@ -408,6 +426,9 @@ if (render.veilLayerCount > 0 && render.plateLayerCount === 0)
   problems.push('畫了玻璃卻一片白貼片都沒有 —— 深色圖上的譯文會讀不到');
 if (render.zoomAnnoWhileAlt) problems.push('按住 Alt 在放大檢視裡看不到原圖 —— 加註沒有掀開');
 if (!render.zoomAnnoAfterAlt) problems.push('放開 Alt 之後加註沒有回來');
+// §EB:滑鼠這條走真的事件(mousedown/mouseup),不是直接呼叫 layer
+if (render.zoomAnnoWhileMouse) problems.push('按住滑鼠左鍵在放大檢視裡沒有掀開加註(§EB)');
+if (!render.zoomAnnoAfterMouse) problems.push('放開滑鼠之後加註沒有回來(§EB)');
 
 /*
  * 同 src 認親(§2.4):站方 lightbox 開出來的是**新元素、同一個 src**。
