@@ -151,9 +151,9 @@ node scripts/audit-coverage.mjs <url>     # 單頁詳細
 
 ```bash
 npm run typecheck
-npm test          # 329 個測試(node:test + jsdom)
+npm test          # 333 個測試(node:test + jsdom)
 npm run build     # 也會回報 dist 體積對 §10.2 的 1.5 MB 預算
-npm run check     # typecheck + 文件稽核 + test + build + 五支 probe ← 提交前跑這個
+npm run check     # typecheck + 文件稽核 + test + build + 六支 probe ← 提交前跑這個
 npm run zip       # dist/ → release/kasanemu-<version>.zip(自己寫的 zip,無外部依賴)
 npm run watch
 ```
@@ -167,8 +167,12 @@ npm run probe:colors     # 背景與前景色解析(lab / oklch / 半透明疊�
 npm run probe:snapshot   # 匯出的 HTML 快照能不能疊、能不能看原文
 npm run probe:image      # 圖片加註的幾何:object-fit 換算、字級分流、三層順序
 npm run probe:veil       # 毛玻璃的可讀性:原文殘留 < 4:1、譯文 >= 4.5:1
+npm run probe:occlusion  # 疊層該不該藏:body 傳播 overflow(不該藏)vs 內層捲動(該藏)
+npm run audit:occlusion <url>  # 這一頁的疊層被誰藏了、差多少
 npm run render:veil out.png [--sweep]   # 玻璃的目視稿與配方掃描(眼睛選的那一格)
 npm run audit:docs       # 文件和 repo 對不對得起來(§ 編號、npm run、檔案路徑)
+npm run measure:vocab    # 加註語彙的量尺:譯文佔版 / 擠壓 / 遮蔽,四份真實回應 × 五個寬度
+npm run mockup:vocab out.png [--width 620]   # 同一張圖:全錨點 vs 預算內的疊字,並排
 npm run audit:tree <url> # 爬一個站的子路徑,對每一頁跑偵測稽核
 GEMINI_API_KEY=... npm run probe:gemma       # 模型行為:thinking、schema、echo 對位
 GEMINI_API_KEY=... node scripts/probe-glossary.mjs   # 詞表遵循率 + 速度品質對打
@@ -190,6 +194,7 @@ src/
   content/  detect(選取規則)· cover/geometry/measure/bleed(幾何)· styleprobe(顏色)
             imagegeo(圖片座標:object-fit / position 換算 · 字級分流,純函式)
             imageanno(圖片加註的生命週期:hover → L0、Alt+click → L1)
+            occlusion(疊層該不該藏:祖先裁切 + overflow 傳播)
             overlay(closed shadow DOM)· annotate(加翻層)· snapshot(匯出)
             l0(Translator API)· queue(L0 併發池)· mask(佔位符)· lang · motion
             upgrade(升級管線的純判斷)· unit · device · fonts · index(協調)
@@ -203,7 +208,7 @@ scripts/    audit-{sites,tree,coverage,docs}(廣度 / 深度 / 覆蓋 / 文件�
             probe-{detect,colors,snapshot,image,veil,gemma,vision,glossary}
             render-veil(玻璃的目視稿:量測選不出來的那一格)· measure-vision
             fetch-fonts(subset 打包)· zip · sites.txt · fixtures/ · bench-vocab/
-tests/      329 個 node:test;fixtures/vision/ 是真實 API 回應(地面實況)
+tests/      333 個 node:test;fixtures/vision/ 是真實 API 回應(地面實況)
 docs/       lessons(通則)· deviations(逐件記錄)· acceptance(人工驗收)
             fonts(subset 實測)· plan-annotation(加翻層規格)
             plan-glossary(詞表規格 + 模型實測)· plan-images(圖片翻譯規格)

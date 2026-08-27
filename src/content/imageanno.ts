@@ -680,8 +680,13 @@ const FRIENDLY: Record<string, Fail> = {
   'daily-cap': { text: '今日預算已用完', retry: false },
   'no-key': { text: '還沒設定 API key', retry: false },
   'page-image-cap': { text: '本頁圖片翻譯已達上限', retry: false },
-  // worker 把排太久的工作丟掉時送的:使用者可能早就捲過去了
-  stale: { text: '等太久已取消 · 點一下重試', retry: true },
+  /*
+   * 排到 content 的看門狗都響了才被收掉 —— 前面那幾張太慢。
+   * 以前這句話寫「等太久已取消」,而實情是**它從來沒輪到過**(§DU)。
+   */
+  stale: { text: '前面排太久,這張沒輪到 · 點一下重試', retry: true },
+  /* 一次滑過太多張,被更新的那幾張擠掉(worker 的 PENDING_L0_MAX) */
+  'queue-full': { text: '一次排太多張,這張被讓位了 · 點一下重試', retry: true },
   empty: { text: '圖片是空的', retry: false },
   'fetch-timeout': { text: '這張圖抓不下來 · 點一下重試', retry: true },
   // 重派過還是沒回來 —— 別再叫使用者「滑開再滑回來」,那條路已經走過了

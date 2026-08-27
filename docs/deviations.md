@@ -4430,3 +4430,155 @@ probe 的排版也跟著呼叫 `paintPlates()` 而不是自己畫一片差不多
 
 把貼片改成 `appendChild`(等於舊的偽元素順序)→「三層的順序不對」;
 整個不畫貼片 →「疊字模式卻一片白貼片都沒有」。兩個都攔得到。
+
+## DU. 排隊等前面那張,被當成「你已經捲走了」
+
+> 這次是 一次太多張會一直過時 平均試了三次才成功
+
+log 裡六次 `image-stale`、七次 `image-retry`。而規則長這樣:
+
+```ts
+j.lane === 'l0' && j.startedAt === undefined && now - j.at > STALE_L0_MS  // 10 秒
+```
+
+**它結構上不可能成立。** l0 併發是 1(免費檔和文字共用配額,這是刻意的),
+gemma 一張要 12–40 秒 —— 所以佇列裡**第二張必定**在輪到自己之前就滿 10 秒。
+一次滑過三張圖,第二三張保證被殺,而使用者看到的是「等太久已取消」。
+
+### 病根:碼錶量錯了東西
+
+那條規則想問的是「使用者還想不想看」,而它量的是「前面還有幾張」。
+在併發 1 的佇列裡,那兩件事**沒有任何關係** ——
+排隊時間完全由前面那張的長度決定,和使用者的注意力無關。
+
+而測試在保護這個 bug:
+
+```ts
+test('掃過就走的 hover 會過期 —— 配額不花在使用者早就捲過去的圖', () => {
+  const q = [job({ url: 'a', at: 0 })];
+  const { drop } = nextJobs(q, new Set(), STALE_L0_MS + 1);
+  assert.equal(drop.length, 1);
+```
+
+單獨看完全合理:一筆工作、放著十秒、丟掉。少的是**第二筆工作** ——
+而「佇列裡有第二筆」正是這條規則唯一會出錯的情況。
+
+### 改成用張數擋
+
+原本要防的是「滑鼠掃過長文的二十張圖排出二十分鐘的隊」。那件事用**張數**
+擋得住,而且不會誤判:
+
+| | 舊 | 新 |
+|---|---|---|
+| 防掃過就走 | 排隊 > 10 秒就丟 | `PENDING_L0_MAX` 張,超過**擠掉最舊的** |
+| 沒派出去過的年齡 | 10 秒 | **只有看門狗那一條**(180 秒) |
+| 派出去過的(孤兒) | 重派,上限兩次 | 不變 |
+
+**擠掉最舊而不是拒絕最新**:掃過去的時候,最後停下來的那幾張才是他在看的。
+
+上限是**推出來的不是拍出來的**:排到最後一張還沒輪到、而 content 的看門狗
+已經先說「沒有回應」的話,那個名額本來就是空的。
+所以 `PENDING_L0_MAX = 看門狗 ÷ 一張慢的大概要多久 = 180 ÷ 45 = 4`。
+
+### 為什麼「沒輪到」還是要有一條線,而且是看門狗
+
+不收的話會**反咬一口**:看門狗響過之後 content 跟使用者說
+「沒有回應 · 點一下重試」,而使用者真的點了 —— `addJob` 看到同一個
+`url + lane` 當成重複請求擋掉,那張圖於是**再也翻不出來**。
+所以那條線的意義不是「太舊」,是「**已經沒有人在等它了**」。
+
+### 擠掉要說一聲
+
+`addJob` 擠掉的工作也得告訴 content(新的 `queue-full`),
+理由和 §DJ 那次一樣:少了這一步,content 的 in-flight 集合永遠不清,
+圖角停在「辨識中」,而且因為那個集合擋著,再滑上去也不會重送。
+
+chip 的兩句話也跟著改成實情:
+
+| 舊 | 新 |
+|---|---|
+| 等太久已取消 · 滑開再滑回來重試 | 前面排太久,這張沒輪到 · 點一下重試 |
+| (沒有這種) | 一次排太多張,這張被讓位了 · 點一下重試 |
+
+## DV. 翻好了,然後被自己藏起來
+
+> 這次是內文都沒翻 只翻了 title
+
+而同一份診斷說:**總 63 · L0 3 · L1 60 · 待翻 0 · 失敗 0**。
+
+兩件事都是真的。翻譯完成了,疊層畫上去了,然後被 `clippedAway()` 藏掉。
+log 裡滿滿的證據,只是它看起來像正常運作:
+
+```
+clipped-overlays {"checked":19,"hidden":19}
+clipped-overlays {"checked":17,"hidden":17}
+```
+
+**檢查了幾塊就藏掉幾塊。**
+
+### 病根:`getComputedStyle` 給的是計算值,不是使用值
+
+`clippedAway()` 往上走每一層祖先,只要 overflow 不是 `visible`
+就檢查這個元素有沒有掉到那一層的矩形外面。規則本身沒問題
+(§CE 那次已經確定不能用 `elementFromPoint`,會被 stretched link 誤判)。
+
+錯的是**它把 `<body>` 也算進去了**。實測 thenewstack.io:
+
+```
+document.scrollingElement  html
+html   visible/visible  height 900px
+body   hidden/auto      height 900px
+body 的矩形  0..900,捲到 1500 之後變成 -1500..-600
+body.scrollTop 永遠是 0,body.scrollHeight 6117
+```
+
+`body { overflow-x: hidden }` 是**到處都在用**的擋橫向捲軸寫法,
+而 `overflow-x: hidden` + `overflow-y: visible` 的計算值是 `hidden/auto`。
+但 CSS 還有一條**傳播規則**:視窗的 overflow 取自 `<html>`,
+`<html>` 是 `visible` 的話改取自 `<body>` —— 而**被取走的那一個自己
+當作 `visible`**。所以 body 一格都沒裁,`body.scrollTop` 永遠是 0 就是證據。
+
+`getComputedStyle` 照實回報計算值 `hidden/auto`,而使用值是 `visible`。
+兩者不一樣,而我們讀的是前者。
+
+配上 body 的高度剛好一個視窗(`height: 900px`),結果是
+**首屏以下的每一段都「掉出 body 外面」** —— 標題在首屏所以看得到,
+內文全部藏起來。使用者的描述一字不差。
+
+### 修法
+
+```ts
+export function overflowGoesToViewport(el: Element): boolean {
+  if (el === document.documentElement) return true;
+  if (el !== document.body) return false;
+  const html = getComputedStyle(document.documentElement);
+  return html.overflowX === 'visible' && html.overflowY === 'visible';
+}
+```
+
+迴圈本來就跳過 `<html>`(`p !== document.documentElement`),
+少的是「`<html>` 讓賢的時候 `<body>` 也要跳過」。
+
+### 兩個相反的失敗方向都要驗
+
+這條規則藏太多和藏太少都會出事,而且**只有真的瀏覽器分得出來**。
+所以 `clippedAway` 搬到 `src/content/occlusion.ts`(整個 `index.ts`
+載進 probe 就會開始跑翻譯),配一個 fixture 裝兩種形狀:
+
+| | 形狀 | 該怎樣 |
+|---|---|---|
+| 藏太多 | `body { overflow-x: hidden; height: 100vh }`,段落在首屏以下 | **不藏** |
+| 藏太少 | 真的內層捲動容器,內容捲出去了 | **要藏** |
+
+`npm run probe:occlusion` 兩個方向都斷言過:拿掉傳播判斷 → 四條紅;
+整條 overflow 檢查拿掉 → `scrolled-out` 那條紅。
+
+### 稽核用實作那一份
+
+`scripts/audit-occlusion.mjs`(`npm run audit:occlusion <url>`)
+回答的是「**是哪一層、差多少**」——執行時只需要一個布林值,
+而查案要的是原因。所以 `occlusion.ts` 出兩個名字、一份實作:
+`clipReason()` 說得出是哪一層,`clippedAway()` 是它的布林包裝。
+抄成兩份的話,稽核會慢慢變成在回答另一個問題(lessons §22-bis)。
+
+實測那一頁:修之前 **73 個單元有 68 個會被藏起來**,修之後 **0 個**。

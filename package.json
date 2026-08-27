@@ -11,7 +11,7 @@
     "fonts": "node scripts/fetch-fonts.mjs",
     "probe:gemma": "node scripts/probe-gemma.mjs",
     "test": "node --experimental-strip-types --test 'tests/*.test.ts'",
-    "check": "npm run typecheck && npm run audit:docs && npm test && npm run build && npm run probe:detect && npm run probe:colors && npm run probe:snapshot && npm run probe:image && npm run probe:veil",
+    "check": "npm run typecheck && npm run audit:docs && npm test && npm run build && npm run probe:detect && npm run probe:colors && npm run probe:snapshot && npm run probe:image && npm run probe:veil && npm run probe:occlusion",
     "zip": "node scripts/zip.mjs",
     "package": "npm run build && npm run zip",
     "probe:colors": "node scripts/probe-colors.mjs",
@@ -20,10 +20,14 @@
     "probe:snapshot": "node scripts/probe-snapshot.mjs",
     "probe:image": "node scripts/probe-image.mjs",
     "probe:veil": "node scripts/probe-veil.mjs",
+    "probe:occlusion": "node scripts/probe-occlusion.mjs",
+    "audit:occlusion": "node scripts/audit-occlusion.mjs",
     "render:veil": "node scripts/render-veil.mjs",
     "audit:sites": "node scripts/audit-sites.mjs",
     "audit:tree": "node scripts/audit-tree.mjs",
-    "audit:docs": "node scripts/audit-docs.mjs"
+    "audit:docs": "node scripts/audit-docs.mjs",
+    "measure:vocab": "node --experimental-strip-types scripts/measure-vocab.mjs",
+    "mockup:vocab": "node scripts/mockup-vocab.mjs"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.268",

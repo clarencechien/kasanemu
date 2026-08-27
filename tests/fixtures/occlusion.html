@@ -1,0 +1,43 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>occlusion fixture</title>
+<!--
+  兩種「祖先的 overflow 不是 visible」的形狀,結論相反。
+
+  上面那個是 §DV 的現場:body 用 overflow-x: hidden 擋橫向捲軸(到處都是),
+  而且高度剛好一個視窗。它的 overflow 被**傳播到視窗**,所以自己一格都沒裁
+  —— 首屏以下的段落照樣看得見,疊層不可以藏。
+
+  下面那個是真的內層捲動容器:內容真的被裁掉,疊層應該藏。
+  兩個都要驗,不然「修好上面」很容易變成「下面也不裁了」。
+-->
+<style>
+  html { overflow: visible; }
+  body { margin: 0; overflow-x: hidden; height: 100vh; font: 16px system-ui; }
+  .filler { height: 1200px; background: #f4f4f4; }
+  p { margin: 0 0 24px; padding: 0 20px; }
+  #inner { height: 120px; overflow: auto; border: 1px solid #ccc; margin: 0 20px; }
+  #inner p { padding: 0; }
+</style>
+
+<p id="above">This paragraph is above the fold and has always been fine.</p>
+<div class="filler"></div>
+
+<p id="below">
+  This paragraph sits below the first viewport. The body has overflow-x hidden
+  and a viewport-sized box, but the body does not clip anything because its
+  overflow was propagated to the viewport. This must stay visible.
+</p>
+
+<p id="below2">
+  A second paragraph far below the fold, for the same reason as the one above it.
+</p>
+
+<div id="inner">
+  <p id="scrolled-in">This one is inside a real inner scroller and is in view.</p>
+  <div style="height:400px"></div>
+  <p id="scrolled-out">
+    This one is inside the same inner scroller but scrolled far out of it,
+    so the page itself does not draw it. The overlay must be hidden.
+  </p>
+</div>

@@ -3,15 +3,14 @@
  *
  *   node scripts/audit-docs.mjs
  *
- * 這個專案的註解和文件互相指名道姓:程式裡寫「§DR-1」、
- * 文件裡寫「`npm run probe:veil`」、「`scripts/render-veil.mjs`」。
+ * 這個專案的註解和文件互相指名道姓:程式裡寫節號、文件裡寫腳本名與檔案路徑。
  * 那些指名**沒有任何東西在維護** —— 改個檔名、刪一支腳本、
  * 章節重編號,指過去的那一端就變成謊話,而且看起來和真話一模一樣。
  *
  * 這支只問四件事,每一件都是「說有,那到底有沒有」:
  *
- * 1. 程式與腳本裡的 §XX 在 docs/deviations.md 找得到那一節嗎
- * 2. 文件裡寫的 `npm run xxx` 在 package.json 裡有嗎
+ * 1. 程式與腳本裡引的節號在 docs/deviations.md 找得到那一節嗎
+ * 2. 文件裡寫的 npm 腳本名在 package.json 裡有嗎
  * 3. 文件與程式裡提到的檔案路徑真的存在嗎
  * 4. deviations 的節號有沒有跳號或重複
  *
@@ -28,7 +27,7 @@ const read = (f) => readFileSync(f, 'utf8');
 const problems = [];
 const note = (f, msg) => problems.push(`${f}: ${msg}`);
 
-/* ── 1. §XX ─────────────────────────────────────────────────── */
+/* ── 1. 節號 ────────────────────────────────────────────────── */
 
 const devText = read('docs/deviations.md');
 const devSections = new Set(
