@@ -5015,3 +5015,29 @@ Alt 的判斷在 zoom 守門**前面**;黑窗開著時回 `hide-keep-zoom` —�
 關瀏覽器就清空,連磁碟都不落。所以 release 開著 diag 不會累積。
 有上限的 IndexedDB 是**譯文快取**(`persistentCacheMB`,預設 50MB LRU),
 跟 log 是兩回事。
+
+## ED. 瀏覽器啟用的網域,PWA 視窗跟著翻,而且關不掉
+
+> 在未啟用時 會去翻譯 pwa的內容 mouse over就翻譯了 應該要排除pwa
+
+「未啟用」是從那個視窗看的 —— 實際上**啟用狀態早就存在了**:
+網域狀態以 hostname 存在 `chrome.storage.local`,而同一個 profile 的
+PWA 視窗和瀏覽器分頁**共用**它。在瀏覽器啟用過的網域,同網域的 PWA
+一開,`boot()` 讀到 `enabled: true` 就 `start()`,hover 的免費 L0
+貼片自然動起來。
+
+比「不該翻」更糟的是**關不掉**:PWA 視窗沒有擴充功能工具列,
+popup 按不到 —— 唯一的開關在那個視窗裡不存在。
+
+### 修法:PWA 視窗一律不啟動
+
+`appwindow.ts` 的 `isAppWindow()`:`display-mode` 是 standalone /
+minimal-ui / window-controls-overlay 之一就是 PWA 視窗(普通分頁是
+`browser`)。閘門放在 `start()` 開頭 —— boot、storage 變更、Alt+T、
+「翻譯這一頁」,每一條進來的路都過這一個點;擋下時記一行
+`pwa-excluded`,診斷看得出來不是壞掉。
+
+**`fullscreen` 刻意不算**:普通分頁按 F11 或影片全螢幕時
+`(display-mode: fullscreen)` 也成立 —— 把全螢幕看影片的人的翻譯
+靜悄悄關掉,比漏掉極少數 display: fullscreen 的 PWA(遊戲那類)更糟。
+測試把這個決定釘住了。
