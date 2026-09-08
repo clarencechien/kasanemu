@@ -72,6 +72,7 @@ import { activeText, hasText, type Unit } from './unit';
 import { dedupeByText, labelBudget } from './annotate';
 import { ImageAnnotator, imageUnder } from './imageanno';
 import { keyDownAct, keyUpAct } from './keys';
+import { isAppWindow } from './appwindow';
 import { buildSnapshot } from './snapshot';
 
 setDiagScope('content');
@@ -2195,6 +2196,18 @@ function scheduleIntake(): void {
 
 async function start(): Promise<void> {
   if (running) return;
+  /*
+   * **PWA 視窗整個不做**(§ED)。
+   *
+   * 網域狀態跟著 profile 走,瀏覽器分頁啟用過的網域,同網域的 PWA
+   * 視窗一開就會走到這裡 —— 而那個視窗沒有工具列、按不到 popup,
+   * 使用者連關的地方都沒有。閘門放在 start():boot、storage 變更、
+   * Alt+T、翻譯這一頁,每一條進來的路都過這裡。
+   */
+  if (isAppWindow()) {
+    diag('info', 'pwa-excluded', { mode: 'app-window' });
+    return;
+  }
   running = true;
   startedAt = performance.now();
   firstPaintMs = -1;
